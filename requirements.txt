@@ -1,0 +1,26 @@
+# Core scientific/ML
+torch
+numpy
+scipy  # skimage dependency
+scikit-image  # skimage.morphology.skeletonize
+pandas
+matplotlib
+
+# Computer vision
+opencv-python
+torchvision
+
+# GUI
+PyQt5
+
+# Data/storage
+h5py
+Pillow  # PIL
+
+# Utilities
+tqdm
+psutil
+
+# SAM 2 (install separately — not on PyPI)
+# See: https://github.com/facebookresearch/sam2
+# pip install git+https://github.com/facebookresearch/sam2.git
