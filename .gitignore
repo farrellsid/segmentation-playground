@@ -1,1 +1,6 @@
-frames/
+.env
+__pycache__/
+*.pyc
+checkpoints/
+.ipynb_checkpoints/
+data/
