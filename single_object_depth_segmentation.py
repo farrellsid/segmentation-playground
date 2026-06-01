@@ -39,7 +39,9 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import cv2
 import numpy as np
@@ -95,6 +97,27 @@ CHAIN_VIEWS_ROOT  = Path(r"E:\ZhenLab\Data\temp\chain_views")       # symlink su
 # ---- debug helpers ---------------------------------------------------
 SAVE_ANCHOR_OVERLAY = True         # write a PNG of each anchor mask for sanity-checking
                                    # (replaces the notebook's inline matplotlib overlay)
+
+# ---- failure detection -----------------------------------------------
+# All thresholds operate in SCALE space on boolean masks.
+#
+# AREA_RATIO_MAX  -- flag if mask area grows by more than this factor vs prev frame.
+#                    3.0 = a sudden 3x explosion is suspicious.
+# AREA_RATIO_MIN  -- flag if mask shrinks to below this fraction vs prev frame.
+#                    0.25 = mask lost >75% of its area in one step.
+# IOU_MIN         -- flag if IoU between consecutive frames drops below this.
+#                    0.1 = almost no overlap, mask has drifted or vanished.
+# ANNOTATION_CONTAINMENT -- if True, flag any frame where the CATMAID node
+#                    for that z is NOT inside the predicted mask.  Requires
+#                    a node at every z (guaranteed for this dataset).
+# MAX_REANCHOR_DEPTH -- how many times a single propagation pass can be
+#                    recursively re-anchored before the remainder is flagged
+#                    for manual review and skipped.
+AREA_RATIO_MAX       = 3.0
+AREA_RATIO_MIN       = 0.25
+IOU_MIN              = 0.10
+ANNOTATION_CONTAINMENT = True
+MAX_REANCHOR_DEPTH   = 3
 
 
 # ======================================================================
@@ -494,11 +517,216 @@ def write_video_frames(subchain: dict, df: pd.DataFrame, target_file_z: int,
     return view_dir_str, subset_tifs, target_frame_idx
 
 
+# ======================================================================
+# FAILURE DETECTION
+# ======================================================================
+
+@dataclass
+class FailureEvent:
+    """One detected anomaly in a propagation pass.
+
+    Attributes:
+        frame_idx:    0-based index into the chain's subset_tifs / view dir.
+        catmaid_z:    CATMAID z of that frame (for re-anchoring via CATMAID node).
+        direction:    Which pass produced this failure.
+        signals:      Which detection signals fired (subset of
+                      {"area_ratio", "iou", "containment"}).
+        area_ratio:   Observed area[t] / area[t-1]  (None for frame 0 or empty prev).
+        iou:          Observed IoU with previous frame  (None for frame 0 or empty prev).
+        node_inside:  Whether the CATMAID node for this z was inside the mask
+                      (None if ANNOTATION_CONTAINMENT is False).
+        prev_area:    Mask pixel count at t-1  (0 if no previous frame).
+        curr_area:    Mask pixel count at t.
+    """
+    frame_idx:   int
+    catmaid_z:   int
+    direction:   Literal["forward", "backward"]
+    signals:     list[str]
+    area_ratio:  float | None
+    iou:         float | None
+    node_inside: bool | None
+    prev_area:   int
+    curr_area:   int
+
+
+def detect_failures(
+    segments: dict[int, np.ndarray],
+    direction: Literal["forward", "backward"],
+    frame_to_catmaid_z: dict[int, int],
+    df: pd.DataFrame,
+    obj_id: int,
+) -> list[FailureEvent]:
+    """Scan a single directional propagation result for anomalous frames.
+
+    Args:
+        segments:           {frame_idx: bool mask (H, W)} — one direction only.
+        direction:          "forward" or "backward", used only for labelling.
+        frame_to_catmaid_z: Maps frame_idx -> CATMAID z for this chain.
+        df:                 Full annotations DataFrame (for containment check).
+        obj_id:             SAM2 object id — used only for log messages.
+
+    Returns:
+        List of FailureEvent, one per flagged frame, in frame_idx order.
+        Empty list means the pass looks clean.
+    """
+    failures: list[FailureEvent] = []
+
+    # Sort frames in temporal order for the direction so that "previous frame"
+    # is always the frame immediately before in propagation order.
+    ordered = sorted(segments.keys(), reverse=(direction == "backward"))
+
+    prev_mask: np.ndarray | None = None
+    prev_area: int = 0
+
+    for frame_idx in ordered:
+        mask = segments[frame_idx].astype(bool)
+        curr_area = int(mask.sum())
+        catmaid_z = frame_to_catmaid_z[frame_idx]
+        fired: list[str] = []
+        area_ratio: float | None = None
+        iou_val:    float | None = None
+        node_inside: bool | None = None
+
+        # ---- 1. Area ratio (skip if prev was empty to avoid div-by-zero) ----
+        if prev_mask is not None and prev_area > 0:
+            area_ratio = curr_area / prev_area
+            if area_ratio > AREA_RATIO_MAX or area_ratio < AREA_RATIO_MIN:
+                fired.append("area_ratio")
+
+        # ---- 2. Temporal IoU ----
+        if prev_mask is not None:
+            intersection = int((mask & prev_mask).sum())
+            union        = int((mask | prev_mask).sum())
+            iou_val = intersection / union if union > 0 else 0.0
+            if iou_val < IOU_MIN:
+                fired.append("iou")
+
+        # ---- 3. CATMAID annotation containment ----
+        if ANNOTATION_CONTAINMENT:
+            # Look up the node at this CATMAID z for the target cell.
+            node_rows = df[df["z"] == catmaid_z]
+            if len(node_rows) == 0:
+                # Should not happen given dense annotation guarantee, but guard anyway.
+                print(f"  [WARN] detect_failures: no node found at catmaid_z={catmaid_z} "
+                      f"(frame {frame_idx}, {direction}) -- containment skipped")
+                node_inside = None
+            else:
+                # x_tif / y_tif are in full-res pixel space; divide by SCALE for mask space.
+                # Use the first row if somehow multiple nodes share a z (shouldn't happen).
+                row = node_rows.iloc[0]
+                nx = int(row["x_tif"] / SCALE)
+                ny = int(row["y_tif"] / SCALE)
+                h, w = mask.shape
+                if 0 <= ny < h and 0 <= nx < w:
+                    node_inside = bool(mask[ny, nx])
+                else:
+                    # Node coordinate maps outside the downscaled frame — data issue.
+                    print(f"  [WARN] detect_failures: node ({nx},{ny}) out of bounds "
+                          f"({w}x{h}) at catmaid_z={catmaid_z} (frame {frame_idx}, "
+                          f"{direction}) -- containment skipped")
+                    node_inside = None
+                if node_inside is False:
+                    fired.append("containment")
+
+        # ---- emit failure if any signal fired ----
+        if fired:
+            ev = FailureEvent(
+                frame_idx=frame_idx,
+                catmaid_z=catmaid_z,
+                direction=direction,
+                signals=fired,
+                area_ratio=area_ratio,
+                iou=iou_val,
+                node_inside=node_inside,
+                prev_area=prev_area,
+                curr_area=curr_area,
+            )
+            failures.append(ev)
+            # Detailed log so failures are easy to read in the console / log file.
+            sig_str = ", ".join(fired)
+            ar_str  = f"{area_ratio:.3f}" if area_ratio is not None else "n/a"
+            iou_str = f"{iou_val:.3f}"   if iou_val    is not None else "n/a"
+            con_str = str(node_inside)   if node_inside is not None else "n/a"
+            print(
+                f"  [FAIL] obj={obj_id} frame={frame_idx} z={catmaid_z} "
+                f"dir={direction} | signals=[{sig_str}] | "
+                f"area_ratio={ar_str} iou={iou_str} containment={con_str} | "
+                f"prev_area={prev_area} curr_area={curr_area}"
+            )
+
+        prev_mask = mask
+        prev_area = curr_area
+
+    if not failures:
+        print(f"  [OK] {direction} pass: {len(ordered)} frames, no failures detected "
+              f"(obj={obj_id})")
+    else:
+        print(f"  [SUMMARY] {direction} pass: {len(failures)} failure(s) across "
+              f"{len(ordered)} frames (obj={obj_id})")
+
+    return failures
+
+
+def first_failure_frame(failures: list[FailureEvent]) -> int | None:
+    """Return the frame_idx of the first failure in propagation order.
+
+    For a forward pass, 'first' = smallest frame_idx.
+    For a backward pass, 'first' = largest frame_idx  (i.e. the frame
+    encountered first when propagating backward from the anchor).
+
+    If failures is empty, returns None.
+    """
+    if not failures:
+        return None
+    if failures[0].direction == "forward":
+        return min(f.frame_idx for f in failures)
+    else:
+        return max(f.frame_idx for f in failures)
+
+
+def def_frame_to_catmaid_z(subset_tifs: list[Path]) -> dict[int, int]:
+    """Build a frame_idx -> CATMAID_z lookup for a chain's tif list."""
+    return {
+        i: parse_file_z(tif) + config.FILE_Z_OFFSET
+        for i, tif in enumerate(subset_tifs)
+    }
+
+
+def def_catmaid_z_to_node(df: pd.DataFrame, catmaid_z: int) -> int | None:
+    """Return the node_id at this CATMAID z, or None if not found."""
+    rows = df[df["z"] == catmaid_z]
+    if len(rows) == 0:
+        return None
+    return int(rows.iloc[0]["node_id"])
+
+
+def def_frame_to_catmaid_z_range(
+    subset_tifs: list[Path],
+    start_frame: int,
+    end_frame: int,
+) -> dict[int, int]:
+    """Subset of def_frame_to_catmaid_z for a contiguous frame range [start, end]."""
+    return {
+        i: parse_file_z(subset_tifs[i]) + config.FILE_Z_OFFSET
+        for i in range(start_frame, end_frame + 1)
+    }
+
+
 def propagate(video_predictor, frames_dir: str, anchor_box, anchor_xy,
-              target_frame_idx: int, obj_id: int) -> dict:
+              target_frame_idx: int, obj_id: int,
+) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
     """Anchor the box+point on the central frame and propagate both directions.
 
-    Returns video_segments: {frame_idx: {obj_id: bool mask (SCALE space)}}.
+    Returns:
+        (fwd_segments, bwd_segments) where each is
+        {frame_idx: bool mask (H, W) in SCALE space}.
+
+        The two dicts are kept SEPARATE so that failure detection can treat
+        each pass independently — a bad backward frame should not pollute
+        the forward result and vice versa.
+
+        The anchor frame itself appears in BOTH dicts (SAM2 emits it in
+        each pass).  When merging, forward takes precedence for the anchor.
     """
     # init_state needs a STRING path; offload_video_to_cpu keeps VRAM bounded
     # for long (~340-frame) chains.
@@ -518,24 +746,254 @@ def propagate(video_predictor, frames_dir: str, anchor_box, anchor_xy,
         labels=np.array([1], np.int32),
     )
 
-    video_segments: dict = {}
+    fwd_segments: dict[int, np.ndarray] = {}
+    bwd_segments: dict[int, np.ndarray] = {}
+
+    def _collect(store: dict, frame_idx, obj_ids, mask_logits):
+        # Store only the mask for our object; squeeze the leading dim SAM2 adds.
+        for i, oid in enumerate(obj_ids):
+            if oid == obj_id:
+                mask = (mask_logits[i] > 0.0).cpu().numpy()
+                if mask.ndim == 3:
+                    mask = mask[0]          # (1, H, W) -> (H, W)
+                store[frame_idx] = mask.astype(bool)
+
+    print(f"  [propagate] forward pass  (anchor frame {target_frame_idx})")
+    for f, ids, lg in video_predictor.propagate_in_video(inference_state):
+        _collect(fwd_segments, f, ids, lg)
+
+    print(f"  [propagate] backward pass (anchor frame {target_frame_idx})")
+    for f, ids, lg in video_predictor.propagate_in_video(inference_state, reverse=True):
+        _collect(bwd_segments, f, ids, lg)
+
+    print(f"  [propagate] fwd={len(fwd_segments)} frames, "
+          f"bwd={len(bwd_segments)} frames")
+
+    # Sanity: anchor frame must appear in both passes.
+    assert target_frame_idx in fwd_segments, (
+        f"anchor frame {target_frame_idx} missing from forward segments -- "
+        "SAM2 did not emit it; check init_state / add_new_points_or_box"
+    )
+    assert target_frame_idx in bwd_segments, (
+        f"anchor frame {target_frame_idx} missing from backward segments -- "
+        "SAM2 did not emit it; check init_state / add_new_points_or_box"
+    )
+
+    del inference_state
+    return fwd_segments, bwd_segments
+
+
+def propagate_one_direction(
+    video_predictor,
+    frames_dir: str,
+    anchor_box: np.ndarray,
+    anchor_xy: np.ndarray,
+    anchor_frame_idx: int,
+    obj_id: int,
+    direction: Literal["forward", "backward"],
+) -> dict[int, np.ndarray]:
+    """Like propagate(), but runs only one direction.
+
+    Used by run_segment() when re-anchoring at a failure point: the clean
+    portion of the original pass is already kept, so only the affected
+    direction needs to be re-run from the new anchor.
+
+    Returns {frame_idx: bool mask (H, W)}.
+    """
+    inference_state = video_predictor.init_state(
+        video_path=frames_dir,
+        offload_video_to_cpu=True,
+    )
+    video_predictor.reset_state(inference_state)
+    video_predictor.add_new_points_or_box(
+        inference_state=inference_state,
+        frame_idx=anchor_frame_idx,
+        obj_id=obj_id,
+        box=anchor_box,
+        points=anchor_xy,
+        labels=np.array([1], np.int32),
+    )
+
+    segments: dict[int, np.ndarray] = {}
 
     def _collect(frame_idx, obj_ids, mask_logits):
-        video_segments[frame_idx] = {
-            oid: (mask_logits[i] > 0.0).cpu().numpy()
-            for i, oid in enumerate(obj_ids)
-        }
+        for i, oid in enumerate(obj_ids):
+            if oid == obj_id:
+                mask = (mask_logits[i] > 0.0).cpu().numpy()
+                if mask.ndim == 3:
+                    mask = mask[0]
+                segments[frame_idx] = mask.astype(bool)
 
-    for f, ids, lg in video_predictor.propagate_in_video(inference_state):
-        _collect(f, ids, lg)
-    for f, ids, lg in video_predictor.propagate_in_video(inference_state, reverse=True):
+    reverse = (direction == "backward")
+    print(f"  [propagate_one_direction] {direction} from frame {anchor_frame_idx}")
+    for f, ids, lg in video_predictor.propagate_in_video(inference_state, reverse=reverse):
         _collect(f, ids, lg)
 
-    print(f"  propagated {len(video_segments)} frames")
-    # TODO: per-frame degradation detection + auto re-prompt
-    #   (pred_iou / area-ratio / skeleton-node containment / temporal IoU).
+    print(f"  [propagate_one_direction] {direction}: {len(segments)} frames collected")
+    assert anchor_frame_idx in segments, (
+        f"anchor frame {anchor_frame_idx} missing from {direction} re-anchor segments"
+    )
     del inference_state
-    return video_segments
+    return segments
+
+
+def run_segment(
+    *,
+    video_predictor,
+    frames_dir: str,
+    anchor_frame_idx: int,
+    direction: Literal["forward", "backward"],
+    subset_tifs: list[Path],
+    df: pd.DataFrame,
+    obj_id: int,
+    chain_label: str,
+    depth: int,
+) -> dict[int, np.ndarray]:
+    """Recursively propagate one direction from an anchor, re-anchoring on failure.
+
+    This is the core of the error-recovery loop.  On the first call it is
+    invoked with the initial anchor; on recursive calls it is invoked at the
+    frame where the previous pass first failed.
+
+    Args:
+        video_predictor:  Loaded SAM2 video predictor (caller owns lifetime).
+        frames_dir:       Path string for init_state.
+        anchor_frame_idx: 0-based frame index to anchor from.
+        direction:        Which way to propagate from the anchor.
+        subset_tifs:      Ordered tif list for this chain (frame_idx -> file_z).
+        df:               Full annotations DataFrame.
+        obj_id:           SAM2 object id.
+        chain_label:      Human-readable label for log messages (e.g. "chain2[fwd]").
+        depth:            Current recursion depth (0 = first call).
+
+    Returns:
+        {frame_idx: bool mask} for all frames in the propagated range that
+        passed detection, up to (but NOT including) the first failing frame.
+        If depth > MAX_REANCHOR_DEPTH the segment is abandoned and {} is
+        returned for all frames after the anchor.
+    """
+    indent = "  " * (depth + 2)   # visual nesting in logs
+
+    if depth > MAX_REANCHOR_DEPTH:
+        print(
+            f"{indent}[ABORT] {chain_label} depth={depth} exceeds MAX_REANCHOR_DEPTH="
+            f"{MAX_REANCHOR_DEPTH} at frame {anchor_frame_idx} ({direction}) -- "
+            "remaining frames flagged for manual review"
+        )
+        return {}
+
+    print(f"{indent}[run_segment] {chain_label} depth={depth} "
+          f"anchor_frame={anchor_frame_idx} direction={direction}")
+
+    # ---- image mode: get anchor mask + box at this frame ----
+    anchor_tif  = subset_tifs[anchor_frame_idx]
+    anchor_catmaid_z = parse_file_z(anchor_tif) + config.FILE_Z_OFFSET
+    anchor_node = def_catmaid_z_to_node(df, anchor_catmaid_z)
+    assert anchor_node is not None, (
+        f"{chain_label}: no CATMAID node at z={anchor_catmaid_z} "
+        f"(frame {anchor_frame_idx}) -- annotation gap violates dense-annotation invariant"
+    )
+
+    image_predictor, _ = setup.build_predictor(
+        size=MODEL_SIZE, kind="image", checkpoint_dir=CHECKPOINT_DIR
+    )
+    diagnostics.snapshot(f"{chain_label} depth={depth} image model load")
+
+    image_sam, _ = load_anchor_image(anchor_tif)
+    hw_sam = image_sam.shape[:2]
+    list_nodes, list_labels, anchor_xy = build_prompts(df, anchor_node, anchor_catmaid_z)
+    masks, scores, logits = predict_image(
+        image_predictor, image_sam, list_nodes, list_labels
+    )
+
+    # refine_prompts is a no-op stub until the PyQt UI is built.
+    list_nodes, list_labels, masks = refine_prompts(
+        image_predictor, image_sam, masks, scores, logits,
+        list_nodes, list_labels,
+        target_z=anchor_catmaid_z, obj_id=obj_id,
+    )
+
+    try:
+        anchor_box = mask_to_box(masks[0], hw_sam)
+    except AssertionError as e:
+        print(f"{indent}[SKIP] empty anchor mask at frame {anchor_frame_idx} "
+              f"z={anchor_catmaid_z}: {e}")
+        image_predictor.reset_predictor()
+        del image_predictor
+        diagnostics.cleanup_vram()
+        return {}
+
+    print(f"{indent}anchor_box={anchor_box}  z={anchor_catmaid_z}")
+
+    if SAVE_ANCHOR_OVERLAY:
+        save_anchor_overlay(
+            image_sam, masks[0], list_nodes, list_labels,
+            OUT_DIR / "anchor_overlays" /
+            f"{TARGET_CELL_NAME}_{chain_label}_depth{depth}_z{anchor_catmaid_z}.png",
+        )
+
+    image_predictor.reset_predictor()
+    del image_predictor
+    diagnostics.cleanup_vram()
+
+    # ---- propagate one direction ----
+    raw_segments = propagate_one_direction(
+        video_predictor, frames_dir,
+        anchor_box, anchor_xy, anchor_frame_idx,
+        obj_id, direction,
+    )
+
+    # ---- detection ----
+    frame_to_z = def_frame_to_catmaid_z(subset_tifs)
+    failures = detect_failures(
+        raw_segments, direction, frame_to_z, df, obj_id
+    )
+
+    fail_frame = first_failure_frame(failures)
+
+    if fail_frame is None:
+        # Clean pass — return everything.
+        print(f"{indent}[CLEAN] {chain_label} depth={depth} {direction}: "
+              f"{len(raw_segments)} frames accepted")
+        return raw_segments
+
+    # ---- split: keep clean portion, recurse on tail ----
+    if direction == "forward":
+        # Keep [anchor_frame_idx, fail_frame - 1], re-anchor at fail_frame.
+        clean = {k: v for k, v in raw_segments.items() if k < fail_frame}
+        print(f"{indent}[SPLIT fwd] keeping frames "
+              f"[{anchor_frame_idx}..{fail_frame-1}] ({len(clean)} frames), "
+              f"re-anchoring at {fail_frame}")
+        tail = run_segment(
+            video_predictor=video_predictor,
+            frames_dir=frames_dir,
+            anchor_frame_idx=fail_frame,
+            direction="forward",
+            subset_tifs=subset_tifs,
+            df=df,
+            obj_id=obj_id,
+            chain_label=chain_label,
+            depth=depth + 1,
+        )
+    else:
+        # Backward: keep [fail_frame + 1, anchor_frame_idx], re-anchor at fail_frame.
+        clean = {k: v for k, v in raw_segments.items() if k > fail_frame}
+        print(f"{indent}[SPLIT bwd] keeping frames "
+              f"[{fail_frame+1}..{anchor_frame_idx}] ({len(clean)} frames), "
+              f"re-anchoring at {fail_frame}")
+        tail = run_segment(
+            video_predictor=video_predictor,
+            frames_dir=frames_dir,
+            anchor_frame_idx=fail_frame,
+            direction="backward",
+            subset_tifs=subset_tifs,
+            df=df,
+            obj_id=obj_id,
+            chain_label=chain_label,
+            depth=depth + 1,
+        )
+
+    return {**clean, **tail}
 
 
 # ======================================================================
@@ -543,13 +1001,21 @@ def propagate(video_predictor, frames_dir: str, anchor_box, anchor_xy,
 # ======================================================================
 
 def run_chain(subchain: dict, df: pd.DataFrame, chain_idx: int) -> dict | None:
-    """Run the full image->video pipeline for ONE chain.
+    """Run the full image->video pipeline for ONE chain, with failure recovery.
 
-    Models are built and torn down inside this function so VRAM is fully
-    released between the image and video stages and again before the next
-    chain (per the requested image+video-per-chain structure).
+    Pipeline:
+      1. Image mode  -- anchor mask + box at the mid-chain frame.
+      2. Video mode  -- bidirectional propagation (fwd + bwd as separate dicts).
+      3. Detection   -- scan each pass independently for anomalous frames.
+      4. Recovery    -- for each failing pass, split at the first bad frame and
+                        call run_segment() recursively (up to MAX_REANCHOR_DEPTH).
+      5. Merge       -- combine clean fwd and bwd segments into one dict keyed
+                        by frame_idx; forward takes precedence at the anchor.
+
+    Models are built and torn down so VRAM is fully released between stages.
     """
     obj_id = chain_idx + 1   # one object per MLC; 1-based for SAM2
+    chain_label = f"chain{chain_idx}"
     print(f"\n=== chain {chain_idx} (obj_id={obj_id}) ===")
 
     # ---- anchor selection + prompts (no model needed yet) ----
@@ -561,10 +1027,13 @@ def run_chain(subchain: dict, df: pd.DataFrame, chain_idx: int) -> dict | None:
     list_nodes, list_labels, anchor_xy = build_prompts(df, midnode, target_z)
 
     # ---- IMAGE MODE ----
-    image_predictor, _ = setup.build_predictor(size=MODEL_SIZE, kind="image", checkpoint_dir=CHECKPOINT_DIR)
+    image_predictor, _ = setup.build_predictor(
+        size=MODEL_SIZE, kind="image", checkpoint_dir=CHECKPOINT_DIR
+    )
     diagnostics.snapshot("after image model load")
-    masks, scores, logits = predict_image(image_predictor, image_sam,
-                                           list_nodes, list_labels)
+    masks, scores, logits = predict_image(
+        image_predictor, image_sam, list_nodes, list_labels
+    )
 
     # interactive refinement (STUB -- no-op for now)
     list_nodes, list_labels, masks = refine_prompts(
@@ -585,37 +1054,111 @@ def run_chain(subchain: dict, df: pd.DataFrame, chain_idx: int) -> dict | None:
     if SAVE_ANCHOR_OVERLAY:
         save_anchor_overlay(
             image_sam, masks[0], list_nodes, list_labels,
-            OUT_DIR / "anchor_overlays" / f"{TARGET_CELL_NAME}_chain{chain_idx}_z{target_z}.png",
+            OUT_DIR / "anchor_overlays" /
+            f"{TARGET_CELL_NAME}_{chain_label}_z{target_z}.png",
         )
 
-    # free the image model before loading the video model
     image_predictor.reset_predictor()
     del image_predictor
     diagnostics.cleanup_vram()
 
-    # ---- VIDEO MODE ----
+    # ---- VIDEO MODE: write/link frames ----
     video_predictor, _ = setup.build_predictor(size=MODEL_SIZE, kind="video")
     diagnostics.snapshot("after video model load")
     frames_dir, subset_tifs, target_frame_idx = write_video_frames(
         subchain, df, target_file_z, chain_idx
     )
-    video_segments = propagate(
+
+    # Build the frame -> CATMAID_z map once; shared by detection and recovery.
+    frame_to_z = def_frame_to_catmaid_z(subset_tifs)
+
+    # ---- initial bidirectional propagation ----
+    fwd_raw, bwd_raw = propagate(
         video_predictor, frames_dir, anchor_box, anchor_xy,
         target_frame_idx, obj_id,
     )
+
+    # ---- detection: each pass independently ----
+    print(f"\n  --- detection: forward ---")
+    fwd_failures = detect_failures(fwd_raw, "forward",  frame_to_z, df, obj_id)
+    print(f"\n  --- detection: backward ---")
+    bwd_failures = detect_failures(bwd_raw, "backward", frame_to_z, df, obj_id)
+
+    # ---- recovery: split + re-anchor if needed ----
+    fwd_fail_frame = first_failure_frame(fwd_failures)
+    bwd_fail_frame = first_failure_frame(bwd_failures)
+
+    if fwd_fail_frame is None:
+        fwd_segments = fwd_raw
+    else:
+        # Keep the clean prefix; re-anchor at the failure frame forward.
+        fwd_clean = {k: v for k, v in fwd_raw.items() if k < fwd_fail_frame}
+        print(f"\n  --- recovery: forward re-anchor at frame {fwd_fail_frame} ---")
+        fwd_tail = run_segment(
+            video_predictor=video_predictor,
+            frames_dir=frames_dir,
+            anchor_frame_idx=fwd_fail_frame,
+            direction="forward",
+            subset_tifs=subset_tifs,
+            df=df,
+            obj_id=obj_id,
+            chain_label=f"{chain_label}[fwd]",
+            depth=1,
+        )
+        fwd_segments = {**fwd_clean, **fwd_tail}
+
+    if bwd_fail_frame is None:
+        bwd_segments = bwd_raw
+    else:
+        # Keep the clean suffix; re-anchor at the failure frame backward.
+        bwd_clean = {k: v for k, v in bwd_raw.items() if k > bwd_fail_frame}
+        print(f"\n  --- recovery: backward re-anchor at frame {bwd_fail_frame} ---")
+        bwd_tail = run_segment(
+            video_predictor=video_predictor,
+            frames_dir=frames_dir,
+            anchor_frame_idx=bwd_fail_frame,
+            direction="backward",
+            subset_tifs=subset_tifs,
+            df=df,
+            obj_id=obj_id,
+            chain_label=f"{chain_label}[bwd]",
+            depth=1,
+        )
+        bwd_segments = {**bwd_clean, **bwd_tail}
+
+    # ---- merge: fwd wins at anchor frame ----
+    # bwd_segments covers [0, anchor]; fwd_segments covers [anchor, end].
+    # Unioning them gives full coverage; fwd takes precedence at the anchor.
+    merged: dict[int, np.ndarray] = {**bwd_segments, **fwd_segments}
+    print(f"\n  merged segments: {len(merged)} frames total "
+          f"(fwd={len(fwd_segments)}, bwd={len(bwd_segments)})")
+
+    # Sanity: every frame in subset_tifs should have a mask.
+    n_tifs = len(subset_tifs)
+    missing = [i for i in range(n_tifs) if i not in merged]
+    if missing:
+        print(f"  [WARN] {len(missing)} frame(s) have no mask after recovery "
+              f"(flagged for manual review): frames {missing[:10]}"
+              + (" ..." if len(missing) > 10 else ""))
+    else:
+        print(f"  [OK] full coverage: all {n_tifs} frames have a mask")
 
     del video_predictor
     diagnostics.cleanup_vram()
 
     return {
-        "chain_idx": chain_idx,
-        "obj_id": obj_id,
-        "subchain": subchain,
-        "target_z": target_z,
+        "chain_idx":        chain_idx,
+        "obj_id":           obj_id,
+        "subchain":         subchain,
+        "target_z":         target_z,
         "target_frame_idx": target_frame_idx,
-        "subset_tifs": subset_tifs,     # index -> tif Path, for z mapping in save
-        "video_segments": video_segments,
-        "full_hw": full_hw,             # (H_full, W_full) of the anchor frame
+        "subset_tifs":      subset_tifs,      # frame_idx -> tif Path, for z mapping
+        "frame_to_z":       frame_to_z,       # frame_idx -> CATMAID_z
+        "fwd_segments":     fwd_segments,     # clean forward masks
+        "bwd_segments":     bwd_segments,     # clean backward masks
+        "video_segments":   merged,           # unified {frame_idx: bool mask}
+        "missing_frames":   missing,          # frames that exceeded retry limit
+        "full_hw":          full_hw,          # (H_full, W_full) for upscaling
     }
 
 
@@ -655,8 +1198,10 @@ def aggregate_and_save(chain_results: list[dict]):
     """
     n = len(chain_results)
     total_frames = sum(len(r["video_segments"]) for r in chain_results)
+    total_missing = sum(len(r["missing_frames"]) for r in chain_results)
     print(f"\n[STUB] aggregate_and_save: {n} chain(s), "
-          f"{total_frames} chain-frames total -- NOT written to {OUT_DIR}")
+          f"{total_frames} chain-frames total, {total_missing} frame(s) without masks "
+          f"-- NOT written to {OUT_DIR}")
     print("[STUB] implement per-CATMAID-z union + full-res upscale + one-at-a-time save.")
 
 
