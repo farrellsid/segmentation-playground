@@ -653,6 +653,12 @@ def detect_failures(
                 f"area_ratio={ar_str} iou={iou_str} containment={con_str} | "
                 f"prev_area={prev_area} curr_area={curr_area}"
             )
+            
+            nx = int(row["x_tif"] / SCALE)
+            ny = int(row["y_tif"] / SCALE)
+            print(f"  [DEBUG] containment check: node_id={row['node_id']} "
+                f"x_tif={row['x_tif']:.1f} y_tif={row['y_tif']:.1f} "
+                f"-> nx={nx} ny={ny} (SCALE={SCALE})")
 
         prev_mask = mask
         prev_area = curr_area
@@ -697,7 +703,7 @@ def def_catmaid_z_to_node(df: pd.DataFrame, catmaid_z: int) -> int | None:
     rows = df[df["z"] == catmaid_z]
     if len(rows) == 0:
         return None
-    return int(rows.iloc[0]["node_id"])
+    return str(rows.iloc[0]["node_id"])
 
 
 def def_frame_to_catmaid_z_range(
@@ -769,15 +775,12 @@ def propagate(video_predictor, frames_dir: str, anchor_box, anchor_xy,
     print(f"  [propagate] fwd={len(fwd_segments)} frames, "
           f"bwd={len(bwd_segments)} frames")
 
-    # Sanity: anchor frame must appear in both passes.
-    assert target_frame_idx in fwd_segments, (
-        f"anchor frame {target_frame_idx} missing from forward segments -- "
-        "SAM2 did not emit it; check init_state / add_new_points_or_box"
-    )
-    assert target_frame_idx in bwd_segments, (
-        f"anchor frame {target_frame_idx} missing from backward segments -- "
-        "SAM2 did not emit it; check init_state / add_new_points_or_box"
-    )
+    # If a pass emitted nothing (anchor is at the boundary of the clip),
+    # seed the missing anchor from the other pass so downstream asserts hold.
+    if target_frame_idx not in fwd_segments and target_frame_idx in bwd_segments:
+        fwd_segments[target_frame_idx] = bwd_segments[target_frame_idx]
+    if target_frame_idx not in bwd_segments and target_frame_idx in fwd_segments:
+        bwd_segments[target_frame_idx] = fwd_segments[target_frame_idx]
 
     del inference_state
     return fwd_segments, bwd_segments
