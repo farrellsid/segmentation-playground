@@ -60,8 +60,30 @@ CHAINS_PATH = Path(r"D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\data\
 OUTPUT_ROOT = Path(r"E:\ZhenLab\Data\output_masks\test2_single")
 FRAMES_ROOT = Path(r"E:\ZhenLab\Data")     # SAM2 JPEG frame folders go here
 
+# Simple Neurons list
+all_neurons = ['AIAR', 'RIS', 'GLRVR', 'PLNR', 'SAADL', 'AVBR', 'PVQL', 'URADR',
+            'AVBL', 'RIBL', 'SAAVR', 'RMED', 'PLNL', 'AVHL', 'AVM',
+            'SDQL', 'PVWL_or_R_3', 'RMGL', 'RMHL', 'SMDDL', 'AINL', 'PVPL', 'RMDL',
+            'RMFL', 'AVDR', 'URYDR', 'SMBVL', 'ALA', 'RICL', 'SMDVL', 'RIGL', 'SABD',
+            'ADAL', 'AIAL', 'AVAR','FLPR', 'URAVL', 'RMEL', 'URYVL', 'URBL', 'AIZL',
+            'AVJR', 'URBR', 'RIML', 'AIMR', 'ALNR', 'PVDL', 'SMBDL','SAAVL', 'ALMR',
+            'RIAL', 'VB1', 'SDQR','PVPR', 'SIADR', 'AIZR', 'AIYR', 'RIR','PVCL',
+            'PVR', 'SIBDL', 'RMDVR', 'RIAR','RID', 'SMDVR','AUAL', 'PVWL_or_R_1',
+            'RICR', 'AVFL', 'AIBR', 'BDUL', 'SIADL', 'AVFR', 'SMDDR', 'PVT',
+            'ALML', 'RMER', 'PVQR','RIPL', 'RMGR', 'AVHR', 'RIPR', 'RMHR', 'RMFR',
+            'PVWL_or_R_2', 'AIYL', 'BDUR', 'RIVR', 'AVKR', 'RMEV', 'RMDR', 'AIML',
+            'AVER', 'RIFR', 'SIBDR', 'RIMR', 'RMDDR', 'AVKL', 'RIBR', 'CANR',
+            'DVA', 'SIAVR', 'AVJL', 'RIFL', 'SAADR', 'AIBL', 'URAVR',
+            'AVEL', 'ADAR', 'AINR', 'SIBVL', 'RMDVL', 'SIAVL', 'AVL', 'AUAR',
+            'SMBVR', 'DVC', 'URADL', 'PVCR', 'URYVR', 'AVAL', 'RMDDL', 'SIBVR',
+            'PVDR', 'URYDL', 'ALNL', 'FLPL', 'AVDL', 'SABVL', 'RIH', 'RIGR', 'RIVL', 'SMBDR']
+
+key_neurons = ['AIYR', 'AIYL', 'AIAR', 'AIAL', 'AIZL', 'AIZR', 'AIBL', 'AIBR', 'URAVR', 'URAVL', 'URADL', 'URADR', 'RIH', 'RIPL', 'RIPR']
+
+
 # RUN KNOBS (edit per launch)z
-NEURONS: Optional[Sequence[str]] = None   # e.g. ["AVAL", "AVAR"]; None = all neurons
+NEURONS: Optional[Sequence[str]] =  key_neurons # e.g. ["AVAL", "AVAR"]; None = all objects
+
 CLEAN = False                             # True = wipe prior outputs and start fresh
 
 # Status vocabulary (matches ChainState.status / PIPELINE_CONTEXT §3b).

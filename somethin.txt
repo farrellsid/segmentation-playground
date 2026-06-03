@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "d:\Zhen Lab\SAM2 Segmentation\segmentation-playground\batch.py", line 565, in <module>
+    main()
+    ~~~~^^
+  File "d:\Zhen Lab\SAM2 Segmentation\segmentation-playground\batch.py", line 561, in main
+    run_batch(session, cfg, output_root, neurons=NEURONS, clean=CLEAN)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "d:\Zhen Lab\SAM2 Segmentation\segmentation-playground\batch.py", line 476, in run_batch
+    chain_dir.mkdir(parents=True, exist_ok=True)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\pathlib\_local.py", line 722, in mkdir
+    os.mkdir(self, mode)
+    ~~~~~~~~^^^^^^^^^^^^
+OSError: [WinError 123] The filename, directory name, or volume label syntax is incorrect: 'E:\\ZhenLab\\Data\\output_masks\\test2_single\\VA2?\\chain_00'
+PS D:\Zhen Lab> 

@@ -2,6 +2,8 @@
 
 A set of utilities for running [SAM2](https://github.com/facebookresearch/sam2) segmentation on electron microscopy (EM) image stacks from the Zhen Lab *C. elegans* connectome dataset. The core workflow: pull neuron skeleton annotations from CATMAID, align them to raw `.tif` stacks, feed those stacks into SAM2's image or video predictor, and QC the resulting mask propagations.
 
+The codebase is mid-transition from the original exploratory notebook into a semi-automatic, human-in-the-loop pipeline (a `sam2_utils` helper package + a `pipeline.py` library + thin drivers). The design principle is **automation-first, triage-second**: auto-run and auto-QC every chain, and spend the human only on flagged frames. Everything runs locally on one box — filesystem only, no server or database. See `PIPELINE_CONTEXT.md` for architecture, the milestone roadmap, and known coordinate/filename/mask-space gotchas.
+
 ---
 
 ## Setup
@@ -34,19 +36,23 @@ No quotes, no spaces. The token is read from `$CATMAID_TOKEN` env var first, the
 
 ```
 segmentation-playground/
-├── sam2_utils/                         # importable package
+├── sam2_utils/                         # importable package (stateless helpers)
 │   ├── __init__.py
 │   ├── config.py                       # paths, SAM2 checkpoint registry, CATMAID settings, affine constants
 │   ├── setup.py                        # device selection, checkpoint download, predictor construction
 │   ├── catmaid.py                      # CATMAID REST client + fetch_all_annotations()
 │   ├── alignment.py                    # CATMAID→tif affine: fit, apply, landmark picker helpers
 │   ├── viz.py                          # show_mask/points/box, interactive point pickers
-│   ├── video_viz.py                    # animate/grid/to_mp4/to_gif from in-memory video_segments
-│   ├── review.py                       # read-only proofreading viewer: overlay saved masks from disk
-│   ├── qc.py                           # QC metrics + flag/intervene rule (wired into pipeline.run_qc)
+│   ├── video_viz.py                    # animate/grid/to_mp4/to_gif for in-RAM propagation results
+│   ├── review.py                       # read-only proofreading viewer for finished chains on disk
+│   ├── qc.py                           # QC metrics + flagging signals for propagated mask stacks
 │   ├── diagnostics.py                  # RAM/VRAM/disk/file-handle snapshots, VRAM cleanup
 │   ├── diag_utils.py                   # standalone diagnostics (Windows-only legacy, pre-package)
 │   └── UTILS_README.md                 # module-level quick-start and usage examples
+│
+├── pipeline.py                         # phase functions + ChainState + run_chain (the library)
+├── run_aval.py                         # single-chain bootstrap driver (regression harness)
+├── batch.py                            # headless batch runner + resume + triage queue
 │
 ├── data/
 │   ├── aggregate_data_pv.csv           # pre-fetched CATMAID skeleton nodes (stack-pixel coords)
@@ -56,15 +62,27 @@ segmentation-playground/
 ├── checkpoints/                        # SAM2 model weights (downloaded by setup.ensure_checkpoint)
 ├── images/                             # sample EM crops for image-mode experiments
 │
-├── pipeline.py                             # phase functions + run_chain driver + ChainState (library)
-├── run_aval.py                             # thin bootstrap: runs ONE chain (AVAL) through pipeline
-├── single_object_depth_segmentation_.ipynb # reference notebook (what each phase does)
-├── single_object_depth_segmentation.py     # SUPERSEDED by pipeline.py (kept for reference; stale)
+├── single_object_depth_segmentation_.ipynb # source-of-truth notebook (single-cell pipeline)
 ├── multi_object_segmentation.ipynb         # multi-cell segmentation notebook
 │
 ├── pyproject.toml
 ├── requirements.txt
 └── README.md
+```
+
+### Run outputs
+
+`batch.py` / `run_chain` write a filesystem-indexed tree (no server, no DB):
+
+```
+output/
+  _manifest.csv               # every chain × status (pending/running/done/flagged) — drives resume
+  _triage.csv                 # flagged frames across all chains — feeds the review tool / GUI
+  _timing.csv                 # per-chain runtime telemetry
+  <neuron>/chain_<idx:02d>/
+    state.json                # serialized ChainState (resume / re-open without recompute)
+    qc.csv                    # per-frame QC metrics, indexed by catmaid_z
+    masks/mask_<catmaid_z:04d>.png
 ```
 
 ---
@@ -83,17 +101,25 @@ segmentation-playground/
 
 **`video_viz.py`** — visualizes SAM2 video-mode propagation results. `animate()` builds an inline scrubber/player (returns IPython HTML); `grid()` produces a static N-frame thumbnail grid; `to_mp4()` and `to_gif()` write to disk. All three read directly from the JPEG frames SAM2 wrote to disk during propagation, so masks and frames stay in sync without any coordinate math.
 
-**`review.py`** — read-only proofreading viewer for a *finished* chain. Where `video_viz` overlays the in-memory `video_segments` a run just produced, `review` rebuilds the same overlay from the saved artifacts on disk (`masks/`, `state.json`, `qc.csv`) and delegates rendering back to `video_viz`. `animate()` / `grid()` show the whole chain; `grid_flagged()` / `animate_flagged()` show only the QC-flagged frames; `to_gif()` / `to_mp4()` export. Strictly read-only by design — it is the proofreading tool, **not** the M4 intervention GUI. Reuses `qc._iter_mask_paths` / `qc._load_binary` so mask reading has a single definition.
+**`review.py`** — read-only proofreading viewer for a *finished* chain on disk. A sibling of `video_viz`: where `video_viz` overlays the in-RAM `video_segments` dict, `review` rebuilds the same overlay from a chain's saved `state.json` + `masks/` + `qc.csv`, so you can re-open and proofread long after the run without re-running SAM2. Deliberately read-only — it is **not** the correction GUI (no point editing, no re-prompting; that is the single napari tool in milestone 4). It reuses `video_viz`'s rendering and `qc`'s mask-reading helpers so "how a mask is read" has one definition across the package.
 
-**`qc.py`** — quality control for propagated mask stacks; the auto-detection core. `compute_metrics()` does a single-pass read of every `mask_<z>.png` in a directory, computing per-frame signals (area, centroid, connected components, skeleton containment) and frame-to-frame signals (area ratio, centroid jump, temporal IoU). `skeleton_contained` is tri-state — `True` / `False` / `NaN` (no chain node at that z; not assessable) — and only an explicit `False` flags. A frame is flagged when any signal fires and marked `intervene` when ≥2 fire; thresholds are parameters (defaults preserve the original rule). `plot_traces()` shows the signal timeseries; `show_flagged()` renders a thumbnail strip of flagged frames with EM background. `save_masks()` writes `video_segments` dicts to disk as uint16 *instance-label* PNGs (a multi-object concern; single-object runs use `pipeline.save_masks`'s 0/255 format instead). `qc` is wired into the pipeline via `pipeline.run_qc`, which runs it over each finished chain headlessly.
+**`qc.py`** — post-hoc quality control for propagated mask stacks. `compute_metrics()` does a single-pass read of every `mask_NNNN.png` in a directory, computing per-frame signals (area, centroid, connected components, skeleton containment, predicted IoU) and frame-to-frame signals (area ratio, centroid jump, temporal IoU). Frames are flagged when any signal falls outside thresholds, and marked for manual intervention when two or more signals fire at once. `plot_traces()` shows the signal timeseries; `show_flagged()` renders a thumbnail strip of flagged frames with EM background; `export_triage()` writes the flagged-frame rows that `batch.py` rolls up into the cross-chain `_triage.csv`. (`save_masks()` lives here for notebook use, but the canonical writer the pipeline calls is `pipeline.save_masks()`.)
 
 **`diagnostics.py`** — resource monitoring for long GPU sessions. `snapshot(label)` prints RAM, VRAM, disk usage, and open file handles in one call. `cleanup_vram()` runs `gc.collect()` + `torch.cuda.empty_cache()` then prints a snapshot. Works on Windows (kernel32 pagefile readout), Linux, and macOS.
 
 **`diag_utils.py`** — an earlier standalone version of the diagnostics utilities, kept for backward compatibility with older notebooks.
 
-**`pipeline.py`** — the notebook lifted into a library of phase functions (`select_anchor`, `load_frame_sam`, `build_prompts`, `image_predict`, `box_from_mask`, `prepare_video_frames`, `propagate`, `save_masks`, `run_qc`) plus a thin `run_chain` driver that threads a serializable `ChainState` through all nine steps. Per-run tunables live on `PipelineConfig` (resolution, prompts, QC thresholds); static project facts stay in `config.py`. `run_chain` reproduces the notebook's AVAL masks pixel-for-pixel and now ends with a QC + flagging step that writes `qc.csv` and sets the chain's `status`. `state.json` persists everything for resume / re-open. Importing `pipeline` is light (no torch/cv2 at import); heavy deps load lazily inside the phases.
+---
 
-**`run_aval.py`** — the bootstrap driver: builds the predictors, loads the CSV/CATMAID annotations and `chains.json`, and runs ONE chain (AVAL) through `pipeline.run_chain`. It is the only place that knows about predictors and the filesystem layout, and it is the M1 regression harness. Run `python run_aval.py` (running `pipeline.py` directly does nothing, by design).
+## Pipeline & drivers
+
+These top-level scripts turn the `sam2_utils` helpers into the actual segmentation pipeline. The package stays stateless; these own the state, the filesystem layout, and the data sources.
+
+**`pipeline.py`** — the library the notebook lifts into (milestone 1). Holds the phase functions (`select_anchor`, `load_frame_sam`, `build_prompts`, `image_predict`, `box_from_mask`, `prepare_video_frames`, `propagate`, `save_masks`, `run_qc`), the `PipelineConfig`/`Prompts`/`ChainState` dataclasses, `save_state`/`load_state` (→ `state.json`), and `run_chain` — the thin driver that runs one chain end-to-end (anchor → image predict → box → propagate → save → QC). Coordinate spaces are tagged by suffix (`_cm`/`_tif`/`_sam`) and z by name (`catmaid_z`/`file_z`/`frame_idx`); masks are stored at `_sam` (`save_downscale == scale`) as `mask_<catmaid_z:04d>.png`. `python pipeline.py` does nothing by design — it's a library.
+
+**`run_aval.py`** — single-chain bootstrap driver and regression harness. Runs one chain (AVAL) through `run_chain` and serializes the `ChainState`; its masks should match the notebook's output pixel-for-pixel. The one place that knows about predictors, the CSV/CATMAID source, `chains.json`, and the output paths — edit the knobs at the top to match your box. `python run_aval.py`.
+
+**`batch.py`** — headless batch runner + resume (milestone 3). `run_aval.py` generalized into a loop: build the session once, then run *every* chain unattended, recording status to `_manifest.csv` as it goes and rolling per-chain QC flags into one cross-chain `_triage.csv`. Survives crashes (resume from the manifest), never recomputes a finished chain, and writes `_timing.csv` telemetry. Treats each chain as a single atomic `run_chain` — mid-propagation halt-and-re-prompt belongs to the milestone-4 napari GUI, not here. `python batch.py`.
 
 ---
 
@@ -132,13 +158,20 @@ diagnostics.cleanup_vram()
 
 For video propagation and multi-object workflows, see the notebooks and `UTILS_README.md`.
 
+### Running the pipeline (non-notebook)
+
+```bash
+python run_aval.py     # one chain end-to-end (regression harness); edit knobs at top
+python batch.py        # all chains, unattended, with resume + _manifest.csv + _triage.csv
+```
+
+Both reuse the same `pipeline.run_chain`. `batch.py` is the primary mode: it auto-runs and auto-QCs every chain and surfaces only flagged frames (`_triage.csv`) for human review — open a finished chain with `sam2_utils.review` to proofread. Resume is automatic: re-running `batch.py` skips chains already `done`/`flagged` in the manifest.
+
 ---
 
 ## Notes
 
-- The affine constants in `config.py` were fit at CATMAID z=1293. If you refit on a different section, update `M_AFFINE` and `T_AFFINE` there so all notebooks pick up the new values.
-- `setup_device()` enters a bfloat16 autocast context that persists for the session. Calling it more than once is safe.
-- `qc.save_masks()` expects `frame_to_z` to map SAM2 frame indices to CATMAID z values. Build it from your tif filename list before the propagation loop.
-- The current end-to-end run path is `python run_aval.py` (one chain through `pipeline.run_chain`), not the standalone `single_object_depth_segmentation.py`, which is superseded by `pipeline.py`.
-- Each run writes `output/<neuron>/chain_NN/` with `masks/`, `state.json`, and `qc.csv`. To proofread, open it read-only with `review.animate(chain_dir)` / `review.grid(chain_dir)` in a notebook, or `review.grid_flagged(chain_dir)` / `review.to_gif(chain_dir, out)` (the inline `animate` only renders in a notebook and hits matplotlib's embed limit on long chains — use `grid_flagged`/`to_gif` from a script).
-- QC thresholds are `qc_*` knobs on `PipelineConfig` (e.g. `qc_temporal_iou_min`, `qc_area_ratio_bounds`, `qc_skeleton_dilation_px`); tune them there, not in `qc.py`.
+- The affine constants in `config.py` were fit at CATMAID z=1293. If you refit on a different section, update `M_AFFINE` and `T_AFFINE` there so all notebooks pick up the new values. Should be accurate enough but just in case.
+- `setup.build_predictor()` (which calls `setup.setup_device()`) enters a bfloat16 autocast context that persists for the session. Calling it more than once is safe.
+- `pipeline.save_masks()` / `qc` expect `frame_to_z` to map SAM2 frame indices to CATMAID z values. The pipeline builds this from the tif filename list before propagation; masks are written as `mask_<catmaid_z:04d>.png` (no `z` prefix). Old `mask_z<...>.png` files from the notebook are skipped — re-run through the pipeline.
+- Milestone status lives in `PIPELINE_CONTEXT.md §6`. As of June 2026: M1 (library/state-machine), M2 (inline QC + flagging), and M3 (headless batch runner) are done; M4 is the single napari review/correction GUI; M5 is per-neuron aggregation → Blender.
