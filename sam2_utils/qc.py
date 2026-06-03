@@ -156,6 +156,9 @@ def compute_metrics(
     save_downscale: int = 4,
     pred_iou_csv: Optional[str | Path] = None,
     skeleton_dilation_px: int = 3,
+    area_ratio_bounds: tuple[float, float] = (0.5, 2.0),
+    temporal_iou_min: float = 0.3,
+    pred_iou_min: float = 0.5,
 ) -> pd.DataFrame:
     """
     One-pass QC metric collection over a directory of SAM2-output masks.
@@ -190,6 +193,14 @@ def compute_metrics(
         Tolerance for the "skeleton node is inside the mask" check, in
         mask-pixel units. 3 px is roughly one neurite radius at SCALE=8 +
         SAVE_DOWNSCALE=4.
+    area_ratio_bounds : (float, float)
+        (lo, hi) for the area-ratio signal: a frame fires when
+        area[z]/area[z-1] is outside [lo, hi]. Default (0.5, 2.0).
+    temporal_iou_min : float
+        A frame fires when IoU(z, z-1) < this. Default 0.3.
+    pred_iou_min : float
+        A frame fires when pred_iou < this. Default 0.5. (Inert while pred_iou
+        is NaN, i.e. when no pred_iou_csv is joined.)
 
     Returns
     -------
@@ -213,22 +224,19 @@ def compute_metrics(
         m = _load_binary(p)
         area = int(m.sum())
 
-        if area == 0:
-            rows.append(dict(
-                z=z, area=0, centroid_y=np.nan, centroid_x=np.nan,
-                n_components=0, skeleton_contained=False,
-                area_ratio=np.nan, centroid_jump=np.nan, temporal_iou=np.nan,
-            ))
-            prev_mask, prev_centroid = m, None
-            continue
-
-        cy, cx = ndi.center_of_mass(m)
-        n_cc = int(label(m, connectivity=2).max())
-
-        # skeleton-node containment (the cheapest, most informative signal)
-        contained = False
+        # skeleton-node containment (cheapest, most informative signal).
+        # Tri-state:
+        #   True  — a chain node exists at this z and the mask covers it
+        #   False — a chain node exists but the mask does NOT cover it (a flag)
+        #   NaN   — no chain node at this z (non-monotonic neurite leaves this
+        #           section); NOT assessable, so it must not flag. The area /
+        #           temporal signals still guard these frames.
         xy = _skeleton_xy_for_z(skel_df, z) if skel_df is not None else None
-        if xy is not None:
+        if skel_df is None or xy is None:
+            contained: object = np.nan
+        elif area == 0:
+            contained = False                        # node exists, mask empty
+        else:
             sx, sy = xy[0] / save_downscale, xy[1] / save_downscale
             sx_i, sy_i = int(round(sx)), int(round(sy))
             if 0 <= sy_i < m.shape[0] and 0 <= sx_i < m.shape[1]:
@@ -237,6 +245,20 @@ def compute_metrics(
                 y0, y1 = max(0, sy_i - r), min(m.shape[0], sy_i + r + 1)
                 x0, x1 = max(0, sx_i - r), min(m.shape[1], sx_i + r + 1)
                 contained = bool(m[y0:y1, x0:x1].any())
+            else:
+                contained = False                    # node maps outside the frame
+
+        if area == 0:
+            rows.append(dict(
+                z=z, area=0, centroid_y=np.nan, centroid_x=np.nan,
+                n_components=0, skeleton_contained=contained,
+                area_ratio=np.nan, centroid_jump=np.nan, temporal_iou=np.nan,
+            ))
+            prev_mask, prev_centroid = m, None
+            continue
+
+        cy, cx = ndi.center_of_mass(m)
+        n_cc = int(label(m, connectivity=2).max())
 
         # frame-to-frame signals
         if prev_mask is not None and prev_mask.any():
@@ -270,14 +292,17 @@ def compute_metrics(
 
     # Composite flag — count how many signals fire. When no skeleton was
     # provided, the containment signal is uninformative so we drop it from
-    # the count (otherwise every frame would trip it).
+    # the count (otherwise every frame would trip it). Thresholds are
+    # parameters (defaults preserve the original hardcoded behavior) so the
+    # pipeline / a tuning sweep can adjust them in one call — see PIPELINE_CONTEXT §7.
+    ar_lo, ar_hi = area_ratio_bounds
     fc = (
-        (df["pred_iou"].fillna(1.0) < 0.5).astype(int)
-        + ((df["area_ratio"] < 0.5) | (df["area_ratio"] > 2.0)).astype(int)
-        + (df["temporal_iou"].fillna(1.0) < 0.3).astype(int)
+        (df["pred_iou"].fillna(1.0) < pred_iou_min).astype(int)
+        + ((df["area_ratio"] < ar_lo) | (df["area_ratio"] > ar_hi)).astype(int)
+        + (df["temporal_iou"].fillna(1.0) < temporal_iou_min).astype(int)
     )
     if skel_df is not None:
-        fc = fc + (~df["skeleton_contained"]).astype(int)
+        fc = fc + (df["skeleton_contained"] == False).astype(int)  # noqa: E712 — NaN must not count
     df["flag_count"] = fc
     df["flag"] = fc >= 1
     df["intervene"] = fc >= 2
@@ -288,7 +313,8 @@ def compute_metrics(
     n_int = int(df["intervene"].sum())
     print(f"[qc] {n} frames | flagged: {n_flag} ({n_flag/n:.0%}) "
           f"| intervene: {n_int} ({n_int/n:.0%}) "
-          f"| missing skel: {(~df['skeleton_contained']).sum()}")
+          f"| skel miss: {(df['skeleton_contained'] == False).sum()} "  # noqa: E712
+          f"| skel n/a: {df['skeleton_contained'].isna().sum()}")
     return df
 
 
@@ -318,7 +344,7 @@ def plot_traces(df: pd.DataFrame, figsize: tuple[float, float] = (12, 8)) -> plt
         for z_flag in df.index[df["flag"]]:
             ax.axvspan(z_flag - 0.5, z_flag + 0.5, color="red", alpha=0.08, lw=0)
         # shade skeleton-missing frames a bit darker
-        for z_miss in df.index[~df["skeleton_contained"]]:
+        for z_miss in df.index[df["skeleton_contained"] == False]:  # noqa: E712
             ax.axvspan(z_miss - 0.5, z_miss + 0.5, color="orange", alpha=0.10, lw=0)
 
     axes[-1].set_xlabel("z (frame index)")
@@ -426,7 +452,7 @@ def show_flagged(
         # Title: which signals fired
         r_row = df.loc[z]
         reasons = []
-        if not r_row["skeleton_contained"]: reasons.append("noskel")
+        if r_row["skeleton_contained"] == False: reasons.append("noskel")  # noqa: E712
         if pd.notna(r_row["area_ratio"]) and not (0.5 <= r_row["area_ratio"] <= 2.0):
             reasons.append(f"area×{r_row['area_ratio']:.1f}")
         if pd.notna(r_row["temporal_iou"]) and r_row["temporal_iou"] < 0.3:

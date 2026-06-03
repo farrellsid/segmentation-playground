@@ -548,12 +548,27 @@ class FailureEvent:
     prev_area:   int
     curr_area:   int
 
+def build_containment_pts(subchain, df):
+    """
+    catmaid_z -> [(nx, ny), ...] using ONLY this chain's nodes.
+    Helper for detect_failures
+    """
+    ids = {str(n) for n in subchain["nodes"]}
+    rows = df[df["node_id"].astype(str).isin(ids)]
+    pts: dict[int, list[tuple[int, int]]] = {}
+    for _, r in rows.iterrows():
+        z = int(r["z"])
+        pts.setdefault(z, []).append(
+            (int(r["x_tif"] / SCALE), int(r["y_tif"] / SCALE))
+        )
+    return pts
 
 def detect_failures(
     segments: dict[int, np.ndarray],
     direction: Literal["forward", "backward"],
     frame_to_catmaid_z: dict[int, int],
     df: pd.DataFrame,
+    containment_pts: dict,
     obj_id: int,
 ) -> list[FailureEvent]:
     """Scan a single directional propagation result for anomalous frames.
@@ -603,28 +618,15 @@ def detect_failures(
 
         # ---- 3. CATMAID annotation containment ----
         if ANNOTATION_CONTAINMENT:
-            # Look up the node at this CATMAID z for the target cell.
-            node_rows = df[df["z"] == catmaid_z]
-            if len(node_rows) == 0:
-                # Should not happen given dense annotation guarantee, but guard anyway.
-                print(f"  [WARN] detect_failures: no node found at catmaid_z={catmaid_z} "
-                      f"(frame {frame_idx}, {direction}) -- containment skipped")
-                node_inside = None
+            pts = containment_pts.get(catmaid_z, [])
+            if not pts:
+                node_inside = None          # genuine gap; skip
             else:
-                # x_tif / y_tif are in full-res pixel space; divide by SCALE for mask space.
-                # Use the first row if somehow multiple nodes share a z (shouldn't happen).
-                row = node_rows.iloc[0]
-                nx = int(row["x_tif"] / SCALE)
-                ny = int(row["y_tif"] / SCALE)
                 h, w = mask.shape
-                if 0 <= ny < h and 0 <= nx < w:
-                    node_inside = bool(mask[ny, nx])
-                else:
-                    # Node coordinate maps outside the downscaled frame — data issue.
-                    print(f"  [WARN] detect_failures: node ({nx},{ny}) out of bounds "
-                          f"({w}x{h}) at catmaid_z={catmaid_z} (frame {frame_idx}, "
-                          f"{direction}) -- containment skipped")
-                    node_inside = None
+                node_inside = any(
+                    0 <= ny < h and 0 <= nx < w and mask[ny, nx]
+                    for nx, ny in pts
+                )
                 if node_inside is False:
                     fired.append("containment")
 
@@ -653,12 +655,6 @@ def detect_failures(
                 f"area_ratio={ar_str} iou={iou_str} containment={con_str} | "
                 f"prev_area={prev_area} curr_area={curr_area}"
             )
-            
-            nx = int(row["x_tif"] / SCALE)
-            ny = int(row["y_tif"] / SCALE)
-            print(f"  [DEBUG] containment check: node_id={row['node_id']} "
-                f"x_tif={row['x_tif']:.1f} y_tif={row['y_tif']:.1f} "
-                f"-> nx={nx} ny={ny} (SCALE={SCALE})")
 
         prev_mask = mask
         prev_area = curr_area
@@ -833,11 +829,22 @@ def propagate_one_direction(
         _collect(f, ids, lg)
 
     print(f"  [propagate_one_direction] {direction}: {len(segments)} frames collected")
+
+        # Clip-boundary guard: if the anchor is at the very first/last frame of the
+        # clip, SAM2 emits 0 frames for the "beyond-the-edge" direction.  Return
+        # empty instead of crashing; the caller will log missing frames.
+    if len(segments) == 0:
+        print(f"  [propagate_one_direction] clip boundary -- returning empty")
+        del inference_state
+        return {}
+
     assert anchor_frame_idx in segments, (
         f"anchor frame {anchor_frame_idx} missing from {direction} re-anchor segments"
     )
     del inference_state
     return segments
+
+
 
 
 def run_segment(
@@ -849,6 +856,7 @@ def run_segment(
     subset_tifs: list[Path],
     df: pd.DataFrame,
     obj_id: int,
+    containment_pts: dict,
     chain_label: str,
     depth: int,
 ) -> dict[int, np.ndarray]:
@@ -949,7 +957,7 @@ def run_segment(
     # ---- detection ----
     frame_to_z = def_frame_to_catmaid_z(subset_tifs)
     failures = detect_failures(
-        raw_segments, direction, frame_to_z, df, obj_id
+        raw_segments, direction,  frame_to_z, df, containment_pts, obj_id
     )
 
     fail_frame = first_failure_frame(failures)
@@ -974,6 +982,7 @@ def run_segment(
             direction="forward",
             subset_tifs=subset_tifs,
             df=df,
+            containment_pts=containment_pts,
             obj_id=obj_id,
             chain_label=chain_label,
             depth=depth + 1,
@@ -991,6 +1000,7 @@ def run_segment(
             direction="backward",
             subset_tifs=subset_tifs,
             df=df,
+            containment_pts=containment_pts,
             obj_id=obj_id,
             chain_label=chain_label,
             depth=depth + 1,
@@ -1074,6 +1084,9 @@ def run_chain(subchain: dict, df: pd.DataFrame, chain_idx: int) -> dict | None:
 
     # Build the frame -> CATMAID_z map once; shared by detection and recovery.
     frame_to_z = def_frame_to_catmaid_z(subset_tifs)
+    
+    # Build containment_pts
+    containment_pts = build_containment_pts(subchain, df)
 
     # ---- initial bidirectional propagation ----
     fwd_raw, bwd_raw = propagate(
@@ -1083,9 +1096,9 @@ def run_chain(subchain: dict, df: pd.DataFrame, chain_idx: int) -> dict | None:
 
     # ---- detection: each pass independently ----
     print(f"\n  --- detection: forward ---")
-    fwd_failures = detect_failures(fwd_raw, "forward",  frame_to_z, df, obj_id)
+    fwd_failures = detect_failures(fwd_raw, "forward",  frame_to_z, df, containment_pts, obj_id)
     print(f"\n  --- detection: backward ---")
-    bwd_failures = detect_failures(bwd_raw, "backward", frame_to_z, df, obj_id)
+    bwd_failures = detect_failures(bwd_raw, "backward", frame_to_z, df, containment_pts, obj_id)
 
     # ---- recovery: split + re-anchor if needed ----
     fwd_fail_frame = first_failure_frame(fwd_failures)
@@ -1105,6 +1118,7 @@ def run_chain(subchain: dict, df: pd.DataFrame, chain_idx: int) -> dict | None:
             subset_tifs=subset_tifs,
             df=df,
             obj_id=obj_id,
+            containment_pts=containment_pts,
             chain_label=f"{chain_label}[fwd]",
             depth=1,
         )
@@ -1124,6 +1138,7 @@ def run_chain(subchain: dict, df: pd.DataFrame, chain_idx: int) -> dict | None:
             subset_tifs=subset_tifs,
             df=df,
             obj_id=obj_id,
+            containment_pts=containment_pts,
             chain_label=f"{chain_label}[bwd]",
             depth=1,
         )

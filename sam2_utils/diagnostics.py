@@ -15,6 +15,7 @@ import ctypes
 import gc
 import os
 import platform
+import torch
 import sys
 import tempfile
 from pathlib import Path
@@ -147,3 +148,10 @@ def cleanup_vram(label: str = "after cleanup") -> None:
     except ImportError:
         pass
     snapshot(label)
+
+def reset_peak_vram() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+def peak_vram_gb() -> float:
+    return torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else float("nan")
