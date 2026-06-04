@@ -82,9 +82,9 @@ key_neurons = ['AIYR', 'AIYL', 'AIAR', 'AIAL', 'AIZL', 'AIZR', 'AIBL', 'AIBR', '
 
 
 # RUN KNOBS (edit per launch)z
-NEURONS: Optional[Sequence[str]] =  key_neurons # e.g. ["AVAL", "AVAR"]; None = all objects
+NEURONS: Optional[Sequence[str]] =  key_neurons[1:6] # e.g. ["AVAL", "AVAR"]; None = all objects
 
-CLEAN = False                             # True = wipe prior outputs and start fresh
+CLEAN = True                             # True = wipe prior outputs and start fresh
 
 # Status vocabulary (matches ChainState.status / PIPELINE_CONTEXT §3b).
 PENDING, RUNNING, DONE, FLAGGED, FAILED = (
@@ -95,7 +95,14 @@ COMPLETE_STATUSES = {DONE, FLAGGED}      # ran to completion; don't re-run on re
 MANIFEST_COLUMNS = [
     "neuron", "chain_idx", "status",
     "n_frames", "n_flagged", "n_intervene", "flag_rate",
-    "anchor_frame_idx", "error", "updated_at",
+    "anchor_frame_idx",
+    # anchor-quality gate verdict (M3.5 item 1), rolled up per chain so it sits
+    # next to the QC summary and joins to _triage.csv on (neuron, chain_idx).
+    # anchor_reasons is the comma-joined fail list ('' = passed); anchor_contained
+    # is True/False/'' (blank = abstained, no positive point).
+    "anchor_passed", "anchor_reasons", "anchor_contained",
+    "anchor_lcc", "anchor_area_frac",
+    "error", "updated_at",
 ]
 
 
@@ -210,6 +217,8 @@ def load_or_init_manifest(
         [{"neuron": n, "chain_idx": i, "status": PENDING,
           "n_frames": pd.NA, "n_flagged": pd.NA, "n_intervene": pd.NA,
           "flag_rate": pd.NA, "anchor_frame_idx": pd.NA,
+          "anchor_passed": pd.NA, "anchor_reasons": "", "anchor_contained": pd.NA,
+          "anchor_lcc": pd.NA, "anchor_area_frac": pd.NA,
           "error": "", "updated_at": _now()}
          for (n, i, _) in all_chains],
         columns=MANIFEST_COLUMNS,
@@ -229,7 +238,10 @@ def load_or_init_manifest(
     new_rows = seed[~seed.apply(lambda r: (r["neuron"], r["chain_idx"]) in have, axis=1)]
     if not new_rows.empty:
         existing = pd.concat([existing, new_rows], ignore_index=True)
-    return existing[MANIFEST_COLUMNS]
+    # reindex (not [MANIFEST_COLUMNS]) so a manifest written by an older batch.py
+    # without the anchor_* columns loads cleanly — missing columns come back as NA
+    # rather than raising KeyError.
+    return existing.reindex(columns=MANIFEST_COLUMNS)
 
 
 def _clean_outputs(
@@ -366,10 +378,13 @@ def _run_one_chain(
 
 
 def _manifest_fields_from_state(state: ChainState) -> dict:
-    """Pull the manifest summary columns off a finished ChainState.qc_summary.
-    Keys per M2: n_frames / n_flagged / n_intervene / flag_rate (+ worst_frames).
+    """Pull the manifest summary columns off a finished ChainState.
+    QC summary per M2: n_frames / n_flagged / n_intervene / flag_rate.
+    Anchor verdict per M3.5: state.anchor_score (a plain dict; see score_anchor).
     """
     qs = getattr(state, "qc_summary", None) or {}
+    a = getattr(state, "anchor_score", None) or {}
+    contained = a.get("contained", None)
     return {
         "status": getattr(state, "status", DONE),
         "n_frames": qs.get("n_frames", pd.NA),
@@ -377,6 +392,14 @@ def _manifest_fields_from_state(state: ChainState) -> dict:
         "n_intervene": qs.get("n_intervene", pd.NA),
         "flag_rate": qs.get("flag_rate", pd.NA),
         "anchor_frame_idx": getattr(state, "anchor_frame_idx", pd.NA),
+        # anchor gate. anchor_score is populated even on the empty-mask early-flag
+        # path (it's scored before box_from_mask), so flagged-at-anchor chains
+        # still get a verdict row here.
+        "anchor_passed": a.get("passed", pd.NA),
+        "anchor_reasons": ",".join(a.get("reasons", [])) if a else "",
+        "anchor_contained": pd.NA if contained is None else contained,
+        "anchor_lcc": a.get("largest_cc_frac", pd.NA),
+        "anchor_area_frac": a.get("area_frac", pd.NA),
         "error": "",
     }
 
@@ -518,6 +541,7 @@ def run_batch(
             if gif_mode == "all" or (gif_mode == "flagged" and fields["status"] == FLAGGED):
                 try:
                     review.to_gif(chain_dir, chain_dir / f"{neuron}_chain{idx:02d}.gif")
+                    review.to_mp4(chain_dir, OUTPUT_ROOT / "mp4" / f"{neuron}_chain{idx:02d}.mp4")
                 except Exception as e:
                     print(f"[batch] gif skipped {tag}: {e}")
         except Exception as e:           # one bad chain must not kill the batch
@@ -550,8 +574,6 @@ def _build_session(cfg: PipelineConfig) -> Session:
     diagnostics.snapshot("after model load")
 
     # annotate_df: CATMAID pull (or cached CSV), then apply the stack->tif affine.
-    # TODO[M3]: point annotate_df at your cached aggregate_data_pv.csv (read_csv +
-    # apply affine) to skip the slow ~2-min CATMAID pull on every batch launch.
     # annotate_df: cached CSV (default). To refresh live from CATMAID instead:
     #   from sam2_utils import catmaid
     #   annotate_df = catmaid.fetch_all_annotations(catmaid.Catmaid())

@@ -9,6 +9,7 @@ Provides:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Iterable, List, Tuple, Dict, Any
 
 import numpy as np
@@ -47,6 +48,100 @@ def catmaid_to_tif(x, y) -> np.ndarray:
         return apply_affine(pts, config.M_AFFINE, config.T_AFFINE)[0]
     pts = np.column_stack([x, y])
     return apply_affine(pts, config.M_AFFINE, config.T_AFFINE)
+
+
+# =============================================================================
+# Crop window  (the ONE place crop<->tif<->sam mapping lives)
+# =============================================================================
+# PIPELINE_CONTEXT §4/§5: centralize coordinate transforms; tag every coord with
+# its space. The local high-res crop (M3.5) introduces a *new* space, _crop, and
+# the prior art (Bader Lab sam2maskpropagator) shows the trap — tangled x/y swaps
+# when crop<->full mapping is done ad hoc. So all of it goes here, behind one
+# tested object, and nothing else does crop arithmetic by hand.
+#
+# Spaces (suffix convention matches pipeline.py):
+#   _tif   full-resolution tif pixels
+#   _sam   SAM2 input space = _tif / sam_scale
+#   _crop  pixels inside this crop's image = (_tif - origin_tif) / crop_scale
+#
+# Point convention is (x, y); box convention is xyxy = (x0, y0, x1, y1).
+# numpy arrays are [row, col] = [y, x], so the array slice swaps the order — that
+# swap happens in exactly one method (slice_tif) and nowhere else.
+
+@dataclass(frozen=True)
+class CropWindow:
+    """A high-res crop around an anchor node + its coordinate maps.
+
+    Build with `CropWindow.around_node(...)`, which centers a window on the node
+    and clips it to the image. A node near an edge yields a smaller/shifted
+    window, so the realized `origin_tif`/`size_tif` are authoritative — never
+    assume the node sits at the window centre.
+    """
+    origin_tif: Tuple[float, float]   # (x, y) top-left in full-res tif px, post-clip
+    size_tif: Tuple[int, int]         # (w, h) realized extent in tif px, post-clip
+    crop_scale: int                   # downscale when the crop is read (1 = full-res)
+    sam_scale: int                    # pipeline SCALE, to map crop results -> _sam
+
+    @classmethod
+    def around_node(cls, node_xy_tif, *, size_tif, image_hw_tif,
+                    crop_scale: int, sam_scale: int) -> "CropWindow":
+        """Center a `size_tif` window on `node_xy_tif` (full-res tif px), clip to image.
+
+        size_tif : int (square) or (w, h) in tif px.
+        image_hw_tif : (H, W) of the full-res frame.
+        """
+        if np.isscalar(size_tif):
+            w = h = int(size_tif)
+        else:
+            w, h = int(size_tif[0]), int(size_tif[1])
+        H_tif, W_tif = int(image_hw_tif[0]), int(image_hw_tif[1])
+        w, h = min(w, W_tif), min(h, H_tif)              # window can't exceed image
+        nx, ny = float(node_xy_tif[0]), float(node_xy_tif[1])
+        x0 = int(round(nx - w / 2.0))
+        y0 = int(round(ny - h / 2.0))
+        x0 = max(0, min(x0, W_tif - w))                  # slide inside the image
+        y0 = max(0, min(y0, H_tif - h))
+        return cls(origin_tif=(float(x0), float(y0)), size_tif=(int(w), int(h)),
+                   crop_scale=int(crop_scale), sam_scale=int(sam_scale))
+
+    # --- array slice: numpy is [row, col] = [y, x]. THE only x/y swap. ---
+    def slice_tif(self) -> Tuple[slice, slice]:
+        """(row_slice, col_slice) to crop a full-res _tif array: img[slice_tif()]."""
+        x0, y0 = self.origin_tif
+        w, h = self.size_tif
+        x0i, y0i = int(round(x0)), int(round(y0))
+        return (slice(y0i, y0i + h), slice(x0i, x0i + w))
+
+    @property
+    def crop_hw(self) -> Tuple[int, int]:
+        """(H, W) of the crop image after the crop_scale downscale."""
+        w, h = self.size_tif
+        return (int(round(h / self.crop_scale)), int(round(w / self.crop_scale)))
+
+    # --- point maps. points are (x, y); accept (2,) or (N, 2). ---
+    def tif_to_crop(self, xy_tif) -> np.ndarray:
+        xy = np.asarray(xy_tif, dtype=float)
+        return (xy - np.asarray(self.origin_tif, dtype=float)) / self.crop_scale
+
+    def crop_to_tif(self, xy_crop) -> np.ndarray:
+        xy = np.asarray(xy_crop, dtype=float)
+        return xy * self.crop_scale + np.asarray(self.origin_tif, dtype=float)
+
+    def crop_to_sam(self, xy_crop) -> np.ndarray:
+        return self.crop_to_tif(xy_crop) / self.sam_scale
+
+    def tif_to_sam(self, xy_tif) -> np.ndarray:
+        return np.asarray(xy_tif, dtype=float) / self.sam_scale
+
+    # --- box maps. boxes are xyxy. axis-aligned + positive scale, so corners
+    #     map to corners and order is preserved. ---
+    def box_crop_to_sam(self, box_crop) -> np.ndarray:
+        b = np.asarray(box_crop, dtype=float).reshape(2, 2)   # [[x0,y0],[x1,y1]]
+        return self.crop_to_sam(b).reshape(4)
+
+    def box_crop_to_tif(self, box_crop) -> np.ndarray:
+        b = np.asarray(box_crop, dtype=float).reshape(2, 2)
+        return self.crop_to_tif(b).reshape(4)
 
 
 # =============================================================================
