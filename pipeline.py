@@ -55,7 +55,7 @@ import pandas as pd
 
 from time import perf_counter
 
-from sam2_utils import config
+from sam2_utils import config, alignment
 
 
 # =============================================================================
