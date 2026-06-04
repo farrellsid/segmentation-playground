@@ -209,8 +209,9 @@ def load_chain(
             qc_df = pd.read_csv(qc_csv)
             if "z" in qc_df.columns:
                 qc_df = qc_df.set_index("z")
-            if "flag" in qc_df.columns:
-                triage_z = [int(z) for z in qc_df.index[qc_df["flag"].astype(bool)]]
+            _col = next((c for c in ("queue", "flag") if c in qc_df.columns), None)
+            if _col is not None:
+                triage_z = [int(z) for z in qc_df.index[qc_df[_col].astype(bool)]]
     if not triage_z and state.get("triage_frames"):
         raw = [int(v) for v in state["triage_frames"]]
         triage_z = raw if triage_is_z else [

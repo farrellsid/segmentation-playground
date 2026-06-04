@@ -443,10 +443,21 @@ def build_triage_queue(output_root: Path, manifest: pd.DataFrame) -> pd.DataFram
         qc_csv = output_root / neuron / f"chain_{idx:02d}" / "qc.csv"
         if not qc_csv.exists():
             continue
+        
         df = pd.read_csv(qc_csv)
-        if "flag" not in df.columns:
+        # surface only the queue frames (flag_count >= qc_triage_min_signals,
+        # written by run_qc as the `queue` column). Fall back to `intervene`, then
+        # `flag`, so a qc.csv written before the queue column still rolls up sensibly
+        # (an existing run rebuilds straight to the intervene set, no re-segmentation).
+        if "queue" in df.columns:
+            sel = df["queue"] == True            # noqa: E712
+        elif "intervene" in df.columns:
+            sel = df["intervene"] == True        # noqa: E712
+        elif "flag" in df.columns:
+            sel = df["flag"] == True             # noqa: E712
+        else:
             continue
-        flagged = df[df["flag"] == True].copy()   # noqa: E712 (pandas parses the CSV bool col back as bool)
+        flagged = df[sel].copy()
         if flagged.empty:
             continue
         flagged.insert(0, "neuron", neuron)
@@ -466,7 +477,7 @@ def build_triage_queue(output_root: Path, manifest: pd.DataFrame) -> pd.DataFram
         ).reset_index(drop=True)
 
     _atomic_write_csv(triage, output_root / "_triage.csv")
-    print(f"[batch] triage queue: {len(triage)} flagged frames "
+    print(f"[batch] triage queue: {len(triage)} queued frames "
           f"-> {output_root / '_triage.csv'}")
     return triage
 

@@ -201,6 +201,14 @@ class PipelineConfig:
     postproc_keep_largest_cc: bool = True
     postproc_fill_holes: bool = True
 
+    # which per-frame severity enters the human triage queue (item 4). A frame is
+    # queued when flag_count >= this. 2 = intervene-level (>=2 corroborating signals),
+    # the default since item 0 (June 2026): single-signal flags are dominated by
+    # dilation-sensitive `noskel` noise (flag_rate moved 0.33->0.19 over a 0..10px
+    # dilation sweep) while the intervene set is dilation-robust (rate moved <0.005).
+    # Set to 1 to restore the legacy "queue every flag" behaviour.
+    qc_triage_min_signals: int = 2
+
 @dataclass
 class Prompts:
     """SAM2-space prompts for one chain's anchor frame."""
@@ -877,6 +885,13 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
                   if fi in frame_to_z}
         df["logit_conf"] = df.index.map(lambda z: z_conf.get(int(z), float("nan")))
 
+    # The human triage queue is the frames at/above the configured severity
+    # (flag_count >= qc_triage_min_signals; default 2 = intervene-level). `flag`
+    # (>=1 signal) stays in the row as a diagnostic — single-signal flags are kept on
+    # disk for M4 labels, just not surfaced to a human. Persisted to qc.csv so the
+    # cross-chain rollup (batch.build_triage_queue) can filter on the artifact alone.
+    df["queue"] = df["flag_count"] >= cfg.qc_triage_min_signals
+
     if qc_csv_path is not None:
         qc_csv_path = Path(qc_csv_path)
         qc_csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -885,12 +900,13 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
     n = int(len(df))
     n_flag = int(df["flag"].sum())
     n_int = int(df["intervene"].sum())
+    n_queue = int(df["queue"].sum())
     n_noskel = int((df["skeleton_contained"] == False).sum())   # noqa: E712
     n_skel_na = int(df["skeleton_contained"].isna().sum())
-    triage_z = sorted(int(z) for z in df.index[df["flag"]])
+    triage_z = sorted(int(z) for z in df.index[df["queue"]])
 
-    # worst frames first, for a quick human glance from state.json alone
-    worst = (df[df["flag"]].sort_values("flag_count", ascending=False).head(10))
+    # worst queue frames first, for a quick human glance from state.json alone
+    worst = (df[df["queue"]].sort_values("flag_count", ascending=False).head(10))
     worst_frames = [
         {
             "z": int(z),
@@ -904,21 +920,28 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
 
     qc_summary = {
         "n_frames": n,
-        "n_flagged": n_flag,
+        "n_flagged": n_flag,          # all >=1-signal flags (diagnostic; kept for M4 labels)
+        "n_queue": n_queue,           # frames surfaced to a human (item 4 gate)
         "n_intervene": n_int,
         "n_missing_skel": n_noskel,
         "n_skel_not_assessable": n_skel_na,
         "flag_rate": (round(n_flag / n, 4) if n else 0.0),
+        "queue_rate": (round(n_queue / n, 4) if n else 0.0),
         "thresholds": {
             "area_ratio_bounds": list(cfg.qc_area_ratio_bounds),
             "temporal_iou_min": cfg.qc_temporal_iou_min,
             "pred_iou_min": cfg.qc_pred_iou_min,
             "skeleton_dilation_px": cfg.qc_skeleton_dilation_px,
+            "triage_min_signals": cfg.qc_triage_min_signals,
         },
         "worst_frames": worst_frames,
     }
 
-    status = "flagged" if n_int >= cfg.qc_intervene_to_flag_chain else "done"
+    # chain verdict keyed on the SAME queue definition as the frame queue, so the two
+    # never disagree. Behaviour-preserving at defaults: qc_triage_min_signals=2 makes
+    # n_queue == n_intervene, so this is identical to the prior
+    # `n_int >= qc_intervene_to_flag_chain` rule.
+    status = "flagged" if n_queue >= cfg.qc_intervene_to_flag_chain else "done"
     return qc_summary, triage_z, status
 
 
@@ -1208,6 +1231,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     )
     s = state.qc_summary
     print(f"    {s['n_flagged']}/{s['n_frames']} flagged "
+          f"({s['n_queue']} queued)"
           f"({s['flag_rate']:.0%}), {s['n_intervene']} intervene "
           f"-> status '{state.status}'")
     _finish()

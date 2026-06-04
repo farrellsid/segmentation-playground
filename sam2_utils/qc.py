@@ -92,6 +92,20 @@ def _load_binary(path: Path) -> np.ndarray:
         arr = arr[..., 0]
     return arr > 0
 
+def _node_contained(mask: np.ndarray, sx_i: int, sy_i: int, r: int) -> bool:
+    """True iff foreground lies within a (2r+1)x(2r+1) window of node pixel (sx_i, sy_i).
+
+    Single definition of the per-frame containment window — shared by
+    compute_metrics and sweep_dilation.py (item 0) so the sensitivity sweep
+    scores containment identically to the run. Assumes the node maps inside the
+    frame and the mask is non-empty; the no-node / empty-mask / out-of-frame
+    tri-state branches stay with the caller.
+    """
+    H, W = mask.shape
+    y0, y1 = max(0, sy_i - r), min(H, sy_i + r + 1)
+    x0, x1 = max(0, sx_i - r), min(W, sx_i + r + 1)
+    return bool(mask[y0:y1, x0:x1].any())
+
 
 def _skeleton_xy_for_z(annotate: pd.DataFrame, z: int) -> Optional[tuple[float, float]]:
     """Return the (x_tif, y_tif) of the CATMAID node on frame z, or None."""
@@ -240,13 +254,9 @@ def compute_metrics(
             sx, sy = xy[0] / save_downscale, xy[1] / save_downscale
             sx_i, sy_i = int(round(sx)), int(round(sy))
             if 0 <= sy_i < m.shape[0] and 0 <= sx_i < m.shape[1]:
-                # check within a small neighborhood — neurite radius slop
-                r = skeleton_dilation_px
-                y0, y1 = max(0, sy_i - r), min(m.shape[0], sy_i + r + 1)
-                x0, x1 = max(0, sx_i - r), min(m.shape[1], sx_i + r + 1)
-                contained = bool(m[y0:y1, x0:x1].any())
+                contained = _node_contained(m, sx_i, sy_i, skeleton_dilation_px)
             else:
-                contained = False                    # node maps outside the frame
+                contained = False                    # node maps outside the frame                  # node maps outside the frame
 
         if area == 0:
             rows.append(dict(
