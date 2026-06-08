@@ -109,7 +109,22 @@ re-predicted and/or hand-painted mask on the frame), never a derived box; this i
 default (the box overlay was removed). (3) **Queue cycling** — prev/next CHAIN cycle
 through every undisposed chain *including `in_review`* and wrap, fixing "can't return to
 an unfinished chain" (opening a chain marks it `in_review`, which the old next-button
-excluded → false "queue empty"). Three larger items were **documented, not built** (at
+excluded → false "queue empty"). (4) **Painted corrections persist across resumes** —
+the GUI video predictor is now built with SAM2's `add_all_frames_to_correct_as_cond=True`
+(`setup.build_predictor(kind="video", correct_as_cond=True)`). Without it, painting/clicking
+a frame the session had *already tracked* (the normal paint→resume→inspect→repaint loop)
+demoted the correction to a *non-conditioning* frame, so the next `propagate_in_video`
+re-inferred that frame from memory with `mask_inputs=None` and **silently reverted the
+paint** to its pre-correction state. (The *first* correction on a freshly opened chain was
+unaffected — an untracked frame is an *initial* conditioning frame regardless of the flag —
+which is why it surfaced only on iterative re-touches.) The flag is the SAM2-documented
+mechanism ("a frame that receives a correction click becomes a conditioning frame"; it's
+`True` in Meta's MOSE-finetune config) and is **inert for the headless batch** — `propagate`
+only ever seeds the anchor as an *initial* conditioning frame and never corrects a tracked
+frame — so the M1 AVAL pixel-for-pixel reproduction is unchanged and the flag stays
+default-off there. This makes the §7 *box-vs-mask* "human-painted mask is the
+maximally-verified seed" guarantee actually hold across a multi-correction session. Three
+larger items were **documented, not built** (at
 the lab's discretion, before/around M4.5): a **marking/intervention GUI split** (sweep
 ok/bad in a marking mode, fix only flagged frames in an intervention mode — the
 too-many-buttons + scroll-confusion fix), **strict-by-default flagging** (flag

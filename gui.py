@@ -149,7 +149,13 @@ class ReviewContext:
             self.image_predictor, _ = setup.build_predictor(size=self.cfg.model_size, kind="image")
         if need_video and self.video_predictor is None:
             print("[gui] building video predictor (first use)...")
-            self.video_predictor, _ = setup.build_predictor(size=self.cfg.model_size, kind="video")
+            # correct_as_cond=True: a human paint/click on an already-tracked frame must
+            # become a CONDITIONING frame so its mask is preserved verbatim on the next
+            # propagate. Without it, SAM2 demotes a re-correction to non-conditioning and
+            # re-infers that frame from memory on resume — silently reverting the paint
+            # (the iterative paint→resume→repaint revert; PIPELINE_CONTEXT §7 *box vs mask*).
+            self.video_predictor, _ = setup.build_predictor(
+                size=self.cfg.model_size, kind="video", correct_as_cond=True)
 
 
 # =============================================================================

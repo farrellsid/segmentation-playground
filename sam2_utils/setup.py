@@ -167,10 +167,29 @@ def build_video_predictor(
     checkpoint_path: Path | str,
     model_cfg: str,
     device,
+    correct_as_cond: bool = False,
 ):
-    """Build a SAM2 video predictor for spatio-temporal masklets."""
+    """Build a SAM2 video predictor for spatio-temporal masklets.
+
+    ``correct_as_cond`` sets SAM2's ``add_all_frames_to_correct_as_cond``: when True,
+    a frame that receives a *correction* (a mask/point added after it was already
+    tracked) is promoted to a **conditioning** frame, so its corrected mask is stored
+    verbatim and re-emitted on the next ``propagate_in_video`` instead of being
+    re-inferred from memory (which silently discards the correction). Required by the
+    interactive review GUI, where a human-painted mask must be authoritative across
+    iterative paint→resume→repaint cycles (PIPELINE_CONTEXT §7 *box vs mask*: "the
+    human-painted mask is the maximally-verified seed").
+
+    **Default False** preserves the exact headless build: the batch pipeline only ever
+    seeds the anchor (an *initial* conditioning frame, unaffected by this flag) and
+    never corrects an already-tracked frame, so the flag is inert there and the M1
+    AVAL pixel-for-pixel reproduction is unchanged.
+    """
     from sam2.build_sam import build_sam2_video_predictor
-    return build_sam2_video_predictor(model_cfg, str(checkpoint_path), device=device)
+    overrides = (["++model.add_all_frames_to_correct_as_cond=true"]
+                 if correct_as_cond else [])
+    return build_sam2_video_predictor(model_cfg, str(checkpoint_path), device=device,
+                                      hydra_overrides_extra=overrides)
 
 
 def build_predictor(
@@ -178,8 +197,12 @@ def build_predictor(
     kind: Literal["image", "video"] = "image",
     device=None,
     checkpoint_dir: Path | None = None,
+    correct_as_cond: bool = False,
 ):
     """One-shot convenience: pick size + kind, get a ready-to-use predictor.
+
+    ``correct_as_cond`` (video only) promotes human corrections to conditioning
+    frames — see ``build_video_predictor``. Ignored for ``kind="image"``.
 
     Returns
     -------
@@ -192,7 +215,7 @@ def build_predictor(
     if kind == "image":
         predictor = build_image_predictor(ckpt, cfg, device)
     elif kind == "video":
-        predictor = build_video_predictor(ckpt, cfg, device)
+        predictor = build_video_predictor(ckpt, cfg, device, correct_as_cond=correct_as_cond)
     else:
         raise ValueError(f"kind must be 'image' or 'video', got {kind!r}")
     return predictor, device
