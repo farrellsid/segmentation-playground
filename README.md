@@ -80,6 +80,7 @@ segmentation-playground/
 ├── multi_object_segmentation.ipynb         # multi-cell segmentation notebook
 │
 ├── PIPELINE_CONTEXT.md                 # architecture, roadmap, design decisions (read this first)
+├── GUI_GUIDE.md                        # M4 napari GUI user guide (layers, keys, workflows)
 ├── pyproject.toml
 ├── requirements.txt
 └── README.md
@@ -217,6 +218,9 @@ It builds the predictors once, runs every selected chain through `run_chain`, an
 
 ### Review & correct flagged chains (the M4 napari GUI)
 
+> **Full walkthrough: [`GUI_GUIDE.md`](GUI_GUIDE.md)** — layers, every button/key, workflows,
+> "next CHAIN vs next flagged FRAME", and the low-res explanation. The summary below is the gist.
+
 After a batch run, `output/_manifest.csv` has the chains QC flagged. Open the GUI to clear them:
 
 ```bash
@@ -234,13 +238,15 @@ launch(neuron="AIAL", chain_idx=0, reviewer="sf")   # napari.run() blocks until 
 ```
 
 In the window: scrub the chain (the slider is frame index), jump between queued frames (`,` / `.`),
-add prompt points (click in the **prompts** layer; `p`/`n` toggle positive/negative), or paint a
-correction into the **mask** Labels layer. Then **re-run image phase** (`R`, re-seed the anchor from
-your points) and/or **resume propagation** (`G`, re-track over `PropagationSession` from the current
-frame) — corrected masks + `qc.csv` + `state.json` are rewritten on disk, exactly as a fresh batch run
-would leave them. **Approve** (`A`) or **reject** (`X`) records the chain's disposition in
-`output/_review.csv` and logs every queued frame (plus a uniform sample of un-flagged frames) to
-`output/_labels.csv` — the training data milestone 4.5 will consume.
+add prompt points (click in the **prompts** layer, pre-loaded with the chain's original seed; `p`/`n`
+toggle positive/negative; **reset** restores the saved seed), or paint a correction into the **mask**
+Labels layer. Then **re-run image phase** (`R`, re-seed the anchor from your points) and/or **resume
+propagation** (`G`, re-track over `PropagationSession` from the current frame) — corrected masks +
+`qc.csv` + `state.json` are rewritten on disk, exactly as a fresh batch run would leave them. **Approve**
+(`A`) or **reject** (`X`, with an error-type picker) records the chain's disposition in
+`output/_review.csv`; per-frame **mark wrong/ok** (`W`/`O`) and the bulk approve/reject log to
+`output/_labels.csv` (every queued frame + a uniform sample of un-flagged frames) — the training data
+milestone 4.5 will consume.
 
 View conveniences (dock controls + keys): **auto-zoom to the mask** on open and on every jump-to-flagged
 so you land on the object, not the whole frame (toggle in the dock, or `Z` / "zoom to mask" to re-fit;
@@ -278,8 +284,10 @@ crop is discarded — "tier-1 crop sharpens the seed but cannot fix downstream p
 
 **Shipped this pass:** queue + review-status ledger (`review_queue`, separate from the batch's
 execution manifest); per-frame label store with the anchor-verdict + un-flagged-sample guards
-(`labels`); the napari GUI (`gui.py`) covering scrub-to-flagged, positive/negative point edits,
-mask painting, anchor re-predict, and resume-propagation, all driving the existing `PropagationSession`
+(`labels`); the napari GUI (`gui.py`, walkthrough in [`GUI_GUIDE.md`](GUI_GUIDE.md)) covering
+scrub-to-flagged, positive/negative point edits (seed pre-loaded from `state.json`, with a
+reset-to-original), mask painting, anchor re-predict, resume-propagation, chain approve/reject with an
+error-type picker, and per-frame wrong/ok labeling — all driving the existing `PropagationSession`
 + `run_qc`; plus the view conveniences (auto-zoom-to-mask, tunable point size, opt-in full-res EM
 background). Torch-free pieces are unit-tested (`tests/test_labels.py`, `tests/test_review_queue.py`,
 24 cases). The napari layer/widget APIs were validated against napari 0.7 (the live Viewer needs an

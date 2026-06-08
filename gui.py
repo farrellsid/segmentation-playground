@@ -238,6 +238,7 @@ class ReviewGUI:
 
         # layers (set in open_chain)
         self._img = self._mask = self._skel = self._prompts = None
+        self._lscale = (1.0, 1.0, 1.0)   # _sam->EM world scale of the current chain's layers
 
         self._build_widgets()
         self._bind_keys()
@@ -282,7 +283,7 @@ class ReviewGUI:
             em = _load_frame_stack(self.data.frames_dir, t)
         self._em_world = float(em.shape[1]) / float(H) if H else 1.0   # ~8 hires, 1 else
         s = self._em_world
-        lscale = (1.0, s, s)                                           # _sam -> EM world
+        lscale = self._lscale = (1.0, s, s)                            # _sam -> EM world
 
         # (re)build layers
         self.viewer.layers.clear()
@@ -334,6 +335,9 @@ class ReviewGUI:
         box is re-derived by box_from_mask on re-predict). Best-effort: a chain with no
         serialized prompts (legacy / pre-prompt flag) just leaves the layer empty."""
         st = self._state
+        # idempotent: drop a prior seed-box overlay so reset_prompts can re-seed cleanly
+        if "seed box" in self.viewer.layers:
+            self.viewer.layers.remove("seed box")
         if st is None or st.prompts is None or st.anchor_frame_idx is None:
             return
         pts = np.asarray(st.prompts.points_sam, dtype=float)
@@ -586,18 +590,72 @@ class ReviewGUI:
         self._refresh_info()
 
     def reject_chain(self, *_) -> None:
-        """Mark the chain unfixable / to-be-redone (e.g. bad anchor). Logs the
-        queued frames as verdict='wrong'/'other'."""
+        """Mark the chain unfixable / to-be-redone (e.g. bad anchor). Logs the queued
+        frames as verdict='wrong' with the error type selected in the dock picker."""
         if self.data is None:
             return
-        self._log_frames(verdict="wrong", source="reject", error_type="other")
+        self._log_frames(verdict="wrong", source="reject", error_type=self._error_type())
         self.queue.set_status(self.neuron, self.chain_idx, review_queue.REJECTED,
                               reviewer=self.reviewer)
-        print(f"[gui] {self.neuron} chain {self.chain_idx:02d} rejected")
+        print(f"[gui] {self.neuron} chain {self.chain_idx:02d} rejected ({self._error_type()})")
         self._refresh_info()
 
+    def reset_prompts(self, *_) -> None:
+        """Discard the human's prompt edits and restore the chain's ORIGINAL saved
+        seed (state.prompts) at the anchor frame. Also clears any staged re-predict
+        seed so a pending 'resume' won't fire stale points. Does NOT undo mask paints
+        (the Labels layer has its own Ctrl+Z) — this is prompt-only, as asked."""
+        if self.data is None:
+            return
+        if self._prompts is not None:                       # clear, then re-seed from disk
+            self._prompts.data = np.empty((0, 3))
+            self._prompts.features = pd.DataFrame(
+                {"label": pd.Categorical([], categories=_PROMPT_LABELS)})
+        if self.data is not None:
+            self.data._seed_prompts = None
+            self.data._seed_frame_idx = None
+        self._seed_prompts_from_state(self._lscale)
+        print("[gui] prompts reset to the original saved seed")
+        self._refresh_info()
+
+    def mark_frame_wrong(self, *_) -> None:
+        """Label the CURRENT frame verdict='wrong' with the picker's error type. Use
+        while scrubbing to flag a frame the rule missed (a silent error) or to record
+        a specific failure mode before correcting it."""
+        self._label_current_frame(verdict="wrong", error_type=self._error_type(), source="mark")
+
+    def mark_frame_ok(self, *_) -> None:
+        """Label the CURRENT frame verdict='ok' — confirm a frame is fine (incl. a
+        flagged frame you judge a false alarm)."""
+        self._label_current_frame(verdict="ok", error_type="", source="mark")
+
+    def _label_current_frame(self, *, verdict: str, error_type: str, source: str) -> None:
+        if self.data is None:
+            return
+        cur = self._current_frame()
+        z = self.data.frame_to_z.get(cur)
+        if z is None:
+            print("[gui] current frame has no z mapping; not logged")
+            return
+        anchor_z = (self.data.frame_to_z.get(self.data.anchor_idx)
+                    if self.data.anchor_idx is not None else None)
+        role = ("anchor" if z == anchor_z
+                else "flagged" if cur in self.data.triage_frames else "sampled")
+        qc_row = (self.qc_df.loc[z] if self.qc_df is not None and z in self.qc_df.index else None)
+        self.labels.record(self.neuron, self.chain_idx, z, verdict=verdict,
+                           role=role, error_type=error_type, source=source,
+                           reviewer=self.reviewer, qc_row=qc_row, anchor=self._anchor_dict())
+        print(f"[gui] frame {cur} (z={z}, role={role}) labelled {verdict}"
+              f"{(' / ' + error_type) if error_type else ''}")
+
+    def _error_type(self) -> str:
+        """The error type currently selected in the dock picker (or 'other')."""
+        w = getattr(self, "_err_mode", None)
+        return str(w.value) if w is not None and w.value else "other"
+
     def open_next_in_queue(self, *_) -> None:
-        """Jump to the next chain that still needs a human."""
+        """Jump to the next CHAIN that still needs a human (different chain — vs
+        next/prev *flagged*, which moves between frames within the open chain)."""
         self.queue.refresh()
         pend = self.queue.pending(include_in_review=False)
         if not pend:
@@ -741,17 +799,25 @@ class ReviewGUI:
         # queue picker
         pend = self.queue.pending()
         choices = [f"{n}/chain_{i:02d}" for (n, i) in pend] or ["(queue empty)"]
-        self._picker = ComboBox(label="queue", choices=choices)
-        open_btn = PushButton(text="open selected")
+        self._picker = ComboBox(label="chain", choices=choices)
+        open_btn = PushButton(text="open selected chain")
         open_btn.changed.connect(lambda *_: self._open_from_picker())
-        next_q = PushButton(text="next in queue ▶")
+        next_q = PushButton(text="next CHAIN in queue ⇉")          # different chain
         next_q.changed.connect(self.open_next_in_queue)
         refresh = PushButton(text="↻ refresh queue")
         refresh.changed.connect(lambda *_: self._refresh_picker())
 
-        # prompt label toggle (positive / negative)
+        # within-chain frame nav (different from next CHAIN above)
+        prevf = PushButton(text="◀ prev flagged FRAME ( , )")      # same chain, prev queued frame
+        prevf.changed.connect(self.prev_flagged)
+        nextf = PushButton(text="next flagged FRAME ( . ) ▶")      # same chain, next queued frame
+        nextf.changed.connect(self.next_flagged)
+
+        # prompt label toggle (positive / negative) + reset to saved seed
         self._prompt_mode = ComboBox(label="new point", choices=_PROMPT_LABELS, value="positive")
         self._prompt_mode.changed.connect(self._set_prompt_label)
+        reset_btn = PushButton(text="⟲ reset prompts to original")
+        reset_btn.changed.connect(self.reset_prompts)
 
         # view controls (point size / auto-zoom)
         self._size_spin = FloatSpinBox(label="point size", value=self.point_size,
@@ -764,22 +830,24 @@ class ReviewGUI:
         zoom_btn.changed.connect(lambda *_: self._zoom_to_mask(self._current_frame(),
                                                                pad=self.zoom_pad))
 
-        # frame nav
-        prevf = PushButton(text="◀ prev flagged ( , )")
-        prevf.changed.connect(self.prev_flagged)
-        nextf = PushButton(text="next flagged ( . ) ▶")
-        nextf.changed.connect(self.next_flagged)
-
         # correction actions
         rerun = PushButton(text="re-run image phase (R)")
         rerun.changed.connect(self.rerun_image_phase)
         resume = PushButton(text="resume propagation (G)")
         resume.changed.connect(self.resume_propagation)
 
-        # dispositions
-        approve = PushButton(text="✓ approve chain (A)")
+        # per-frame labels + the error type used by 'mark wrong' and 'reject'
+        self._err_mode = ComboBox(label="error type", choices=list(labels_mod.ERROR_TYPES),
+                                  value="other")
+        mark_wrong = PushButton(text="mark FRAME wrong (W)")
+        mark_wrong.changed.connect(self.mark_frame_wrong)
+        mark_ok = PushButton(text="mark FRAME ok (O)")
+        mark_ok.changed.connect(self.mark_frame_ok)
+
+        # chain dispositions
+        approve = PushButton(text="✓ approve CHAIN (A)")
         approve.changed.connect(self.approve_chain)
-        reject = PushButton(text="✗ reject chain (X)")
+        reject = PushButton(text="✗ reject CHAIN (X)")
         reject.changed.connect(self.reject_chain)
 
         self._reviewer_edit = LineEdit(label="reviewer", value=self.reviewer)
@@ -787,9 +855,14 @@ class ReviewGUI:
             lambda *_: setattr(self, "reviewer", self._reviewer_edit.value))
 
         panel = Container(widgets=[
-            self._reviewer_edit, self._picker, open_btn, next_q, refresh,
-            self._prompt_mode, self._size_spin, self._zoom_chk, zoom_btn,
-            prevf, nextf, rerun, resume, approve, reject,
+            self._reviewer_edit,
+            Label(value="— queue (chains) —"), self._picker, open_btn, next_q, refresh,
+            Label(value="— frames (this chain) —"), prevf, nextf,
+            Label(value="— prompts —"), self._prompt_mode, reset_btn,
+            Label(value="— view —"), self._size_spin, self._zoom_chk, zoom_btn,
+            Label(value="— correct —"), rerun, resume,
+            Label(value="— label / disposition —"), self._err_mode,
+            mark_wrong, mark_ok, approve, reject,
             self._info,
         ], labels=True)
         self.viewer.window.add_dock_widget(panel, area="right", name="review")
@@ -817,6 +890,12 @@ class ReviewGUI:
 
         @v.bind_key("z", overwrite=True)
         def _zoom(_v): self._zoom_to_mask(self._current_frame(), pad=self.zoom_pad)
+
+        @v.bind_key("w", overwrite=True)
+        def _markw(_v): self.mark_frame_wrong()
+
+        @v.bind_key("o", overwrite=True)
+        def _marko(_v): self.mark_frame_ok()
 
         @v.bind_key("a", overwrite=True)
         def _approve(_v): self.approve_chain()
