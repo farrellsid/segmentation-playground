@@ -232,6 +232,7 @@ class ReviewGUI:
         self.chain_idx: Optional[int] = None
         self.data: Optional[review.ReviewData] = None      # ReviewData from review.load_chain
         self.chain: Optional[dict] = None                  # chain dict (nodes)
+        self._state: Optional[pipeline.ChainState] = None  # the chain's serialized state (seed prompts)
         self.qc_df: Optional[pd.DataFrame] = None          # z-indexed
         self.session: Optional[pipeline.PropagationSession] = None  # built lazily on resume
 
@@ -255,6 +256,12 @@ class ReviewGUI:
         # rebuild the overlay from disk (one definition of "how a mask is read")
         self.data = review.load_chain(chain_dir, verbose=True)
         self.qc_df = self.data.qc if isinstance(self.data.qc, pd.DataFrame) else None
+        # the chain's serialized state carries the ORIGINAL seed (prompts.points_sam
+        # / labels / box_sam) — loaded so we can pre-populate the prompts layer with
+        # it rather than starting empty (else "re-run image phase" has no positive
+        # point). Also reused by _anchor_dict.
+        sp = chain_dir / "state.json"
+        self._state = pipeline.load_state(sp) if sp.exists() else None
 
         # frame stack + dims
         t = max(self.data.video_segments) + 1 if self.data.video_segments else 0
@@ -286,6 +293,8 @@ class ReviewGUI:
             scale=lscale, face_color="yellow", border_color="black", opacity=0.7)
         self._skel.editable = False
         self._prompts = self._new_prompts_layer(scale=lscale)
+        # pre-load the chain's original seed into the prompts layer (+ a context box)
+        self._seed_prompts_from_state(lscale)
 
         # land on the anchor frame and update the info panel
         if self.data.anchor_idx is not None:
@@ -315,6 +324,44 @@ class ReviewGUI:
         layer.feature_defaults = {"label": "positive"}
         layer.mode = "add"
         return layer
+
+    def _seed_prompts_from_state(self, scale=(1.0, 1.0, 1.0)) -> None:
+        """Pre-load the chain's ORIGINAL seed (state.prompts) into the prompts layer at
+        the anchor frame, so re-run/resume start from what the batch used — not an empty
+        layer. Points are placed in _sam data coords (the layer's scale handles overlay),
+        matching the click round-trip in _prompts_for_frame. The seed box is drawn as a
+        read-only Shapes rectangle for context (the seed point(s) are what you edit; the
+        box is re-derived by box_from_mask on re-predict). Best-effort: a chain with no
+        serialized prompts (legacy / pre-prompt flag) just leaves the layer empty."""
+        st = self._state
+        if st is None or st.prompts is None or st.anchor_frame_idx is None:
+            return
+        pts = np.asarray(st.prompts.points_sam, dtype=float)
+        labs = np.asarray(st.prompts.labels, dtype=int)
+        af = int(st.anchor_frame_idx)
+        if len(pts):
+            data = np.column_stack([np.full(len(pts), af, float), pts[:, 1], pts[:, 0]])  # (t,y,x)
+            label_strs = ["positive" if int(l) == 1 else "negative" for l in labs]
+            self._prompts.data = data
+            self._prompts.features = pd.DataFrame(
+                {"label": pd.Categorical(label_strs, categories=_PROMPT_LABELS)})
+            self._prompts.feature_defaults = {"label": "positive"}
+            self._prompts.mode = "add"
+            n_pos = int((labs == 1).sum())
+            print(f"[gui] loaded original seed: {n_pos} positive + {len(labs) - n_pos} "
+                  f"negative point(s) at anchor frame {af} (edit these, then 'R')")
+        # context: the seed box as a read-only rectangle (guarded — Shapes API quirks
+        # must not break opening a chain)
+        box = st.prompts.box_sam
+        if box is not None:
+            try:
+                x0, y0, x1, y1 = [float(v) for v in np.asarray(box, dtype=float)]
+                rect = np.array([[af, y0, x0], [af, y0, x1], [af, y1, x1], [af, y1, x0]], float)
+                self.viewer.add_shapes(
+                    [rect], name="seed box", ndim=3, shape_type="rectangle", scale=scale,
+                    edge_color="cyan", face_color="transparent", edge_width=2)
+            except Exception as e:
+                print(f"[gui] seed-box overlay skipped: {e}")
 
     def _skeleton_points(self) -> np.ndarray:
         """This chain's CATMAID nodes as (frame_idx, y_sam, x_sam) for context.
