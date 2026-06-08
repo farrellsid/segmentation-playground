@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from sam2_utils import setup, alignment, diagnostics
+from sam2_utils import setup, alignment, diagnostics, config
 import pipeline
 from pipeline import PipelineConfig, ChainState, run_chain, save_state
 
@@ -30,13 +30,13 @@ from pipeline import PipelineConfig, ChainState, run_chain, save_state
 TARGET_CELL_NAME = "AVAL"
 CHAIN_IDX        = 2          # notebook used cell_chain[2] (the 3rd AVAL chain)
 
-# Data sources — the notebook's Windows paths. Point these at your local copies.
-CSV_PATH    = Path(r"D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\data\aggregate_data_pv.csv")
-CHAINS_PATH = Path(r"D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\data\chains.json")
-
-# Outputs / scratch
-OUTPUT_ROOT = Path(r"E:\ZhenLab\Data\output_masks\test2_single")
-FRAMES_ROOT = Path(r"E:\ZhenLab\Data")     # SAM2 JPEG frame folders go here
+# Data sources + outputs all live in sam2_utils.config now (one home; see there
+# to point them at your box). CSV_PATH/CHAINS_PATH resolve inside the repo;
+# OUTPUT_ROOT/FRAMES_ROOT are machine-specific scratch.
+CSV_PATH    = config.CSV_PATH
+CHAINS_PATH = config.CHAINS_PATH
+OUTPUT_ROOT = config.OUTPUT_ROOT
+FRAMES_ROOT = config.FRAMES_ROOT
 
 cfg = PipelineConfig(
     model_size="large",

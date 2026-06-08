@@ -15,10 +15,14 @@ import ctypes
 import gc
 import os
 import platform
-import torch
 import sys
 import tempfile
 from pathlib import Path
+
+# NB: torch is imported lazily inside the functions that need it (never at module
+# top), so `import sam2_utils` - which eagerly imports this module - stays usable
+# on a box without torch (e.g. running the coordinate-transform tests). The VRAM
+# probes just report "torch not installed" / NaN in that case.
 
 
 # =============================================================================
@@ -150,8 +154,18 @@ def cleanup_vram(label: str = "after cleanup") -> None:
     snapshot(label)
 
 def reset_peak_vram() -> None:
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except ImportError:
+        pass
 
 def peak_vram_gb() -> float:
-    return torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else float("nan")
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.max_memory_allocated() / 1024**3
+    except ImportError:
+        pass
+    return float("nan")

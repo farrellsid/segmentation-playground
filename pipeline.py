@@ -48,7 +48,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -152,7 +152,9 @@ class PipelineConfig:
     # on AVAL -> this is the one place to turn the knobs.
     qc_area_ratio_bounds: tuple[float, float] = (0.5, 2.0)
     qc_temporal_iou_min: float = 0.3
-    qc_pred_iou_min: float = 0.5       # inert in M2: pred_iou stays NaN (see propagate)
+    qc_pred_iou_min: float = 0.3       # pred_iou is now populated (propagate captures
+                                       # SAM2's mask-decoder IoU head); a frame fires when
+                                       # pred_iou < this. Set <= 0 to record but not flag.
     qc_skeleton_dilation_px: int = 3
     # chain-level verdict: mark the whole chain "flagged" when this many frames
     # hit `intervene` (>=2 signals). 1 = flag the chain if any frame needs a human.
@@ -182,6 +184,15 @@ class PipelineConfig:
     crop_anchor: bool = True           # False -> legacy scale-8 full-frame image phase
     crop_size_tif: int = 1200          # crop window edge in full-res tif px
     crop_scale: int = 2                # crop read downscale (1 = full-res); input edge = size/scale px
+
+    # multimask anchor auto-select (M3.5 item 2c). Ask SAM2 for its 3 candidate
+    # masks and auto-pick (node-containment -> plausible-area -> single-CC -> IoU;
+    # see _select_anchor_mask) instead of taking the single-mask output. Near-free:
+    # SAM2's decoder computes all 3 either way, set_image runs once, only CPU scoring
+    # of 3 masks is added. Default OFF to preserve the M1 pixel-for-pixel baseline
+    # (it changes which anchor mask is chosen); flip on to A/B. Reuses the gate's
+    # contain radius + area_frac bounds, so it scores in the same space as the gate.
+    multimask_anchor: bool = False
 
     # paths (project-static paths like WORM_PATH stay in sam2_utils.config)
     output_root: Optional[Path] = None     # e.g. .../output_masks; per-chain subdir is derived
@@ -263,6 +274,13 @@ class ChainState:
     # if the global defaults have since drifted.
     config: PipelineConfig = field(default_factory=PipelineConfig)
 
+    # runtime telemetry, filled by run_chain's per-phase timer (_step/_finish).
+    # Declared as real fields (not stamped-on attributes) so they serialise with
+    # the rest of the state: batch.py reads them right after a run to write
+    # _timing.csv, and persisting them keeps a resumed/re-opened chain's timing.
+    phase_seconds: dict = field(default_factory=dict)        # {phase label: seconds}
+    phase_subseconds: dict = field(default_factory=dict)     # {sub-step label: seconds}
+
 
 # =============================================================================
 # Phase functions  (each ~= one notebook cell-group)
@@ -295,7 +313,7 @@ def load_frame_sam(catmaid_z: int, *, scale: int) -> tuple[np.ndarray, tuple[int
     """
     import cv2
 
-    target_file_z = catmaid_z - config.FILE_Z_OFFSET
+    target_file_z = alignment.catmaid_z_to_file_z(catmaid_z)
     tif_files = sorted(config.WORM_PATH.glob("*.tif"))
     matches = [f for f in tif_files if _parse_file_z(f) == target_file_z]
     if len(matches) != 1:
@@ -331,7 +349,8 @@ def build_prompts(anchor_node_id: int, catmaid_z: int, annotate_df: pd.DataFrame
     cell_node = annotate_df.loc[
         annotate_df["node_id"].astype(str) == str(anchor_node_id)
     ]
-    pos_sam = cell_node[["x_tif", "y_tif"]].to_numpy(dtype=float) / scale  # (1, 2)
+    pos_sam = alignment.tif_to_sam(
+        cell_node[["x_tif", "y_tif"]].to_numpy(dtype=float), scale)   # (1, 2)
 
     points: list[list[float]] = [pos_sam[0].tolist()]
     labels: list[int] = [1]
@@ -350,22 +369,120 @@ def build_prompts(anchor_node_id: int, catmaid_z: int, annotate_df: pd.DataFrame
     if len(z_points) and z_points.iloc[0]["distance"] == 0:
         z_points = z_points.drop(0).reset_index(drop=True)   # drop the anchor itself
 
-    negnodes_sam = (z_points[["x_tif", "y_tif"]] / scale).reset_index(drop=True)
+    negnodes_sam = alignment.tif_to_sam(
+        z_points[["x_tif", "y_tif"]].to_numpy(dtype=float), scale)   # (M, 2)
     n_neg = min(len(z_points), k_max_neg)
     for i in range(n_neg):
-        points.append([float(negnodes_sam.iloc[i]["x_tif"]),
-                       float(negnodes_sam.iloc[i]["y_tif"])])
+        points.append([float(negnodes_sam[i, 0]), float(negnodes_sam[i, 1])])
         labels.append(0)
 
     return Prompts(points_sam=np.array(points, dtype=float),
                    labels=np.array(labels, dtype=int))
 
 
-def image_predict(image_predictor, image_sam: np.ndarray,
-                  prompts: Prompts) -> tuple[np.ndarray, float, np.ndarray]:
+def _point_in_mask(mask: np.ndarray, x: float, y: float, radius: int) -> bool:
+    """True if any foreground pixel lies within `radius` of (x, y).
+
+    Point and mask must share a space (no transform here). Out-of-frame -> False.
+    The single neighbourhood-containment test reused by score_anchor (anchor gate)
+    and _select_anchor_mask (multimask pick) and matching qc's per-frame probe, so
+    "node is inside the mask" means one thing everywhere (PIPELINE_CONTEXT §4).
+    """
+    h, w = mask.shape
+    xi, yi = int(round(x)), int(round(y))
+    if not (0 <= yi < h and 0 <= xi < w):
+        return False
+    y0, y1 = max(0, yi - radius), min(h, yi + radius + 1)
+    x0, x1 = max(0, xi - radius), min(w, xi + radius + 1)
+    return bool(mask[y0:y1, x0:x1].any())
+
+
+def _largest_cc_frac(mask: np.ndarray) -> tuple[int, float]:
+    """(n_components, largest-CC fraction of foreground) for a bool mask.
+
+    (0, 0.0) when empty. The single-CC health measure generalises the
+    largest-component pick already in box_from_mask; reused by score_anchor and
+    _select_anchor_mask so the gate and the multimask pick agree.
+    """
+    from skimage.measure import label as cc_label
+
+    m = np.asarray(mask).astype(bool)
+    area = int(m.sum())
+    if area == 0:
+        return 0, 0.0
+    lbl = cc_label(m, connectivity=2)
+    sizes = np.bincount(lbl.ravel())[1:]            # drop background (label 0)
+    return int(sizes.size), (float(sizes.max() / area) if sizes.size else 0.0)
+
+
+def _positive_point(prompts: Optional[Prompts]) -> Optional[np.ndarray]:
+    """The first positive (anchor/skeleton) prompt point, or None. Mask space."""
+    if prompts is None or prompts.points_sam is None:
+        return None
+    pts = np.asarray(prompts.points_sam, dtype=float)
+    pos = pts[np.asarray(prompts.labels) == 1]
+    return pos[0] if len(pos) else None
+
+
+def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional[Prompts],
+                        image_hw: tuple[int, int], *, contain_radius_px: int,
+                        area_bounds: tuple[float, float]) -> tuple[int, np.ndarray, float]:
+    """Pick the best of SAM2's multimask candidates for an anchor seed (M3.5 item 2c).
+
+    Ranking is lexicographic and *graceful* — it always returns one candidate, so a
+    chain with no clean mask still produces a box (and is then caught by the gate /
+    empty-mask flag downstream) rather than crashing. Priority order mirrors
+    PIPELINE_CONTEXT §7 (node-containment / plausible-area / single-CC):
+      1. contains the positive node      — domain anchor: the mask must sit on the neurite
+      2. plausible area (in area_bounds)  — reject runaway background grabs / empty masks
+                                            *before* single-CC, since a runaway grab is
+                                            usually one huge clean blob (lcc ~ 1.0) that
+                                            would otherwise win on step 3
+      3. single-CC health (largest_cc_frac) — one clean blob over fragmented membrane
+      4. SAM predicted IoU (scores)       — final tiebreak among otherwise-equal masks
+
+    Everything is judged in the space the masks live in (the caller passes matching
+    `prompts`, `image_hw`, and `contain_radius_px`), so this is transform-free like
+    score_anchor. The chosen mask still only sources the video-seed *box*; the
+    positive seed point is unchanged, so a multimask pick never moves the seed point.
+    Returns (best_idx, mask_bool, score).
+    """
+    masks = np.asarray(masks).astype(bool)
+    scores = np.asarray(scores, dtype=float).ravel()
+    H, W = int(image_hw[0]), int(image_hw[1])
+    frame_px = H * W
+    min_af, max_af = area_bounds
+    pos = _positive_point(prompts)
+
+    best_idx, best_key = 0, None
+    for i in range(masks.shape[0]):
+        m = masks[i]
+        area_frac = (int(m.sum()) / frame_px) if frame_px else 0.0
+        contained = pos is not None and _point_in_mask(m, float(pos[0]), float(pos[1]), contain_radius_px)
+        _, lcc = _largest_cc_frac(m)
+        score = float(scores[i]) if i < scores.size else 0.0
+        key = (int(contained), int(min_af <= area_frac <= max_af), lcc, score)
+        if best_key is None or key > best_key:
+            best_idx, best_key = i, key
+    return best_idx, masks[best_idx], (float(scores[best_idx]) if best_idx < scores.size else 0.0)
+
+
+def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
+                  multimask: bool = False, select_contain_radius_px: int = 0,
+                  select_area_bounds: tuple[float, float] = (0.0, 1.0),
+                  ) -> tuple[np.ndarray, float, np.ndarray]:
     """Run image-mode SAM2 on the anchor frame.
 
-    Returns (mask_sam bool HxW, score, logits). Single-mask (multimask_output=False).
+    Returns (mask bool HxW, score, logits) in whatever space `image_sam` is.
+
+    `multimask=False` (default) is the single-mask path — `multimask_output=False`,
+    the M1 regression baseline, exactly reproduces the notebook. `multimask=True`
+    asks SAM2 for its 3 candidate masks and auto-selects one via `_select_anchor_mask`
+    (M3.5 item 2c, PIPELINE_CONTEXT §7). This is near-free: SAM2's mask decoder
+    *always* computes all 3 candidates regardless of the flag (it only slices the
+    output — see sam2/modeling/sam/mask_decoder.py), and the heavy image-encoder
+    `set_image` runs once either way; the only added work is scoring 3 masks on CPU.
+    The selection params are only consulted when `multimask=True`.
 
     Lift from: 'Image Prediction' cell.
     # [M3] the GUI refinement loop wraps this call (re-predict on each point edit).
@@ -377,9 +494,14 @@ def image_predict(image_predictor, image_sam: np.ndarray,
         masks, scores, logits = image_predictor.predict(
             point_coords=np.asarray(prompts.points_sam, dtype=float),
             point_labels=np.asarray(prompts.labels, dtype=int),
-            multimask_output=False,
+            multimask_output=multimask,
         )
-    return masks[0].astype(bool), float(scores[0]), logits
+    if not multimask:
+        return masks[0].astype(bool), float(scores[0]), logits
+    best, mask_b, score = _select_anchor_mask(
+        masks, scores, prompts, masks.shape[1:],
+        contain_radius_px=select_contain_radius_px, area_bounds=select_area_bounds)
+    return mask_b.astype(bool), score, logits[best:best + 1]
 
 
 def box_from_mask(mask_sam: np.ndarray, *, margin: int,
@@ -476,8 +598,6 @@ def score_anchor(mask_sam: np.ndarray, prompts: Prompts, *,
     qc.compute_metrics (so anchor- and per-frame containment agree); the single-CC
     measure generalises the largest-component pick already in box_from_mask.
     """
-    from skimage.measure import label as cc_label
-
     H_sam, W_sam = image_hw_sam
     frame_px = int(H_sam) * int(W_sam)
     m = np.asarray(mask_sam).astype(bool)
@@ -487,36 +607,17 @@ def score_anchor(mask_sam: np.ndarray, prompts: Prompts, *,
     # --- containment: does the mask cover the positive (anchor) prompt point? ---
     # Tri-state, matching qc.skeleton_contained: an empty mask with a node present
     # is an explicit miss (False); no positive point at all is an abstain (None).
-    pos = None
-    if prompts is not None and prompts.points_sam is not None:
-        pts = np.asarray(prompts.points_sam, dtype=float)
-        lbl = np.asarray(prompts.labels)
-        pos_pts = pts[lbl == 1]
-        if len(pos_pts):
-            pos = pos_pts[0]                       # the anchor (skeleton) node, _sam
+    # (_point_in_mask returns False for a node that maps outside the frame.)
+    pos = _positive_point(prompts)                 # the anchor (skeleton) node, mask space
     if pos is None:
         contained: Optional[bool] = None
     elif area == 0:
         contained = False
     else:
-        px_sam, py_sam = float(pos[0]), float(pos[1])
-        sx_i, sy_i = int(round(px_sam)), int(round(py_sam))
-        if 0 <= sy_i < m.shape[0] and 0 <= sx_i < m.shape[1]:
-            r = contain_radius_px
-            y0, y1 = max(0, sy_i - r), min(m.shape[0], sy_i + r + 1)
-            x0, x1 = max(0, sx_i - r), min(m.shape[1], sx_i + r + 1)
-            contained = bool(m[y0:y1, x0:x1].any())
-        else:
-            contained = False                      # node maps outside the frame
+        contained = _point_in_mask(m, float(pos[0]), float(pos[1]), contain_radius_px)
 
     # --- single-CC health ---
-    if area == 0:
-        n_cc, largest_cc_frac = 0, 0.0
-    else:
-        lbl_img = cc_label(m, connectivity=2)
-        sizes = np.bincount(lbl_img.ravel())[1:]   # drop background (label 0)
-        n_cc = int(sizes.size)
-        largest_cc_frac = float(sizes.max() / area) if sizes.size else 0.0
+    n_cc, largest_cc_frac = _largest_cc_frac(m)
 
     # --- compose the verdict ---
     reasons: list[str] = []
@@ -539,7 +640,9 @@ def score_anchor(mask_sam: np.ndarray, prompts: Prompts, *,
 
 def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[int, int],
                         anchor_node_id: int, prompts_sam: "Prompts", annotate_df: pd.DataFrame,
-                        *, scale: int, crop_size_tif: int, crop_scale: int
+                        *, scale: int, crop_size_tif: int, crop_scale: int,
+                        multimask: bool = False, select_contain_radius_px: int = 0,
+                        select_area_bounds: tuple[float, float] = (0.0, 1.0),
                         ) -> tuple[np.ndarray, float, "alignment.CropWindow", "Prompts"]:
     """Image-mode anchor prediction on a high-res crop (M3.5 item 2 -> default path).
 
@@ -554,6 +657,12 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
     The returned Prompts is in _crop, so the gate (score_anchor) can score in the
     same space the mask lives in. The original _sam prompts are untouched -> they
     still seed the video positive point; only the box comes from the crop.
+
+    `multimask` + the `select_*` params forward straight to image_predict's
+    multimask auto-select (M3.5 item 2c). They must already be in _crop space — the
+    caller rescales `select_contain_radius_px` by scale/crop_scale, and
+    `select_area_bounds` are frame-fraction bounds the crop config already tunes
+    (PIPELINE_CONTEXT §7) — so selection scores in the same _crop space as the mask.
 
     Returns (mask_crop bool HxW, score, cw, prompts_crop).
     """
@@ -574,13 +683,16 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
     # _sam prompt points -> _tif -> _crop. Keep all positives; drop out-of-window negatives.
     pts_sam = np.asarray(prompts_sam.points_sam, dtype=float)
     labels = np.asarray(prompts_sam.labels, dtype=int)
-    pts_crop = cw.tif_to_crop(pts_sam * scale)              # _sam->_tif is *scale
+    pts_crop = cw.tif_to_crop(alignment.sam_to_tif(pts_sam, scale))   # _sam -> _tif -> _crop
     in_bounds = ((pts_crop[:, 0] >= 0) & (pts_crop[:, 0] < W_crop) &
                  (pts_crop[:, 1] >= 0) & (pts_crop[:, 1] < H_crop))
     keep = in_bounds | (labels == 1)
     prompts_crop = Prompts(points_sam=pts_crop[keep], labels=labels[keep])  # NB: _crop coords
 
-    mask_crop, score, _logits = image_predict(image_predictor, crop_img, prompts_crop)
+    mask_crop, score, _logits = image_predict(
+        image_predictor, crop_img, prompts_crop, multimask=multimask,
+        select_contain_radius_px=select_contain_radius_px,
+        select_area_bounds=select_area_bounds)
     return mask_crop, score, cw, prompts_crop
 
 
@@ -626,9 +738,9 @@ def prepare_video_frames(chain: dict, annotate_df: pd.DataFrame, *, scale: int,
     ]
     start_z, end_z = min(chain_z), max(chain_z)
 
-    start_file_z = start_z - config.FILE_Z_OFFSET
-    end_file_z = end_z - config.FILE_Z_OFFSET
-    target_file_z = anchor_catmaid_z - config.FILE_Z_OFFSET
+    start_file_z = alignment.catmaid_z_to_file_z(start_z)
+    end_file_z = alignment.catmaid_z_to_file_z(end_z)
+    target_file_z = alignment.catmaid_z_to_file_z(anchor_catmaid_z)
 
     all_tifs = sorted(config.WORM_PATH.glob("*.tif"), key=_parse_file_z)
     subset_tifs = [f for f in all_tifs
@@ -658,7 +770,7 @@ def prepare_video_frames(chain: dict, annotate_df: pd.DataFrame, *, scale: int,
             f"anchor file_z={target_file_z} not in [{start_file_z}, {end_file_z}]"
         )
 
-    frame_to_z = {i: _parse_file_z(tif) + config.FILE_Z_OFFSET
+    frame_to_z = {i: alignment.file_z_to_catmaid_z(_parse_file_z(tif))
                   for i, tif in enumerate(subset_tifs)}
 
     # init_state needs a STRING path, not a Path, or it raises
@@ -666,90 +778,265 @@ def prepare_video_frames(chain: dict, annotate_df: pd.DataFrame, *, scale: int,
     return str(view_dir), frame_to_z, anchor_frame_idx, len(subset_tifs)
 
 
-def propagate(video_predictor, frames_dir: str, prompts: Prompts,
-              anchor_frame_idx: int, *, obj_id: int, seed_negatives: bool = False,
-              subtimings: Optional[dict] = None
-              ) -> tuple[dict[int, dict[int, np.ndarray]], dict[int, float]]:
-    """Seed box+point on the anchor frame, propagate bidirectionally, collect masks.
+@dataclass
+class FrameResult:
+    """One propagated frame, as the interruptible loop yields it.
 
-    Returns
-    -------
-    (video_segments, frame_conf)
-        video_segments : {frame_idx: {obj_id: mask_sam bool}}
-        frame_conf      : {frame_idx: float} -> a per-frame mask confidence proxy
-                          (mean foreground sigmoid of the mask logits). This is the
-                          M2 resolution of PIPELINE_CONTEXT §5.3 "scores discarded":
-                          we stop throwing the logits away. NOTE it is a *proxy*,
-                          not SAM2's calibrated predicted-IoU (which propagate_in_video
-                          does not surface), so it is recorded for inspection as the
-                          `logit_conf` column but is NOT wired into the flag rule yet
-                          (pred_iou stays NaN). Calibrating/promoting it to a flag
-                          signal is deferred -> the geometric + temporal + skeleton
-                          signals drive M2 flagging.
-
-    Lift from: 'init_state' cell + 'Anchor and propagate bidirectionally' cell.
-    # [M3/M4] propagate_in_video is a generator: this is the loop you later
-    #      restructure to break at a degrading frame, inject a correction with
-    #      add_new_points_or_box, and resume.
+    frame_idx  : 0-based video frame index.
+    masks      : {obj_id: bool HxW in _sam} for this frame.
+    logit_conf : mean-foreground-sigmoid proxy for the session's obj_id
+                 (NaN if the mask is empty). The §5.3 "stop discarding logits" proxy.
+    pred_iou   : SAM2 mask-decoder predicted-IoU for the session's obj_id, captured
+                 from the decoder's IoU head (see _attach_iou_hook). NaN if the hook
+                 couldn't read it (e.g. a SAM2 refactor) -> the QC flag rule treats
+                 NaN as inert, so that degrades to the pre-capture behaviour.
     """
-    _t = perf_counter()
-    # offload_video_to_cpu keeps VRAM bounded for long (~340-frame) chains.
-    inference_state = video_predictor.init_state(
-        video_path=frames_dir,                # already a str (see prepare_video_frames)
-        offload_video_to_cpu=True,
-        # offload_state_to_cpu=True,          # enable if OOM on very long chains
-    )
-    if subtimings is not None:
-        subtimings["jpeg_load"] = perf_counter() - _t      # SAM2's frame decode
-    video_predictor.reset_state(inference_state)   # per-object scoping (liver pattern)
-    # box + the positive (skeleton) point(s); optionally the neighbour-node
-    # negatives too (M3.5 item 3). Negatives are the same same-z neighbour nodes
-    # build_prompts already placed in _sam -> passing them here is the video-seed
-    # analogue of the image-mode negatives, valid in both crop and legacy paths
-    # (state.prompts stays in _sam regardless of crop). Default off = positives
-    # only = the M1 seed; flip on to A/B, esp. concave E/U chains (measure whether
-    # the negatives land in the concavity -> PIPELINE_CONTEXT §7 *Negative points*).
-    pts = np.asarray(prompts.points_sam, dtype=np.float32)
-    labels = np.asarray(prompts.labels, dtype=np.int32)
-    if not seed_negatives:
-        keep = labels == 1
-        pts, labels = pts[keep], labels[keep]
-    video_predictor.add_new_points_or_box(
-        inference_state=inference_state,
-        frame_idx=anchor_frame_idx,
-        obj_id=obj_id,
-        box=np.asarray(prompts.box_sam, dtype=np.float32),
-        points=pts,
-        labels=labels,
-    )
+    frame_idx: int
+    masks: dict[int, np.ndarray]
+    logit_conf: float
+    pred_iou: float
 
-    video_segments: dict[int, dict[int, np.ndarray]] = {}
-    frame_conf: dict[int, float] = {}
 
-    def _collect(frame_idx, obj_ids, mask_logits):
-        per_obj = {}
+def _attach_iou_hook(video_predictor, sink: dict[int, float]) -> Callable[[], None]:
+    """Wrap the predictor's ``_track_step`` to record the mask-decoder predicted IoU
+    per frame into ``sink`` (frame_idx -> float). Returns a ``restore()`` callable.
+
+    Why a hook and not the public API: SAM2 *computes* the IoU head output (``ious``)
+    in the mask decoder, but ``track_step`` unpacks the decoder tuple and **discards**
+    it — ``(_, _, _, low_res_masks, ...) = sam_outputs`` — so it never reaches
+    ``current_out``, ``inference_state``, or the ``propagate_in_video`` yield (trace:
+    sam2/modeling/sam2_base.py ``_forward_sam_heads`` -> ``track_step``). ``_track_step``
+    is the last point the value is in hand: it returns ``(current_out, sam_outputs, ...)``
+    and ``sam_outputs[2]`` is ``ious`` ([B, M]; M=1 on propagated frames, M=3 on a
+    multimask anchor where SAM2 then argmax-selects). We read it **read-only** and pass
+    the call through untouched, so masks are bit-identical to an unhooked run.
+
+    Best-effort by design: if ``_track_step`` is absent or its return shape changes, we
+    leave pred_iou unpopulated (NaN) rather than raise — same principle as the timing
+    wrapper that must never kill a chain. Scope the hook to one propagation run and
+    always ``restore()`` (PropagationSession does this in close()).
+    """
+    orig = getattr(video_predictor, "_track_step", None)
+    if orig is None or not callable(orig):
+        return lambda: None
+
+    def wrapped(*args, **kwargs):
+        out = orig(*args, **kwargs)
+        try:
+            frame_idx = args[0] if args else kwargs["frame_idx"]
+            ious = out[1][2]                       # sam_outputs[2] == decoder IoU head
+            # selected mask's predicted IoU; max() == the argmax SAM2 itself selects
+            # when multimask (anchor), and the lone value when single-mask (tracking).
+            sink[int(frame_idx)] = float(ious.max())
+        except Exception:
+            pass                                   # leave NaN; never break tracking
+        return out
+
+    video_predictor._track_step = wrapped
+    return lambda: setattr(video_predictor, "_track_step", orig)
+
+
+class PropagationSession:
+    """Interruptible, resumable SAM2 video propagation for ONE chain.
+
+    Holds the live ``inference_state`` so propagation can be **stopped** at a degrading
+    frame, **corrected** (``add_points`` / ``add_mask``), and **resumed** — the
+    PIPELINE_CONTEXT §3c interruptible-propagation primitive. The headless ``propagate()``
+    function below drives it straight through (and is the only thing run_chain uses); a
+    future auto-intervention loop or napari GUI drives the *same* methods. No GUI, napari,
+    or torch import lives here — the session only calls the predictor's public API plus the
+    one read-only ``_track_step`` IoU hook.
+
+    Continuity lives in ``inference_state``, NOT in any generator object. Consequences the
+    caller must respect:
+      * ``propagate(...)`` yields frames lazily; the caller may ``break`` at any frame and
+        every frame seen so far is already recorded in the accumulators.
+      * ``add_points`` / ``add_mask`` mutate ``inference_state`` at a chosen frame.
+      * Resuming is a **fresh** ``propagate(start_frame_idx=f)`` over the *same* mutated
+        state — never ``reset_state`` to resume (that wipes all prompts; it's a
+        fresh-chain call, done once in __init__).
+      * A re-propagation after a correction re-tracks from the corrected frame onward and
+        **overwrites** the stale frames it revisits in the accumulators (last write wins).
+
+    GUI/auto-intervention sketch (not built here — M4):
+        sess = PropagationSession(vp, frames_dir, obj_id=1)
+        sess.seed(prompts, anchor_idx)
+        for fr in sess.propagate(reverse=False):      # fr: FrameResult (mask, conf, pred_iou)
+            if looks_bad(fr): break                   # a QC predicate / human stop
+        sess.add_points(fr.frame_idx, pts, labels)    # or sess.add_mask(fr.frame_idx, painted)
+        for fr in sess.propagate(reverse=False, start_frame_idx=fr.frame_idx):
+            ...                                        # resumes over the corrected state
+
+    Accumulators (``video_segments`` / ``frame_conf`` / ``pred_iou``) are frame_idx-keyed
+    and persist across calls, so the final dicts reflect the last mask written per frame.
+    """
+
+    def __init__(self, video_predictor, frames_dir: str, *, obj_id: int,
+                 offload_video_to_cpu: bool = True):
+        self.vp = video_predictor
+        self.obj_id = obj_id
+        # offload_video_to_cpu keeps VRAM bounded for long (~340-frame) chains.
+        self.inference_state = video_predictor.init_state(
+            video_path=frames_dir,                 # already a str (see prepare_video_frames)
+            offload_video_to_cpu=offload_video_to_cpu,
+            # offload_state_to_cpu=True,            # enable if OOM on very long chains
+        )
+        video_predictor.reset_state(self.inference_state)   # per-object scoping (liver pattern)
+
+        self.video_segments: dict[int, dict[int, np.ndarray]] = {}
+        self.frame_conf: dict[int, float] = {}
+        self.pred_iou: dict[int, float] = {}
+        self._iou_sink: dict[int, float] = {}
+        self._restore_hook = _attach_iou_hook(video_predictor, self._iou_sink)
+        self._closed = False
+
+    # -- seeding / corrections -----------------------------------------------------
+    def seed(self, prompts: Prompts, anchor_frame_idx: int, *,
+             seed_negatives: bool = False) -> None:
+        """Seed the anchor frame with box + positive point(s) (and optionally the
+        neighbour-node negatives — M3.5 item 3; see the note below). Mirrors the
+        notebook's anchor seed exactly so masks reproduce."""
+        # Negatives are the same same-z neighbour nodes build_prompts placed in _sam
+        # (valid in both crop and legacy paths — state.prompts stays in _sam). Default
+        # off = positives only = the M1 seed; flip on to A/B concave E/U chains
+        # (PIPELINE_CONTEXT §7 *Negative points*).
+        pts = np.asarray(prompts.points_sam, dtype=np.float32)
+        labels = np.asarray(prompts.labels, dtype=np.int32)
+        if not seed_negatives:
+            keep = labels == 1
+            pts, labels = pts[keep], labels[keep]
+        box = None if prompts.box_sam is None else np.asarray(prompts.box_sam, dtype=np.float32)
+        self.vp.add_new_points_or_box(
+            inference_state=self.inference_state,
+            frame_idx=int(anchor_frame_idx),
+            obj_id=self.obj_id,
+            box=box,
+            points=pts,
+            labels=labels,
+        )
+
+    def add_points(self, frame_idx: int, points_sam, labels, *,
+                   clear_old_points: bool = False) -> None:
+        """Inject a point correction at ``frame_idx`` (refinement click(s); incl. negative
+        labels). ``clear_old_points=False`` *adds* to the frame's existing prompts (the
+        usual refine-click behaviour); pass True to replace them. Mutates inference_state —
+        resume with ``propagate(start_frame_idx=frame_idx)``."""
+        self.vp.add_new_points_or_box(
+            inference_state=self.inference_state,
+            frame_idx=int(frame_idx),
+            obj_id=self.obj_id,
+            points=np.asarray(points_sam, dtype=np.float32),
+            labels=np.asarray(labels, dtype=np.int32),
+            clear_old_points=clear_old_points,
+        )
+
+    def add_mask(self, frame_idx: int, mask_sam) -> None:
+        """Inject a painted-mask correction at ``frame_idx`` (human-painted anchor or a
+        mid-propagation fix). Mutates inference_state — resume with
+        ``propagate(start_frame_idx=frame_idx)``."""
+        self.vp.add_new_mask(
+            inference_state=self.inference_state,
+            frame_idx=int(frame_idx),
+            obj_id=self.obj_id,
+            mask=np.asarray(mask_sam, dtype=bool),
+        )
+
+    # -- propagation ---------------------------------------------------------------
+    def propagate(self, *, reverse: bool = False, start_frame_idx: Optional[int] = None,
+                  max_frames: Optional[int] = None) -> Iterator[FrameResult]:
+        """Lazy generator over propagated frames. Yields a FrameResult per frame and
+        records it into the accumulators *before* yielding, so a caller that ``break``s
+        early keeps every frame it saw. ``start_frame_idx`` resumes from a corrected
+        frame; ``max_frames`` caps how far to track (both forwarded to SAM2)."""
+        kw: dict = {"reverse": reverse}
+        if start_frame_idx is not None:
+            kw["start_frame_idx"] = int(start_frame_idx)
+        if max_frames is not None:
+            kw["max_frame_num_to_track"] = int(max_frames)
+        for f, obj_ids, mask_logits in self.vp.propagate_in_video(self.inference_state, **kw):
+            yield self._collect(f, obj_ids, mask_logits)
+
+    def run_bidirectional(self) -> None:
+        """Headless convenience: drain forward from the anchor, then reverse. Same call
+        order as the pre-refactor two-loop drain, so masks are unchanged."""
+        for _ in self.propagate(reverse=False):
+            pass
+        for _ in self.propagate(reverse=True):
+            pass
+
+    # -- internals -----------------------------------------------------------------
+    def _collect(self, frame_idx, obj_ids, mask_logits) -> FrameResult:
+        per_obj: dict[int, np.ndarray] = {}
+        conf = float("nan")
         for i, oid in enumerate(obj_ids):
             lg = mask_logits[i].cpu().numpy()
             m = lg > 0.0
             per_obj[oid] = m
-            # confidence proxy for THIS chain's object only (single-obj in M1/M2)
-            if oid == obj_id:
+            if oid == self.obj_id:                 # confidence proxy for THIS chain's obj
                 fg = lg[m]
-                # mean foreground probability; NaN when the mask is empty
-                frame_conf[frame_idx] = (
-                    float((1.0 / (1.0 + np.exp(-fg))).mean()) if fg.size else float("nan")
-                )
-        video_segments[frame_idx] = per_obj
+                conf = float((1.0 / (1.0 + np.exp(-fg))).mean()) if fg.size else float("nan")
+        fi = int(frame_idx)
+        self.video_segments[fi] = per_obj
+        self.frame_conf[fi] = conf
+        piou = self._iou_sink.get(fi, float("nan"))   # set by the hook during this frame's inference
+        self.pred_iou[fi] = piou
+        return FrameResult(frame_idx=fi, masks=per_obj, logit_conf=conf, pred_iou=piou)
 
+    def close(self) -> None:
+        """Restore the patched ``_track_step``. Idempotent. Call when done (or use the
+        session as a context manager)."""
+        if not self._closed:
+            try:
+                self._restore_hook()
+            finally:
+                self._closed = True
+
+    def __enter__(self) -> "PropagationSession":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def propagate(video_predictor, frames_dir: str, prompts: Prompts,
+              anchor_frame_idx: int, *, obj_id: int, seed_negatives: bool = False,
+              subtimings: Optional[dict] = None
+              ) -> tuple[dict[int, dict[int, np.ndarray]], dict[int, float], dict[int, float]]:
+    """Seed the anchor, propagate bidirectionally, collect masks. Headless straight-through
+    driver over PropagationSession (the interruptible primitive); this is what run_chain
+    uses. Mid-propagation halt/correct/resume is the session's job, not this function's.
+
+    Returns
+    -------
+    (video_segments, frame_conf, pred_iou)
+        video_segments : {frame_idx: {obj_id: mask_sam bool}}
+        frame_conf     : {frame_idx: float} — mean-foreground-sigmoid proxy (the
+                         `logit_conf` diagnostic column; §5.3).
+        pred_iou       : {frame_idx: float} — SAM2's mask-decoder predicted IoU, now
+                         actually captured (PIPELINE_CONTEXT §5#4 resolved). NaN per
+                         frame only if the hook couldn't read it. run_chain maps this
+                         frame_idx -> catmaid_z and hands it to run_qc, where it populates
+                         the `pred_iou` QC column and becomes the 4th flag-rule signal
+                         (was inert while NaN). NOTE: enabling this signal changes the
+                         flag/queue distribution — clear/re-score the manifest after the
+                         switch (the §5#7 mixed-threshold discipline), and set
+                         cfg.qc_pred_iou_min <= 0 to record-but-not-flag.
+
+    Lift from: 'init_state' cell + 'Anchor and propagate bidirectionally' cell.
+    """
     _t = perf_counter()
-    for f, ids, logits in video_predictor.propagate_in_video(inference_state):
-        _collect(f, ids, logits)
-    for f, ids, logits in video_predictor.propagate_in_video(inference_state, reverse=True):
-        _collect(f, ids, logits)
+    session = PropagationSession(video_predictor, frames_dir, obj_id=obj_id)
     if subtimings is not None:
-        subtimings["propagate_only"] = perf_counter() - _t
-
-    return video_segments, frame_conf
+        subtimings["jpeg_load"] = perf_counter() - _t      # dominated by SAM2's frame decode
+    try:
+        session.seed(prompts, anchor_frame_idx, seed_negatives=seed_negatives)
+        _t = perf_counter()
+        session.run_bidirectional()
+        if subtimings is not None:
+            subtimings["propagate_only"] = perf_counter() - _t
+        return session.video_segments, session.frame_conf, session.pred_iou
+    finally:
+        session.close()
 
 
 def save_masks(video_segments: dict[int, dict[int, np.ndarray]],
@@ -834,7 +1121,9 @@ def postprocess_mask(mask_sam: np.ndarray, *, open_px: int = 1, close_px: int = 
 
 def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
            frame_to_z: dict[int, int],
-           frame_conf: Optional[dict[int, float]], cfg: PipelineConfig,
+           frame_conf: Optional[dict[int, float]],
+           pred_iou: Optional[dict[int, float]] = None,
+           cfg: PipelineConfig,
            qc_csv_path: Optional[Path] = None) -> tuple[dict, list[int], str]:
     """Compute QC over the saved masks, write qc.csv, return (summary, triage_z, status).
 
@@ -867,11 +1156,37 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
     """
     from sam2_utils import qc   # lazy: keeps pipeline import free of qc's heavy deps
 
+    # Invariant: pipeline.save_masks writes masks at _sam (scale) and never
+    # resamples, so the on-disk mask space IS `scale`. qc.compute_metrics divides
+    # the _tif skeleton by `save_downscale` to land in mask space, so the two must
+    # be equal or QC silently mis-locates every node (PIPELINE_CONTEXT s5.2). The
+    # canonical rule already enforces this; the guard turns a future divergence
+    # from a silent wrong-QC run into a loud failure. If you ever want resampled,
+    # higher-res Blender masks, make save_masks resample first, then relax this.
+    if cfg.scale != cfg.save_downscale:
+        raise ValueError(
+            f"run_qc: scale ({cfg.scale}) != save_downscale ({cfg.save_downscale}), "
+            "but pipeline.save_masks does not resample, so the on-disk masks are at "
+            "`scale`. QC would divide the skeleton by save_downscale and mis-locate "
+            "every node. Keep save_downscale == scale (canonical), or make save_masks "
+            "resample to save_downscale before changing this."
+        )
+
+    # pred_iou comes in frame_idx-keyed (from PropagationSession); compute_metrics is
+    # z-indexed, so remap. Once joined, the `pred_iou` column becomes the 4th flag-rule
+    # signal (cfg.qc_pred_iou_min); it was inert while NaN. See propagate()'s note re:
+    # clearing the manifest after enabling it.
+    pred_iou_z = None
+    if pred_iou:
+        pred_iou_z = {frame_to_z[fi]: v for fi, v in pred_iou.items()
+                      if fi in frame_to_z}
+
     df = qc.compute_metrics(
         masks_dir,
         skeleton=skeleton,
         scale=cfg.scale,
         save_downscale=cfg.save_downscale,
+        pred_iou=pred_iou_z,
         skeleton_dilation_px=cfg.qc_skeleton_dilation_px,
         area_ratio_bounds=cfg.qc_area_ratio_bounds,
         temporal_iou_min=cfg.qc_temporal_iou_min,
@@ -1010,6 +1325,8 @@ def state_to_dict(state: ChainState) -> dict:
         "triage_frames": list(state.triage_frames),
         "obj_id": state.obj_id,
         "config": _config_to_dict(state.config),
+        "phase_seconds": dict(state.phase_seconds),
+        "phase_subseconds": dict(state.phase_subseconds),
     }
 
 
@@ -1032,6 +1349,8 @@ def state_from_dict(d: dict) -> ChainState:
         triage_frames=list(d.get("triage_frames", [])),
         obj_id=d.get("obj_id", 1),
         config=_config_from_dict(d.get("config")),
+        phase_seconds=dict(d.get("phase_seconds", {}) or {}),
+        phase_subseconds=dict(d.get("phase_subseconds", {}) or {}),
     )
 
 
@@ -1125,23 +1444,31 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
 
     # 4. image mode -> on a high-res crop by default (M3.5 item 2), else scale-8.
     _step(4, "image-mode prediction")
+    # Space-relative tolerances, computed ONCE up front so the multimask pick (step 4)
+    # and the anchor gate (step 5) score with the same radius/area bounds in the same
+    # space as the mask: 1 _sam px = scale/crop_scale _crop px, so the contain radius
+    # + box margin rescale under the crop. area_frac bounds are frame-fractions the
+    # crop config already tunes (PIPELINE_CONTEXT §7), so they pass through unscaled.
+    space_ratio = (cfg.scale / cfg.crop_scale) if cfg.crop_anchor else 1.0
+    contain_r = int(round(cfg.qc_skeleton_dilation_px * space_ratio))
+    margin_local = int(round(cfg.box_margin * space_ratio))
+    area_bounds = (cfg.gate_min_area_frac, cfg.gate_max_area_frac)
     if cfg.crop_anchor:
         mask_anchor, state.image_score, cw, prompts_anchor = anchor_crop_predict(
             image_predictor, image_full, full_hw, state.anchor_node_id,
             state.prompts, annotate_df, scale=cfg.scale,
-            crop_size_tif=cfg.crop_size_tif, crop_scale=cfg.crop_scale)
-        # gate tolerances are space-relative: 1 _sam px = scale/crop_scale _crop px,
-        # so rescale the contain radius + box margin. (area_frac is now measured
-        # against the crop, not the full frame -> its thresholds want re-tuning.)
-        space_ratio = cfg.scale / cfg.crop_scale
-        contain_r = int(round(cfg.qc_skeleton_dilation_px * space_ratio))
-        margin_local = int(round(cfg.box_margin * space_ratio))
+            crop_size_tif=cfg.crop_size_tif, crop_scale=cfg.crop_scale,
+            multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
+            select_area_bounds=area_bounds)
     else:
         mask_anchor, state.image_score, _logits = image_predict(
-            image_predictor, image_sam, state.prompts)
+            image_predictor, image_sam, state.prompts,
+            multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
+            select_area_bounds=area_bounds)
         cw, prompts_anchor = None, state.prompts
-        contain_r, margin_local = cfg.qc_skeleton_dilation_px, cfg.box_margin
     image_hw_anchor = mask_anchor.shape[:2]
+    if cfg.multimask_anchor:
+        print(f"    multimask auto-select on (3 candidates -> 1)")
     print(f"    mask {int(mask_anchor.sum())} px  |  score {state.image_score:.4f}"
           + (f"  | _crop {image_hw_anchor[1]}x{image_hw_anchor[0]}" if cfg.crop_anchor else ""))
 
@@ -1191,7 +1518,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
 
     # 7. propagate
     _step(7, "propagate (bidirectional)")
-    video_segments, frame_conf = propagate(
+    video_segments, frame_conf, pred_iou = propagate(
         video_predictor, state.frames_dir, state.prompts,
         state.anchor_frame_idx, obj_id=state.obj_id,
         seed_negatives=cfg.seed_negatives, subtimings=subtimings)
@@ -1226,7 +1553,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     state.qc_summary, state.triage_frames, state.status = run_qc(
         out_dir, skel_chain,
         frame_to_z=state.frame_to_z,
-        frame_conf=frame_conf, cfg=cfg,
+        frame_conf=frame_conf, pred_iou=pred_iou, cfg=cfg,
         qc_csv_path=chain_dir / "qc.csv",
     )
     s = state.qc_summary

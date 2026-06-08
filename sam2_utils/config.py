@@ -17,6 +17,25 @@ WORM_PATH = Path(r"E:\ZhenLab\Data\SAM2_test_NR_raw") # Change this to wherever 
 #: Where SAM2 checkpoints are downloaded to. Relative to notebook CWD by default.
 CHECKPOINT_DIR = Path("checkpoints")
 
+# -----------------------------------------------------------------------------
+# Pipeline data + output paths (one home, imported by run_aval.py / batch.py)
+# -----------------------------------------------------------------------------
+# DATA_DIR is derived from this file's location, so the in-repo CSV/JSON resolve
+# wherever the repo is checked out (no hardcoded D:\ path). OUTPUT_ROOT and
+# FRAMES_ROOT are machine-specific scratch/output on a fast volume, like
+# WORM_PATH above; edit them for your box.
+
+#: The repo's data/ dir (aggregate_data_pv.csv, chains.json, roots.json).
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+CSV_PATH    = DATA_DIR / "aggregate_data_pv.csv"   #: cached CATMAID node table
+CHAINS_PATH = DATA_DIR / "chains.json"             #: per-neuron MLC chains
+ROOTS_PATH  = DATA_DIR / "roots.json"              #: chain roots
+
+#: Where per-chain mask outputs + the manifest/triage CSVs are written.
+OUTPUT_ROOT = Path(r"E:\ZhenLab\Data\output_masks\test2_single")
+#: Parent dir for the SAM2 JPEG frame cache + per-chain link views.
+FRAMES_ROOT = Path(r"E:\ZhenLab\Data")
+
 
 # =============================================================================
 # SAM2 model registry

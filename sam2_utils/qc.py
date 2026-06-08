@@ -1,6 +1,6 @@
 """
-qc_utils.py
------------
+qc.py
+-----
 Post-hoc QC for SAM2 video-propagated mask stacks.
 
 Drop into ``sam2_utils/`` and use as::
@@ -13,9 +13,15 @@ Drop into ``sam2_utils/`` and use as::
         mask_dir=OUT_DIR,
         skeleton=aggregate_data_pv,     # the full CATMAID df in memory
         cell_name=TARGET_CELL_NAME,     # e.g. "AVAL"
-        scale=SCALE,                    # 8 — SAM2 input downscale
-        save_downscale=SAVE_DOWNSCALE,  # 4 — saved-mask downscale
+        scale=SCALE,                    # 8 = SAM2 input downscale
+        save_downscale=SAVE_DOWNSCALE,  # = scale for pipeline masks (canonical)
     )
+
+Coordinate transforms (the _tif -> mask-px node lookup) go through
+``sam2_utils.alignment`` so QC shares one definition with the rest of the
+pipeline. Pipeline masks are written at _sam (``save_downscale == scale``, no
+resample), so pass ``save_downscale = scale``; a different value only makes sense
+for resampled masks written by this module's own ``save_masks``.
     qc.plot_traces(df)                  # line plots of area / centroid / etc.
     qc.show_flagged(df, OUT_DIR,        # thumbnail strip; lazy-loads EM only for flagged frames
         em_loader=lambda z: tifffile.imread(f"slice_{z:04d}.tif"),
@@ -62,6 +68,8 @@ from PIL import Image
 import scipy.ndimage as ndi
 from skimage.measure import label
 import matplotlib.pyplot as plt
+
+from sam2_utils import alignment   # the one home for coordinate transforms (s4)
 
 # Optional: reuse the project's existing viz module if present.
 try:
@@ -169,6 +177,7 @@ def compute_metrics(
     scale: int = 8,
     save_downscale: int = 4,
     pred_iou_csv: Optional[str | Path] = None,
+    pred_iou: Optional[Mapping[int, float]] = None,
     skeleton_dilation_px: int = 3,
     area_ratio_bounds: tuple[float, float] = (0.5, 2.0),
     temporal_iou_min: float = 0.3,
@@ -203,18 +212,24 @@ def compute_metrics(
         CSV with columns ``z,pred_iou`` (and optionally ``occlusion_score``)
         that you logged during propagation. Joined onto the output df if
         provided; otherwise those columns are NaN.
+    pred_iou : Mapping[int, float], optional
+        In-memory ``{z: pred_iou}`` (or anything dict-like) — the same data as
+        ``pred_iou_csv`` without the disk round-trip. Takes precedence over
+        ``pred_iou_csv``. This is what the pipeline passes from
+        ``PropagationSession.pred_iou`` (mapped frame_idx -> z).
     skeleton_dilation_px : int
         Tolerance for the "skeleton node is inside the mask" check, in
-        mask-pixel units. 3 px is roughly one neurite radius at SCALE=8 +
-        SAVE_DOWNSCALE=4.
+        mask-pixel units. 3 px is roughly one neurite radius at the canonical
+        SCALE == SAVE_DOWNSCALE == 8.
     area_ratio_bounds : (float, float)
         (lo, hi) for the area-ratio signal: a frame fires when
         area[z]/area[z-1] is outside [lo, hi]. Default (0.5, 2.0).
     temporal_iou_min : float
         A frame fires when IoU(z, z-1) < this. Default 0.3.
     pred_iou_min : float
-        A frame fires when pred_iou < this. Default 0.5. (Inert while pred_iou
-        is NaN, i.e. when no pred_iou_csv is joined.)
+        A frame fires when pred_iou < this. Default 0.5. Live once ``pred_iou``
+        (or ``pred_iou_csv``) is supplied; inert only when pred_iou stays NaN
+        (no mapping/CSV joined). Set <= 0 to record pred_iou without flagging on it.
 
     Returns
     -------
@@ -251,7 +266,8 @@ def compute_metrics(
         elif area == 0:
             contained = False                        # node exists, mask empty
         else:
-            sx, sy = xy[0] / save_downscale, xy[1] / save_downscale
+            # _tif skeleton node -> saved-mask px (== _sam when save_downscale == scale)
+            sx, sy = alignment.tif_to_sam(xy, save_downscale)
             sx_i, sy_i = int(round(sx)), int(round(sy))
             if 0 <= sy_i < m.shape[0] and 0 <= sx_i < m.shape[1]:
                 contained = _node_contained(m, sx_i, sy_i, skeleton_dilation_px)
@@ -293,8 +309,14 @@ def compute_metrics(
 
     df = pd.DataFrame(rows).set_index("z").sort_index()
 
-    # Optional pred_iou join
-    if pred_iou_csv is not None:
+    # pred_iou join. Prefer an in-memory {z: pred_iou} mapping (what the pipeline
+    # passes now that propagate() captures SAM2's mask-decoder IoU head — see
+    # pipeline.PropagationSession / _attach_iou_hook); fall back to a CSV; else NaN.
+    if pred_iou is not None:
+        s = pd.Series(dict(pred_iou), dtype=float)
+        s.index = s.index.astype(int)
+        df["pred_iou"] = df.index.to_series().map(s)
+    elif pred_iou_csv is not None:
         pi = pd.read_csv(pred_iou_csv).set_index("z")
         df = df.join(pi, how="left")
     else:
@@ -413,7 +435,7 @@ def show_flagged(
         if skel_df is not None:
             xy = _skeleton_xy_for_z(skel_df, z)
             if xy is not None:
-                cx, cy = xy[0] / save_downscale, xy[1] / save_downscale
+                cx, cy = alignment.tif_to_sam(xy, save_downscale)   # _tif -> mask px
         if cx is None:
             cy, cx = df.loc[z, ["centroid_y", "centroid_x"]]
         if not (np.isfinite(cx) and np.isfinite(cy)):
@@ -455,7 +477,7 @@ def show_flagged(
         if skel_df is not None:
             xy = _skeleton_xy_for_z(skel_df, z)
             if xy is not None:
-                sx, sy = xy[0] / save_downscale, xy[1] / save_downscale
+                sx, sy = alignment.tif_to_sam(xy, save_downscale)   # _tif -> mask px
                 ax.scatter([sx], [sy], s=40, c="yellow",
                            edgecolors="black", linewidths=0.8, zorder=5)
 
@@ -518,7 +540,7 @@ def save_masks(
         QC parser and skeleton lookup line up. If omitted, files are named by
         the raw video frame index. Build it like::
 
-            frame_to_z = {i: parse_file_z(tif) + config.FILE_Z_OFFSET
+            frame_to_z = {i: alignment.file_z_to_catmaid_z(parse_file_z(tif))
                           for i, tif in enumerate(subset_tifs)}
 
     scale : int

@@ -1,10 +1,26 @@
-"""CATMAID-stack <-> tif affine alignment.
+"""Coordinate transforms for the SAM2 pipeline. THE single home for them.
+
+PIPELINE_CONTEXT s4 asks that every coordinate transform live in one place and
+that variables be tagged with their space. This module is that place. The spaces
+(suffix convention, matching pipeline.py):
+    _cm    CATMAID stack-pixel coords (annotate_df x, y)
+    _tif   full-resolution tif pixels (annotate_df x_tif, y_tif)
+    _sam   a scale-downscaled space = _tif / scale (SAM2 video input AND, under
+           the canonical save_downscale == scale rule, the on-disk mask space)
+    _crop  high-res anchor-crop space (see CropWindow)
+plus the z section maps (catmaid_z vs file_z) and the nm -> stack-px voxel divide.
 
 Provides:
-    catmaid_to_tif(x, y)           — apply the stored affine from config
-    apply_affine(xy, M, t)         — apply an arbitrary affine
-    fit_affine(landmarks)          — least-squares fit + residuals + decomposition
-    sample_nodes_grid(df, n, seed) — evenly spread landmark candidates over xy bbox
+    catmaid_to_tif(x, y)            - _cm -> _tif via the stored affine
+    apply_affine(xy, M, t)          - apply an arbitrary affine
+    tif_to_sam(xy, scale) /
+        sam_to_tif(xy, scale)       - _tif <-> _sam resolution-scale point maps
+    catmaid_z_to_file_z(z) /
+        file_z_to_catmaid_z(z)      - z section-number <-> tif filename z
+    nm_to_stack_px(x, y, z)         - CATMAID nm -> stack-pixel (voxel divide)
+    CropWindow                      - _crop <-> _tif <-> _sam (high-res anchor crop)
+    fit_affine(landmarks)           - least-squares fit + residuals + decomposition
+    sample_nodes_grid(df, n, seed)  - evenly spread landmark candidates over xy bbox
 """
 
 from __future__ import annotations
@@ -48,6 +64,70 @@ def catmaid_to_tif(x, y) -> np.ndarray:
         return apply_affine(pts, config.M_AFFINE, config.T_AFFINE)[0]
     pts = np.column_stack([x, y])
     return apply_affine(pts, config.M_AFFINE, config.T_AFFINE)
+
+
+# =============================================================================
+# Resolution-scale point maps:  _tif <-> _sam
+# =============================================================================
+# A "scale" of s means an image downscaled by s on each axis. The SAM2 video
+# input is the full-res tif shrunk by SCALE, and the on-disk masks live at the
+# same resolution under the canonical save_downscale == SCALE rule. So a full-res
+# coordinate lands in the downscaled space by dividing by s, and back by
+# multiplying. These are the module-level twins of CropWindow.tif_to_sam, and
+# they replace the bare "/ scale" / "* scale" arithmetic that used to be copied
+# across pipeline.build_prompts, anchor_crop_predict, and qc. Point convention is
+# (x, y); a single (2,) point or an (N, 2) array is accepted, shape preserved.
+
+def tif_to_sam(xy_tif, scale) -> np.ndarray:
+    """Full-res tif px -> a scale-downscaled px space.
+
+    `scale` is any full-res downscale factor. Pass SCALE to land in _sam (the
+    video-propagation and canonical mask space); pass `save_downscale` to land in
+    the saved-mask px space (identical to _sam under save_downscale == SCALE).
+    """
+    return np.asarray(xy_tif, dtype=float) / float(scale)
+
+
+def sam_to_tif(xy_sam, scale) -> np.ndarray:
+    """Inverse of tif_to_sam: a scale-downscaled px space -> full-res tif px."""
+    return np.asarray(xy_sam, dtype=float) * float(scale)
+
+
+# =============================================================================
+# Z-section maps:  catmaid_z <-> file_z
+# =============================================================================
+# The tif filename z and the CATMAID section number differ by a fixed offset
+# (config.FILE_Z_OFFSET): CATMAID_z = file_z + FILE_Z_OFFSET. This was the other
+# transform copied inline (load_frame_sam, prepare_video_frames); centralised here
+# so the offset has exactly one definition. Scalar in, scalar out.
+
+def catmaid_z_to_file_z(catmaid_z: int) -> int:
+    """CATMAID section number -> tif filename z."""
+    return int(catmaid_z) - config.FILE_Z_OFFSET
+
+
+def file_z_to_catmaid_z(file_z: int) -> int:
+    """Tif filename z -> CATMAID section number."""
+    return int(file_z) + config.FILE_Z_OFFSET
+
+
+# =============================================================================
+# CATMAID nm -> stack-pixel
+# =============================================================================
+# CATMAID returns node coords in nm; dividing by the per-axis voxel size
+# (config.STACK_RESOLUTION_NM) gives stack-pixel coords. Used by
+# catmaid.fetch_all_annotations; kept here so every coordinate transform has one
+# home (PIPELINE_CONTEXT s4).
+
+def nm_to_stack_px(x_nm, y_nm, z_nm):
+    """Convert CATMAID nm coords to stack-pixel coords (per-axis voxel divide).
+
+    Returns (x_px, y_px, z_px) as float arrays (floats for scalar input).
+    """
+    rx, ry, rz = config.STACK_RESOLUTION_NM
+    return (np.asarray(x_nm, dtype=float) / rx,
+            np.asarray(y_nm, dtype=float) / ry,
+            np.asarray(z_nm, dtype=float) / rz)
 
 
 # =============================================================================

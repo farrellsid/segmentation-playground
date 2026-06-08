@@ -51,14 +51,13 @@ import pandas as pd
 # sam2_utils pieces are the stable helpers.
 import pipeline
 from pipeline import ChainState, PipelineConfig, save_state  # load_state if resuming state
-from sam2_utils import setup, alignment, diagnostics, review
+from sam2_utils import setup, alignment, diagnostics, review, config
 
-# DATA PATHS
-CSV_PATH    = Path(r"D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\data\aggregate_data_pv.csv")
-CHAINS_PATH = Path(r"D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\data\chains.json")
-
-OUTPUT_ROOT = Path(r"E:\ZhenLab\Data\output_masks\test2_single")
-FRAMES_ROOT = Path(r"E:\ZhenLab\Data")     # SAM2 JPEG frame folders go here
+# DATA PATHS — defined once in sam2_utils.config; edit them there, not here.
+CSV_PATH    = config.CSV_PATH
+CHAINS_PATH = config.CHAINS_PATH
+OUTPUT_ROOT = config.OUTPUT_ROOT
+FRAMES_ROOT = config.FRAMES_ROOT     # SAM2 JPEG frame folders go here
 
 # Simple Neurons list
 all_neurons = ['AIAR', 'RIS', 'GLRVR', 'PLNR', 'SAADL', 'AVBR', 'PVQL', 'URADR',
@@ -82,9 +81,11 @@ key_neurons = ['AIYR', 'AIYL', 'AIAR', 'AIAL', 'AIZL', 'AIZR', 'AIBL', 'AIBR', '
 
 
 # RUN KNOBS (edit per launch)z
-NEURONS: Optional[Sequence[str]] =  key_neurons[1:6] # e.g. ["AVAL", "AVAR"]; None = all objects
+NEURONS: Optional[Sequence[str]] =  key_neurons[1] # e.g. ["AVAL", "AVAR"]; None = all objects
 
 CLEAN = True                             # True = wipe prior outputs and start fresh
+
+GIF_MODE = "all"                        # "off" | "flagged" | "all": per-chain overlay gifs via review
 
 # Status vocabulary (matches ChainState.status / PIPELINE_CONTEXT §3b).
 PENDING, RUNNING, DONE, FLAGGED, FAILED = (
@@ -352,27 +353,23 @@ def _run_one_chain(
 ) -> ChainState:
     """Run a single chain to completion and return its populated ChainState.
 
-    TODO(NE?)[M3]: verify this run_chain() call against run_aval.py — arg list + out_dir.
-    From the M1 bootstrap, run_chain gets the built predictors + annotate_df and
-    a ChainState carrying (neuron, chain_idx, config). It derives the subchain
-    from neuron+chain_idx, runs all 9 phases incl. run_qc, writes masks/ + qc.csv
-    under chain_dir, sets state.status to done/flagged, and returns the state.
-    Adjust the argument list to match what you actually wrote.
+    This is the one place that calls pipeline.run_chain. run_chain gets the
+    built predictors + annotate_df and a ChainState carrying (neuron, chain_idx,
+    config); it runs all 9 phases (incl. run_qc), writes masks/ + qc.csv under
+    the chain dir derived from cfg.output_root, sets state.status to done/flagged,
+    and returns the populated state. Validated against run_aval.py on the M3
+    subset run. on_video_phase=cleanup_vram reclaims VRAM between the image and
+    video phases (run_chain owns reset_predictor() internally).
     """
     state = ChainState(neuron=neuron, chain_idx=chain_idx, config=cfg)
-
-    # NOTE: reset_predictor() / cleanup_vram() between image and video phases is
-    # done *inside* run_chain in the library version (the notebook did it inline).
-    # If your run_chain doesn't, do it there, not here.
     state = pipeline.run_chain(
         state,
-        on_video_phase=diagnostics.cleanup_vram,    # TODONE: verified cleanup is done in-function
+        on_video_phase=diagnostics.cleanup_vram,
         image_predictor=session.image_predictor,
         video_predictor=session.video_predictor,
         annotate_df=session.annotate_df,
-        chain=chain,      # Checked: argument is chain, not chains. Only a single chain dictionary is passed. This assumes the correct chain is passed meaning the indexing of the chains is all done before calling i guess
-        # TODONE: output directory is defined by cfg.py. out_dir is derived from that.
-    )   
+        chain=chain,                 # a single chain dict; enumerate_chains already indexed it
+    )
     save_state(state, chain_dir / "state.json")
     return state
 
@@ -532,6 +529,7 @@ def run_batch(
         chain_dir.mkdir(parents=True, exist_ok=True)
 
         # breadcrumb: if we die mid-chain, this row stays `running` and is retried
+        # CONTINGENCY FOR SUDDEN UNPLUG OF DRIVE
         _update_row(manifest, neuron, idx, status=RUNNING, error="")
         _atomic_write_csv(manifest, manifest_path)
         print(f"[batch] run    {tag}")
@@ -547,12 +545,15 @@ def run_batch(
             fields = _manifest_fields_from_state(state)
             _update_row(manifest, neuron, idx, **fields)
             ran += 1
-            # overlay gif for eyeballing — review reads the chain's on-disk masks.
-            # default "flagged" so a full overnight run only gifs the chains worth looking at.
-            if gif_mode == "all" or (gif_mode == "flagged" and fields["status"] == FLAGGED):
+            # overlay gif/mp4 for eyeballing - review reads the chain's on-disk masks.
+            #   "off"     -> never; "flagged" -> only chains QC flagged; "all" -> every chain.
+            # "flagged" keeps a full overnight run from gifing every clean chain.
+            is_flagged = fields["status"] == FLAGGED
+            if gif_mode == "all" or (gif_mode == "flagged" and is_flagged):
+                suffix = "_flagged" if is_flagged else ""
                 try:
-                    review.to_gif(chain_dir, chain_dir / f"{neuron}_chain{idx:02d}.gif")
-                    review.to_mp4(chain_dir, OUTPUT_ROOT / "mp4" / f"{neuron}_chain{idx:02d}.mp4")
+                    review.to_gif(chain_dir, chain_dir / f"{neuron}_chain{idx:02d}{suffix}.gif")
+                    review.to_mp4(chain_dir, output_root / "mp4" / f"{neuron}_chain{idx:02d}.mp4")
                 except Exception as e:
                     print(f"[batch] gif skipped {tag}: {e}")
         except Exception as e:           # one bad chain must not kill the batch
@@ -613,7 +614,7 @@ def main() -> None:
         )                     
     output_root = Path(cfg.output_root)        # TODONE[M3]: confirmed attr names on PipelineConfig
     session = _build_session(cfg)
-    run_batch(session, cfg, output_root, neurons=NEURONS, clean=CLEAN)
+    run_batch(session, cfg, output_root, neurons=NEURONS, clean=CLEAN, gif_mode=GIF_MODE)
 
 
 if __name__ == "__main__":

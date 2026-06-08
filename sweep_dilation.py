@@ -60,12 +60,12 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from sam2_utils import qc, alignment   # qc helpers reused; no model / torch needed
+from sam2_utils import qc, alignment, config   # qc helpers reused; no model / torch needed
 
-# Keep these in sync with batch.py (same data + output locations).
-CSV_PATH    = Path(r"D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\data\aggregate_data_pv.csv")
-CHAINS_PATH = Path(r"D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\data\chains.json")
-OUTPUT_ROOT = Path(r"E:\ZhenLab\Data\output_masks\test2_single")
+# Data + output locations live once in sam2_utils.config (shared with batch.py).
+CSV_PATH    = config.CSV_PATH
+CHAINS_PATH = config.CHAINS_PATH
+OUTPUT_ROOT = config.OUTPUT_ROOT
 
 # Candidate radii (mask-pixel units, _sam space). The run-time dilation of each
 # chain is unioned in automatically so the baseline row always exists.

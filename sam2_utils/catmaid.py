@@ -14,7 +14,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-from . import config
+from . import config, alignment
 
 
 class Catmaid:
@@ -114,7 +114,6 @@ def fetch_all_annotations(catmaid: Catmaid | None = None,
     skeleton_names = catmaid.load_skeleton_names(skeletons)
     print(f"Skeletons: {len(skeleton_names)}")
 
-    rx, ry, rz = config.STACK_RESOLUTION_NM
     frames = []
     for cell_code in tqdm(skeleton_names, desc="Pulling node overviews"):
         cell_data = pd.DataFrame(
@@ -123,9 +122,12 @@ def fetch_all_annotations(catmaid: Catmaid | None = None,
         )
         cell_data["cell_name"] = skeleton_names[cell_code]
         if to_stack_px:
-            cell_data["x"] = pd.to_numeric(cell_data["x"], errors="coerce") / rx
-            cell_data["y"] = pd.to_numeric(cell_data["y"], errors="coerce") / ry
-            cell_data["z"] = pd.to_numeric(cell_data["z"], errors="coerce") / rz
+            # nm -> stack-px voxel divide lives in alignment (the one transform home).
+            # Coerce to numeric first so bad cells become NaN rather than raising.
+            x = pd.to_numeric(cell_data["x"], errors="coerce")
+            y = pd.to_numeric(cell_data["y"], errors="coerce")
+            z = pd.to_numeric(cell_data["z"], errors="coerce")
+            cell_data["x"], cell_data["y"], cell_data["z"] = alignment.nm_to_stack_px(x, y, z)
         frames.append(cell_data)
 
     aggregate = pd.concat(frames, ignore_index=True)
