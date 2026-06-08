@@ -45,9 +45,14 @@ DEFERRED this pass (placeholders marked ``# [DEFERRED]`` in code)
     image path (matches the displayed frame). High-res crop re-predict (the §6 M3.5
     default for the *batch*) would sharpen a thin-neurite re-seed but needs the
     clicked points remapped _sam→_tif→_crop and a full-res tif read; left for later.
-  * **Confidence-gated mask-vs-box video seed.** The human-painted-anchor → mask
-    seed path is wired (``add_mask`` + "resume"); the *automatic* confidence gate
-    that chooses mask-vs-box (PIPELINE_CONTEXT §7) is M4.5 label-gated.
+  * **Confidence-gated mask-vs-box video seed.** The GUI always seeds corrections with
+    the *mask* (``add_mask`` of the re-predicted/painted mask on the frame) — the box
+    seed was dropped here as the more-informative human-curated path (§7 *box vs mask*).
+    The *automatic* confidence gate that chooses mask-vs-box in the headless pipeline is
+    still M4.5 label-gated.
+  * **Marking/intervention GUI split & strict-by-default flagging.** Review-testing
+    follow-ups documented in PIPELINE_CONTEXT §7 (a two-mode UI, and an aggressive-recall
+    QC posture) — not built this pass.
   * **Cross-process file lock / live auto-poll / GPU arbitration** — see
     ``review_queue`` DEFERRED; the GUI exposes a manual "refresh queue" button.
   * **micro_sam napari-plugin build-vs-adopt eval** (§7) — this module is the
@@ -295,7 +300,7 @@ class ReviewGUI:
         self._skel.editable = False
         self._prompts = self._new_prompts_layer(scale=lscale)
         # pre-load the chain's original seed into the prompts layer (+ a context box)
-        self._seed_prompts_from_state(lscale)
+        self._seed_prompts_from_state()
 
         # land on the anchor frame and update the info panel
         if self.data.anchor_idx is not None:
@@ -326,18 +331,14 @@ class ReviewGUI:
         layer.mode = "add"
         return layer
 
-    def _seed_prompts_from_state(self, scale=(1.0, 1.0, 1.0)) -> None:
+    def _seed_prompts_from_state(self) -> None:
         """Pre-load the chain's ORIGINAL seed (state.prompts) into the prompts layer at
         the anchor frame, so re-run/resume start from what the batch used — not an empty
         layer. Points are placed in _sam data coords (the layer's scale handles overlay),
-        matching the click round-trip in _prompts_for_frame. The seed box is drawn as a
-        read-only Shapes rectangle for context (the seed point(s) are what you edit; the
-        box is re-derived by box_from_mask on re-predict). Best-effort: a chain with no
-        serialized prompts (legacy / pre-prompt flag) just leaves the layer empty."""
+        matching the click round-trip in _prompts_for_frame. No box overlay: the GUI
+        seeds propagation with the mask, not a box (PIPELINE_CONTEXT §7). Best-effort: a
+        chain with no serialized prompts (legacy) just leaves the layer empty."""
         st = self._state
-        # idempotent: drop a prior seed-box overlay so reset_prompts can re-seed cleanly
-        if "seed box" in self.viewer.layers:
-            self.viewer.layers.remove("seed box")
         if st is None or st.prompts is None or st.anchor_frame_idx is None:
             return
         pts = np.asarray(st.prompts.points_sam, dtype=float)
@@ -354,18 +355,6 @@ class ReviewGUI:
             n_pos = int((labs == 1).sum())
             print(f"[gui] loaded original seed: {n_pos} positive + {len(labs) - n_pos} "
                   f"negative point(s) at anchor frame {af} (edit these, then 'R')")
-        # context: the seed box as a read-only rectangle (guarded — Shapes API quirks
-        # must not break opening a chain)
-        box = st.prompts.box_sam
-        if box is not None:
-            try:
-                x0, y0, x1, y1 = [float(v) for v in np.asarray(box, dtype=float)]
-                rect = np.array([[af, y0, x0], [af, y0, x1], [af, y1, x1], [af, y1, x0]], float)
-                self.viewer.add_shapes(
-                    [rect], name="seed box", ndim=3, shape_type="rectangle", scale=scale,
-                    edge_color="cyan", face_color="transparent", edge_width=2)
-            except Exception as e:
-                print(f"[gui] seed-box overlay skipped: {e}")
 
     def _skeleton_points(self) -> np.ndarray:
         """This chain's CATMAID nodes as (frame_idx, y_sam, x_sam) for context.
@@ -487,10 +476,12 @@ class ReviewGUI:
         self._refresh_info()
 
     def rerun_image_phase(self, *_) -> None:
-        """Re-run SAM2 image mode on the CURRENT frame using the human's prompt
-        points, update the mask layer, and store the resulting box as the new video
-        seed. The natural use is on the anchor frame to fix a bad seed, but it works
-        on any frame the human wants to re-prompt.
+        """Re-run SAM2 image mode on the CURRENT frame from the human's prompt points
+        and write the result into the **mask** layer. This is a *preview* step: it
+        turns your clicks into a mask you can eyeball (and tweak by painting) before
+        committing. ``resume propagation`` then seeds that mask directly — no bounding
+        box is involved (the box seed was dropped; SAM2 propagates the mask itself,
+        the more-informative seed per PIPELINE_CONTEXT §7 *box vs mask*).
 
         Uses the legacy full-frame _sam image path (the displayed frame IS the _sam
         frame the human clicked on). Crop re-predict is # [DEFERRED] (see header).
@@ -507,32 +498,26 @@ class ReviewGUI:
         em_sam = self._frame_image_sam(frame_idx)              # (H, W, 3) RGB uint8
         mask, score, _ = pipeline.image_predict(self.ctx.image_predictor, em_sam, prompts)
         self.ctx.image_predictor.reset_predictor()
-
-        # write the new mask into the labels layer + segments
-        self._set_frame_mask(frame_idx, mask)
-        box = pipeline.box_from_mask(mask, margin=self.ctx.cfg.box_margin,
-                                     image_hw_sam=mask.shape[:2])
-        if box is None:
-            print("[gui] re-predict produced an empty mask; not seeding a box")
-            return
-        # store as the chain's new seed prompts (used by resume_propagation)
-        self.data._seed_prompts = pipeline.Prompts(
-            points_sam=prompts.points_sam, labels=prompts.labels,
-            box_sam=np.asarray(box, np.float32))
-        self.data._seed_frame_idx = frame_idx
-        print(f"[gui] re-predicted frame {frame_idx}: {int(mask.sum())} px, score {score:.3f}, "
-              f"box {box.astype(int).tolist()} — now 'resume propagation' to re-track")
+        self._set_frame_mask(frame_idx, mask)                  # into the mask layer + segments
+        print(f"[gui] re-predicted frame {frame_idx}: {int(mask.sum())} px, score {score:.3f} "
+              f"— tweak by painting if needed, then 'resume propagation' to re-track")
+        self._zoom_to_mask(frame_idx)
         self._refresh_info()
 
     def resume_propagation(self, *_) -> None:
-        """Re-propagate from a corrected frame over a PropagationSession.
+        """Re-propagate from the CURRENT frame over a PropagationSession, seeding with
+        the **mask** on this frame (re-predicted via ``R`` and/or hand-painted) — never
+        a box. Falls back to point-prompts only if the mask layer is empty here.
 
-        Three correction sources, in priority order, all on the CURRENT frame:
-          1. a re-predicted anchor seed (from ``rerun_image_phase``) → re-seed + run
-             bidirectionally from the seed frame;
-          2. a painted mask (the human edited the 'mask' Labels layer on this frame)
-             → ``add_mask`` then propagate forward+back from here;
-          3. prompt points on this frame → ``add_points`` then propagate from here.
+        Direction is **away from the anchor**, so an already-corrected frame is never
+        clobbered (the front/back fix):
+          * correcting the anchor frame  -> propagate both ways (the whole chain);
+          * a frame AFTER the anchor      -> forward only (anchor..here stays as-is);
+          * a frame BEFORE the anchor     -> reverse only.
+        The corrected frame itself is a conditioning frame in inference_state, and the
+        anchor's original prompt is still in memory, so SAM2 tracks the degraded tail
+        without re-touching the good segment.
+
         Then save masks, re-run QC, persist state, and mark the chain CORRECTED.
         """
         if self.data is None:
@@ -541,32 +526,32 @@ class ReviewGUI:
         frame_idx = self._current_frame()
         sess = self._ensure_session()
 
-        seed = getattr(self.data, "_seed_prompts", None)
-        if seed is not None and getattr(self.data, "_seed_frame_idx", None) == frame_idx:
-            print(f"[gui] re-seeding anchor at frame {frame_idx} and re-propagating both ways")
-            sess.seed(seed, frame_idx, seed_negatives=self.ctx.cfg.seed_negatives)
-            for _ in sess.propagate(reverse=False, start_frame_idx=frame_idx):
-                pass
-            for _ in sess.propagate(reverse=True, start_frame_idx=frame_idx):
-                pass
-            self.data._seed_prompts = None
+        # seed: prefer the mask on this frame (curated boundary); else fall back to points
+        mask = self._painted_mask(frame_idx)
+        prompts = self._prompts_for_frame(frame_idx)
+        if mask is not None and mask.any():
+            sess.add_mask(frame_idx, mask)
+            self._set_frame_mask(frame_idx, mask)   # lock the corrected frame into segments
+            seed_desc = f"mask-seed ({int(mask.sum())} px)"
+        elif len(prompts.labels):
+            sess.add_points(frame_idx, prompts.points_sam, prompts.labels)
+            seed_desc = (f"point-seed ({int((prompts.labels == 1).sum())}+/"
+                         f"{int((prompts.labels == 0).sum())}-)")
         else:
-            painted = self._painted_mask(frame_idx)
-            prompts = self._prompts_for_frame(frame_idx)
-            if painted is not None and painted.any():
-                print(f"[gui] mask-seed correction at frame {frame_idx}; propagating forward+back")
-                sess.add_mask(frame_idx, painted)
-            elif len(prompts.labels):
-                print(f"[gui] point correction at frame {frame_idx} "
-                      f"({int((prompts.labels==1).sum())}+/{int((prompts.labels==0).sum())}-); "
-                      f"propagating forward+back")
-                sess.add_points(frame_idx, prompts.points_sam, prompts.labels)
-            else:
-                print("[gui] no correction on this frame (paint the mask or add points first)")
-                return
-            for _ in sess.propagate(reverse=False, start_frame_idx=frame_idx):
-                pass
-            for _ in sess.propagate(reverse=True, start_frame_idx=frame_idx):
+            print("[gui] no correction on this frame (re-predict 'R', paint the mask, "
+                  "or add points first)")
+            return
+
+        anchor = self.data.anchor_idx
+        if anchor is None or frame_idx == anchor:
+            dirs, where = [False, True], "both ways (whole chain)"
+        elif frame_idx > anchor:
+            dirs, where = [False], f"forward only (frames {anchor}..{frame_idx} preserved)"
+        else:
+            dirs, where = [True], f"reverse only (frames {frame_idx}..{anchor} preserved)"
+        print(f"[gui] resume from frame {frame_idx}: {seed_desc}, propagating {where}")
+        for rev in dirs:
+            for _ in sess.propagate(reverse=rev, start_frame_idx=frame_idx):
                 pass
 
         # pull the session's masks into our segments + the labels layer
@@ -602,19 +587,15 @@ class ReviewGUI:
 
     def reset_prompts(self, *_) -> None:
         """Discard the human's prompt edits and restore the chain's ORIGINAL saved
-        seed (state.prompts) at the anchor frame. Also clears any staged re-predict
-        seed so a pending 'resume' won't fire stale points. Does NOT undo mask paints
-        (the Labels layer has its own Ctrl+Z) — this is prompt-only, as asked."""
+        seed (state.prompts) at the anchor frame. Does NOT undo mask paints (the Labels
+        layer has its own Ctrl+Z) — this is prompt-only, as asked."""
         if self.data is None:
             return
         if self._prompts is not None:                       # clear, then re-seed from disk
             self._prompts.data = np.empty((0, 3))
             self._prompts.features = pd.DataFrame(
                 {"label": pd.Categorical([], categories=_PROMPT_LABELS)})
-        if self.data is not None:
-            self.data._seed_prompts = None
-            self.data._seed_frame_idx = None
-        self._seed_prompts_from_state(self._lscale)
+        self._seed_prompts_from_state()
         print("[gui] prompts reset to the original saved seed")
         self._refresh_info()
 
@@ -654,14 +635,35 @@ class ReviewGUI:
         return str(w.value) if w is not None and w.value else "other"
 
     def open_next_in_queue(self, *_) -> None:
-        """Jump to the next CHAIN that still needs a human (different chain — vs
-        next/prev *flagged*, which moves between frames within the open chain)."""
+        self._step_chain(+1)
+
+    def open_prev_in_queue(self, *_) -> None:
+        self._step_chain(-1)
+
+    def _step_chain(self, direction: int) -> None:
+        """Cycle to the next/prev CHAIN that still needs a human (different chain — vs
+        next/prev *flagged FRAME*, which moves between frames within the open chain).
+
+        Includes ``in_review`` chains (the fix for "can't return to an unfinished
+        chain"): opening a chain marks it in_review, so excluding those made the queue
+        look empty as soon as you'd visited each once. Only terminal dispositions
+        (approved / rejected / corrected) drop a chain out. Wraps around, and is
+        relative to the chain currently open."""
         self.queue.refresh()
-        pend = self.queue.pending(include_in_review=False)
+        pend = self.queue.pending(include_in_review=True)   # keep unfinished chains visible
         if not pend:
-            print("[gui] queue empty — nothing left to review")
+            print("[gui] queue empty — every flagged chain has been dispositioned "
+                  "(approved/rejected/corrected)")
             return
-        self.open_chain(*pend[0])
+        cur = (self.neuron, self.chain_idx)
+        if cur in pend:
+            i = (pend.index(cur) + direction) % len(pend)
+        else:
+            i = 0 if direction > 0 else len(pend) - 1
+        if pend[i] == cur and len(pend) == 1:
+            print(f"[gui] {cur[0]} chain {cur[1]:02d} is the only chain left in the queue")
+            return
+        self.open_chain(*pend[i])
 
     # =====================================================================
     # Label logging
@@ -802,7 +804,9 @@ class ReviewGUI:
         self._picker = ComboBox(label="chain", choices=choices)
         open_btn = PushButton(text="open selected chain")
         open_btn.changed.connect(lambda *_: self._open_from_picker())
-        next_q = PushButton(text="next CHAIN in queue ⇉")          # different chain
+        prev_q = PushButton(text="⇇ prev CHAIN")                    # cycle, incl. unfinished
+        prev_q.changed.connect(self.open_prev_in_queue)
+        next_q = PushButton(text="next CHAIN ⇉")                    # cycle, incl. unfinished
         next_q.changed.connect(self.open_next_in_queue)
         refresh = PushButton(text="↻ refresh queue")
         refresh.changed.connect(lambda *_: self._refresh_picker())
@@ -856,7 +860,7 @@ class ReviewGUI:
 
         panel = Container(widgets=[
             self._reviewer_edit,
-            Label(value="— queue (chains) —"), self._picker, open_btn, next_q, refresh,
+            Label(value="— queue (chains) —"), self._picker, open_btn, prev_q, next_q, refresh,
             Label(value="— frames (this chain) —"), prevf, nextf,
             Label(value="— prompts —"), self._prompt_mode, reset_btn,
             Label(value="— view —"), self._size_spin, self._zoom_chk, zoom_btn,
@@ -987,7 +991,7 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
     if neuron is not None and chain_idx is not None:
         gui.open_chain(neuron, int(chain_idx))
     else:
-        pend = gui.queue.pending(include_in_review=False)
+        pend = gui.queue.pending(include_in_review=True)
         if pend:
             gui.open_chain(*pend[0])
         else:

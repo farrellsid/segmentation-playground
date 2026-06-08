@@ -43,7 +43,6 @@ A frame slider (top/bottom) scrubs through the chain by **frame index**. Layers
 | Layer | What it is | Editable? |
 |---|---|---|
 | **prompts** | The SAM2 seed points: **green = positive**, **red = negative**. Pre-loaded with the chain's *original* seed at the anchor frame. | **Yes** — click to add (in *add* mode), select+delete to remove |
-| **seed box** | Cyan rectangle = the original bounding box the batch seeded from. Context only. | No |
 | **skeleton** | Yellow dots = this chain's CATMAID skeleton nodes per slice. Context only — these are *not* the SAM prompts. | No |
 | **mask** | The segmentation, as a paintable label layer. **Paint here** to correct a mask by hand. | **Yes** — napari brush/eraser; `Ctrl+Z` undoes |
 | **EM** | The electron-microscopy image. | No |
@@ -53,15 +52,19 @@ prompts · view · correct · label / disposition**.
 
 ---
 
-## 3. "Next CHAIN" vs "next flagged FRAME" — the thing everyone asks
+## 3. "Next CHAIN" vs "next flagged FRAME"
 
 These move at two different scales:
 
 - **next flagged FRAME** (`.`) / **prev flagged FRAME** (`,`) — stay *in the current
   chain*, jump to the next/previous frame QC queued. Use these to walk the problem
   spots of the chain you're reviewing.
-- **next CHAIN in queue** (button) — *close this chain and open the next one* that
-  still needs a human. Use this when you're done with a chain.
+- **prev / next CHAIN** (buttons) — *close this chain and open another* in the queue.
+  They **cycle** through every chain that still needs a human, **including ones you've
+  opened but not yet finished** (status `in_review`), and wrap around — so you can
+  always come back to an unfinished chain. A chain only leaves the cycle once it's
+  **approved / rejected / corrected**. (You can also pick any chain directly from the
+  **chain** dropdown.)
 
 So: frames are *within* a chain; the queue is *across* chains.
 
@@ -90,23 +93,35 @@ Many flags are benign (e.g. a skeleton node briefly leaves the plane). Scrub the
 flagged frames (`.`), and if the masks look correct, hit **approve** (`A`). This
 keeps the masks as-is, marks the chain `approved`, and logs the frames as `ok`.
 
+**How seeding works (read once):** propagation is always seeded with the **mask** on
+the current frame — the re-predicted and/or hand-painted mask in the **mask** layer —
+*not* a bounding box. `R` turns your points into a mask you can preview and tweak; `G`
+takes whatever mask is on the current frame and propagates it. Direction is **away
+from the anchor**, so an already-good segment is never re-tracked:
+
+- correcting the **anchor** frame → propagates **both ways** (re-does the whole chain);
+- a frame **after** the anchor → **forward only** (anchor → here is preserved);
+- a frame **before** the anchor → **reverse only** (here → anchor is preserved).
+
 ### 5b. Fix a bad anchor, then re-propagate
 1. Go to the anchor frame (you open on it). The original seed points are already there.
 2. Edit them: click to add positives (`p`) / negatives (`n`) on the neurite vs its
    neighbours; select and delete bad points. (**Reset prompts** restores the original
-   seed if you want to start over — §5e.)
-3. **Re-run image phase** (`R`) — re-predicts the anchor mask from your points and
-   updates the **mask** layer + the seed box.
-4. **Resume propagation** (`G`) — re-tracks the whole chain from the re-seeded anchor.
+   seed — §5e.)
+3. **Re-run image phase** (`R`) — re-predicts the anchor mask from your points into the
+   **mask** layer. Tweak it by painting if needed.
+4. **Resume propagation** (`G`) — re-tracks the whole chain from the re-seeded anchor
+   (anchor → both directions).
 5. Inspect, then **approve** (`A`). The corrected `masks/` + `qc.csv` + `state.json`
    are rewritten on disk, identical in form to a fresh batch run.
 
 ### 5c. Fix a mid-propagation drift
-1. Scrub to the frame where it goes wrong (`.`).
-2. Either **paint** the correct mask into the **mask** layer (brush/eraser), or add
-   prompt points on that frame.
-3. **Resume propagation** (`G`) — re-tracks *forward and back from this frame* over
-   your correction (a painted mask is used as a mask-seed; points as point-prompts).
+1. Scrub to the first frame where it goes wrong (`.`).
+2. Either **paint** the correct mask into the **mask** layer (brush/eraser), or place
+   points and `R` to make a mask there.
+3. **Resume propagation** (`G`) — re-tracks **only the drifted tail** (the direction
+   away from the anchor), seeding with your mask. Frames between the anchor and here
+   keep their existing masks, so a center frame you already corrected isn't clobbered.
 4. Approve when satisfied.
 
 ### 5d. Reject a chain you can't fix
@@ -167,14 +182,32 @@ All under your `--output-root`:
 
 ---
 
-## 8. Current limitations (deferred)
+## 8. Current limitations & planned work
 
-- **Mask resolution is scale-8** (above) — tier-2 crop is M4.5.
+Known limits (deferred):
+
+- **Mask resolution is scale-8** (§6) — working with the masks is "pixel art"; you
+  often can't see the true boundary. This is the headline limitation. The real fix is
+  re-propagating at higher resolution (**tier-2 per-chain crop, M4.5**); `--hires-em`
+  only sharpens the EM background. **Use `--hires-em`** until then.
 - **Re-predict is scale-8 full-frame**, not the high-res crop the batch uses.
 - **No concurrent reviewers** — `_review.csv` has no cross-process lock yet; one
   reviewer at a time. "↻ refresh queue" re-reads the manifest on demand (e.g. to pick
   up chains a still-running batch just flagged).
 - **The model isn't trained yet** — this milestone *collects* labels; training the
   learned QC detector on them is M4.5.
+
+Planned changes from review-testing feedback (tracked in `PIPELINE_CONTEXT.md` §7):
+
+- **Marking/intervention split (the too-many-buttons fix).** A two-mode flow: a
+  *marking* mode that loads a chain and lets you sweep every frame ok/bad, and a
+  separate *intervention* mode that shows only the frame(s) you flagged for fixing.
+  Reduces the dense single panel and stops accidental edits while scrubbing.
+  *(Planned — likely alongside M4.5; the current single panel works in the meantime.)*
+- **Strict-by-default flagging.** Tune the QC thresholds to flag *aggressively* now
+  (high recall — catch everything, accept false alarms) and loosen later once the
+  M4.5 learned detector has labels to set the operating point. *(A pipeline-config
+  change + re-run; see §7. Recommended values are noted there.)*
+- **Higher-res masks (tier-2 crop).** See above — M4.5.
 
 See `PIPELINE_CONTEXT.md` §6/§7 for the full roadmap and rationale.

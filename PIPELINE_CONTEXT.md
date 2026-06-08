@@ -99,6 +99,24 @@ sketch; `gui.py` is the napari rebuild they called for. What's left for M4.5 is
 *training* on the labels M4 collects, plus the label-gated accuracy levers; see §6
 row 4 for the shipped-vs-deferred split and §7 for the deferred items.
 
+**M4 review-testing pass (June 2026).** Fixes from first real use of the GUI:
+(1) **Directional resume** — a correction now re-propagates *away from the anchor only*
+(anchor → both ways; a frame after/before the anchor → forward/reverse only), so an
+already-corrected center frame is never clobbered when you fix a later one. (2) **Mask
+seed, box dropped** — GUI corrections seed propagation with the mask (`add_mask`: the
+re-predicted and/or hand-painted mask on the frame), never a derived box; this is the
+§7 *box-vs-mask* "human-painted mask is the maximally-verified seed" path, now the GUI
+default (the box overlay was removed). (3) **Queue cycling** — prev/next CHAIN cycle
+through every undisposed chain *including `in_review`* and wrap, fixing "can't return to
+an unfinished chain" (opening a chain marks it `in_review`, which the old next-button
+excluded → false "queue empty"). Three larger items were **documented, not built** (at
+the lab's discretion, before/around M4.5): a **marking/intervention GUI split** (sweep
+ok/bad in a marking mode, fix only flagged frames in an intervention mode — the
+too-many-buttons + scroll-confusion fix), **strict-by-default flagging** (flag
+aggressively now for recall, loosen once the M4.5 detector can set the operating point),
+and **higher-res masks** (the "pixel-art" resolution complaint — the real fix is the
+M4.5 tier-2 per-chain crop; `--hires-em` is the interim EM-only sharpening). See §7.
+
 The notebook `single_object_depth_segmentation_.ipynb` does one chain
 end-to-end:
 
@@ -713,6 +731,26 @@ a queue to clear (3) are its inputs. Building the GUI first means building it bl
   re-propagate competes for the card) — interleave on one GPU (corrections are
   intermittent), or, under multi-GPU sharding, dedicate one GPU to interactive and the
   rest to batch. So parallel-GUI and multi-GPU are the same architecture from two angles.
+- **[M4.5-ish] Marking/intervention GUI split (review-testing feedback, June 2026).** The
+  single dense panel is confusing and lets the reviewer scroll to any frame and act on it,
+  which muddies what the system thinks is being reviewed. Proposed two-mode flow: a
+  **marking** mode that loads a chain and lets the human sweep frames ok/bad (label-only,
+  no edits), and a separate **intervention** mode entered on a bad frame that shows *only*
+  the flagged/selected frame(s) and exposes the correction tools (points / paint / resume).
+  Cleaner than the current all-in-one dock and removes accidental-edit-while-scrubbing.
+  Not built — the current single-panel GUI works; do this before or with M4.5 at the lab's
+  discretion. Pairs naturally with the §6-row-4 deferred work.
+- **[before M4.5] Strict-by-default flagging (review-testing feedback, June 2026).** Operating
+  posture, not a mechanism change: set the `qc_*` thresholds to flag **aggressively** (high
+  recall — catch every plausible error, tolerate false alarms) for the first labeled
+  campaign, then loosen once the M4.5 learned `P(error)` detector has labels to set the
+  operating point against ground truth (the *GUI as label engine* item). Concretely: tighten
+  `qc_area_ratio_bounds` (e.g. `(0.7, 1.5)`), raise `qc_temporal_iou_min` and `qc_pred_iou_min`,
+  and set `qc_triage_min_signals = 1` (queue every flag, not just intervene). NB the §5#7
+  mixed-threshold discipline: **clear/re-score the manifest** after changing thresholds, or
+  early and late chains silently mix two configs. Until the learned detector exists, the
+  rule's job is recall, not precision — the human is the precision filter, and every
+  decision is a label.
 
 ---
 
