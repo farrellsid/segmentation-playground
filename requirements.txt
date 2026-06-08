@@ -12,6 +12,15 @@ torchvision
 
 # GUI
 PyQt5
+# M4 review/triage GUI (gui.py). Heavy + optional: only needed to run the napari
+# correction tool, NOT for the headless batch/pipeline or the sam2_utils helpers
+# (napari is import-on-demand, never pulled into `import sam2_utils`). magicgui
+# builds the dock widgets; the PyQt5 above is napari's Qt backend.
+# dask-image is optional — gui.py uses it to lazily load long chains' frame
+# stacks and falls back to an eager numpy stack if it's absent.
+napari>=0.5            # border_* Points attributes (renamed from edge_* in 0.5)
+magicgui>=0.5
+dask-image             # optional: lazy frame-stack loading for long chains
 
 # Data/storage
 h5py
