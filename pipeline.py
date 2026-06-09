@@ -275,9 +275,20 @@ class PipelineConfig:
     frames_root: Optional[Path] = None     # parent dir for SAM2 JPEG frame folders
 
 
-    # video seed (M3.5 item 3). Pass build_prompts' neighbour-node negatives to the
-    # video seed, not just the positive anchor. Off = M1 seed; on = A/B (§7).
-    seed_negatives: bool = False
+    # video seed (M3.5 item 3 -> M4.5 seed ablation). What conditioning to put on the
+    # anchor frame for video propagation. SAM2 treats MASK and POINTS/BOX as mutually
+    # exclusive per frame (add_new_mask pops point/box inputs and vice-versa), so the
+    # valid space is: seed_mask alone, OR any combination of {box, positive, negative}.
+    # Defaults reproduce the M1/current seed exactly (fixed-margin box + positive point).
+    # The ablation (ab_seed.py, June 2026) sweeps these to find the seeding sweet spot —
+    # more prompts is NOT always better (over-constraining the anchor can hurt tracking).
+    seed_box: str = "fixed"            # "none" | "fixed" (box_margin px) | "frac" (box_margin_frac)
+    seed_points: bool = True           # include the positive (anchor skeleton) point
+    seed_negatives: bool = False       # include build_prompts' neighbour-node negatives
+    seed_mask: bool = False            # seed add_new_mask with the anchor mask instead of box/points
+                                       # (requires the anchor mask to be in the propagation space:
+                                       # legacy _sam or tier-2 _pcrop, NOT tier-1 crop_anchor _crop)
+    box_margin_frac: float = 0.0       # %-of-bbox-size box pad when seed_box == "frac" (underfill fix)
 
     # mask post-processing (M3.5 item 5) -> deterministic, no model. Runs before
     # save+QC so QC scores the delivered mask. Off = M1 baseline. Kernels are in
@@ -593,12 +604,20 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
     return mask_b.astype(bool), score, logits[best:best + 1]
 
 
-def box_from_mask(mask_sam: np.ndarray, *, margin: int,
+def box_from_mask(mask_sam: np.ndarray, *, margin: int, margin_frac: float = 0.0,
                   image_hw_sam: tuple[int, int]) -> Optional[np.ndarray]:
     """Largest connected component -> xyxy box (+margin), clipped to image, _sam space.
 
     Returns the box, or None if the mask is empty -> None is the signal to flag the
     chain for human review rather than feed garbage into propagation.
+
+    ``margin`` is a fixed pad in mask-space px (the historical behaviour). ``margin_frac``
+    (>0) adds a pad scaled to the box's own size — ``round(margin_frac * max(w, h))`` of
+    the largest-CC bbox, applied per side — and the effective pad is the LARGER of the two.
+    Rationale (June 2026 seed ablation): when the anchor mask *under*-fills the cell, a
+    fixed 10px box doesn't enclose the whole process, so propagation can't recover the
+    missing extent; a size-relative pad widens the box in proportion to the object, which
+    is the cheap way to keep the box seed competitive with the (curated) mask seed.
 
     Lift from: 'Bounding Box Generation' cell.
     """
@@ -614,10 +633,13 @@ def box_from_mask(mask_sam: np.ndarray, *, margin: int,
 
     H_sam, W_sam = image_hw_sam
     ys, xs = np.where(m)
-    x0 = max(int(xs.min()) - margin, 0)
-    y0 = max(int(ys.min()) - margin, 0)
-    x1 = min(int(xs.max()) + margin, W_sam - 1)
-    y1 = min(int(ys.max()) + margin, H_sam - 1)
+    w = int(xs.max()) - int(xs.min()) + 1
+    h = int(ys.max()) - int(ys.min()) + 1
+    pad = max(int(margin), int(round(margin_frac * max(w, h))))   # frac scales with object size
+    x0 = max(int(xs.min()) - pad, 0)
+    y0 = max(int(ys.min()) - pad, 0)
+    x1 = min(int(xs.max()) + pad, W_sam - 1)
+    y1 = min(int(ys.max()) + pad, H_sam - 1)
     return np.array([x0, y0, x1, y1], dtype=np.float32)
 
 
@@ -1093,20 +1115,41 @@ class PropagationSession:
 
     # -- seeding / corrections -----------------------------------------------------
     def seed(self, prompts: Prompts, anchor_frame_idx: int, *,
-             seed_negatives: bool = False) -> None:
-        """Seed the anchor frame with box + positive point(s) (and optionally the
-        neighbour-node negatives — M3.5 item 3; see the note below). Mirrors the
-        notebook's anchor seed exactly so masks reproduce."""
-        # Negatives are the same same-z neighbour nodes build_prompts placed in _sam
-        # (valid in both crop and legacy paths — state.prompts stays in _sam). Default
-        # off = positives only = the M1 seed; flip on to A/B concave E/U chains
-        # (PIPELINE_CONTEXT §7 *Negative points*).
+             seed_box: bool = True, seed_points: bool = True,
+             seed_negatives: bool = False, seed_mask: bool = False,
+             mask_anchor: Optional[np.ndarray] = None) -> None:
+        """Seed the anchor frame. Defaults (box + positive point) mirror the notebook's
+        anchor seed exactly so masks reproduce.
+
+        SAM2 treats MASK and POINTS/BOX as mutually-exclusive conditioning per frame
+        (add_new_mask pops point_inputs and add_new_points_or_box pops mask_inputs — see
+        sam2_video_predictor.py), so seed_mask=True takes the add_new_mask path and ignores
+        box/points on the anchor frame. The box/points path composes any subset of
+        {box, positive, negative} in a single add_new_points_or_box call.
+
+        Negatives are the same same-z neighbour nodes build_prompts placed in _sam (valid in
+        both crop and legacy paths — state.prompts stays in _sam). The mask seed needs the
+        anchor mask in the PROPAGATION space (legacy _sam or tier-2 _pcrop); run_chain passes
+        the right-space mask and guards the tier-1 crop_anchor case.
+        """
+        if seed_mask:
+            if mask_anchor is None:
+                raise ValueError("seed_mask=True requires mask_anchor (in the propagation space)")
+            self.add_mask(int(anchor_frame_idx), mask_anchor)
+            return
+
         pts = np.asarray(prompts.points_sam, dtype=np.float32)
         labels = np.asarray(prompts.labels, dtype=np.int32)
+        keep = np.ones(len(labels), dtype=bool)
+        if not seed_points:
+            keep &= labels != 1            # drop positives
         if not seed_negatives:
-            keep = labels == 1
-            pts, labels = pts[keep], labels[keep]
-        box = None if prompts.box_sam is None else np.asarray(prompts.box_sam, dtype=np.float32)
+            keep &= labels != 0            # drop negatives
+        pts, labels = pts[keep], labels[keep]
+        box = (np.asarray(prompts.box_sam, dtype=np.float32)
+               if (seed_box and prompts.box_sam is not None) else None)
+        if box is None and len(pts) == 0:
+            raise ValueError("empty anchor seed: enable at least one of box / points / mask")
         self.vp.add_new_points_or_box(
             inference_state=self.inference_state,
             frame_idx=int(anchor_frame_idx),
@@ -1201,6 +1244,8 @@ class PropagationSession:
 
 def propagate(video_predictor, frames_dir: str, prompts: Prompts,
               anchor_frame_idx: int, *, obj_id: int, seed_negatives: bool = False,
+              seed_box: bool = True, seed_points: bool = True, seed_mask: bool = False,
+              mask_anchor: Optional[np.ndarray] = None,
               subtimings: Optional[dict] = None
               ) -> tuple[dict[int, dict[int, np.ndarray]], dict[int, float], dict[int, float]]:
     """Seed the anchor, propagate bidirectionally, collect masks. Headless straight-through
@@ -1230,7 +1275,9 @@ def propagate(video_predictor, frames_dir: str, prompts: Prompts,
     if subtimings is not None:
         subtimings["jpeg_load"] = perf_counter() - _t      # dominated by SAM2's frame decode
     try:
-        session.seed(prompts, anchor_frame_idx, seed_negatives=seed_negatives)
+        session.seed(prompts, anchor_frame_idx, seed_box=seed_box,
+                     seed_points=seed_points, seed_negatives=seed_negatives,
+                     seed_mask=seed_mask, mask_anchor=mask_anchor)
         _t = perf_counter()
         session.run_bidirectional()
         if subtimings is not None:
@@ -1738,7 +1785,11 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
               f"area_frac={anchor.area_frac:.5f} contained={_contained})"
               + (f"  reasons: {', '.join(anchor.reasons)}" if anchor.reasons else ""))
 
-        box_local = box_from_mask(mask_anchor, margin=margin_local, image_hw_sam=image_hw_anchor)
+        # %-of-bbox box pad (seed ablation) when seed_box=="frac"; frac scales with the
+        # object so it needs no space rescale (margin_local, the fixed px pad, already does).
+        box_frac = cfg.box_margin_frac if cfg.seed_box == "frac" else 0.0
+        box_local = box_from_mask(mask_anchor, margin=margin_local, margin_frac=box_frac,
+                                  image_hw_sam=image_hw_anchor)
         box_present = box_local is not None
         if not box_present:
             print("    empty anchor mask")
@@ -1757,7 +1808,11 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
             box = box_local if cw is None else cw.box_crop_to_sam(box_local)
             state.prompts.box_sam = np.asarray(box, dtype=np.float32)
             print(f"    box (xyxy, _sam): {state.prompts.box_sam.astype(int).tolist()}")
-        return cw_chain_l, anchor, box_present
+        # mask_anchor is in the anchor's image space: _pcrop (tier-2) or _sam (legacy) ==
+        # the propagation space, but _crop (tier-1 crop_anchor) != _sam. Only return it as a
+        # seedable mask when it matches the frames the chain will propagate over.
+        mask_seedable = mask_anchor if (use_chain_crop or not crop_active) else None
+        return cw_chain_l, anchor, box_present, mask_seedable
 
     def _anchor_poor(anchor, box_present: bool) -> bool:
         """The crop anchor is untrustworthy -> tier-2 should fall back to _sam."""
@@ -1770,7 +1825,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
             return True
         return False
 
-    cw_chain, anchor, box_present = _anchor_phase(use_chain_crop=cfg.chain_crop)
+    cw_chain, anchor, box_present, mask_anchor_seed = _anchor_phase(use_chain_crop=cfg.chain_crop)
     if cfg.chain_crop and cfg.chain_crop_fallback and _anchor_poor(anchor, box_present):
         reasons = []
         if not box_present: reasons.append("empty-mask")
@@ -1780,7 +1835,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         print(f"    [tier-2 fallback] poor _pcrop anchor [{', '.join(reasons)}] "
               f"-> re-running this chain in the plain _sam path")
         state.fell_back_to_sam = True
-        cw_chain, anchor, box_present = _anchor_phase(use_chain_crop=False)
+        cw_chain, anchor, box_present, mask_anchor_seed = _anchor_phase(use_chain_crop=False)
 
     # Effective space for the rest of the run: tier-2 only if we didn't fall back.
     eff_chain_crop = cfg.chain_crop and not state.fell_back_to_sam
@@ -1790,6 +1845,13 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         state.status = "flagged"
         _finish()
         return state                          # [M4] later: re-pick anchor before flagging
+
+    # Mask seed (seed ablation): valid only if the anchor mask is in the propagation space.
+    # _anchor_phase returns None for the tier-1 crop_anchor case (anchor in _crop != _sam).
+    if cfg.seed_mask and mask_anchor_seed is None:
+        raise ValueError(
+            "seed_mask=True but the anchor mask is not in the propagation space "
+            "(tier-1 crop_anchor produces a _crop mask). Use crop_anchor=False or chain_crop=True.")
 
     # free the image embedding before video propagation (notebook does this).
     image_predictor.reset_predictor()
@@ -1814,12 +1876,15 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
             neuron=state.neuron, chain_idx=state.chain_idx)
     print(f"    {state.n_frames} frames  (anchor frame_idx={state.anchor_frame_idx})")
 
-    # 7. propagate
+    # 7. propagate (seed per the ablation spec; defaults = box+positive = M1 seed)
     _step(7, "propagate (bidirectional)")
     video_segments, frame_conf, pred_iou = propagate(
         video_predictor, state.frames_dir, state.prompts,
         state.anchor_frame_idx, obj_id=state.obj_id,
-        seed_negatives=cfg.seed_negatives, subtimings=subtimings)
+        seed_box=(cfg.seed_box != "none"), seed_points=cfg.seed_points,
+        seed_negatives=cfg.seed_negatives, seed_mask=cfg.seed_mask,
+        mask_anchor=(mask_anchor_seed if cfg.seed_mask else None),
+        subtimings=subtimings)
 
     # 8. (post-process, then) save at canonical space. Cleanup is a §3a phase
     #    folded in here so it lands BEFORE QC (step 9) reads the masks back.

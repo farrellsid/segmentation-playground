@@ -750,6 +750,27 @@ a queue to clear (3) are its inputs. Building the GUI first means building it bl
   exists and is AVAL-validated — so the auto/confidence-gated path is a thin add alongside
   the GUI's human-anchor path, not a separate build. This is the counterpart to the multimask
   decision, which we landed pre-GUI precisely because it is near-free and self-contained.)*
+  *(Update June 2026 — **seed ablation landed + measured** (`ab_seed.py`; flexible
+  `seed_box`/`seed_points`/`seed_negatives`/`seed_mask` + `box_margin_frac`). **API fact:** SAM2
+  makes MASK and POINTS/BOX mutually exclusive per frame (`add_new_mask` pops `point_inputs` and
+  vice-versa), so "mask + points on the anchor" is NOT a real config — the valid space is
+  mask-only OR any subset of {box, pos, neg}. **Result (3 AIYL chains, 88 frames, anchor held at
+  scale-8 `_sam` so seed type is isolated), ranked by queue:** `box_pos` (the current default) = 6
+  queued, tied with the box+neg / boxfrac variants; `box_only`/`mask_only` = 8; `pos_only` = 9.
+  **Takeaways:** (1) **box+positive is the best AUTO seed — keeping the box was correct**; point-only
+  *regresses*. (2) **`mask_only` does NOT beat the box at scale-8** (8 vs 6) — confirms the mask seed
+  only wins on a *high-quality* anchor (curated/human-painted or tier-2 `_pcrop`), so scrapping the
+  box in the *GUI* (human paints a good mask) was right AND keeping it for scale-8 AUTO was right;
+  the two decisions are consistent, not contradictory. (3) **Negatives are chain-dependent**, not a
+  blanket win: c12 queue 4→1 with negatives, but c29 2→5 — helps concave/cluttered, hurts clean,
+  net wash. Keep `seed_negatives` a targeted lever, default-off. (4) **`box_margin_frac` (underfill
+  fix) is UNTESTED** — none of the 3 chains under-filled (anchors 0.85-0.89), so `boxfrac` ≈ `box`
+  here; needs a chain whose anchor under-segments to validate. Caveat: small sample, weak deltas
+  (6 vs 8-9) — directional. Default seed unchanged (`box_pos` won); the knobs are additive.)*
+  *(Update June 2026 — **wider tier-2 A/B** (`ab_tier2_wide.py`, 15 chains × AIYL/RMDR/AVBR, tier-2
+  with the item-b fallback on): improved 3, **regressed 0**, unchanged 12, fallback fired 6/15, net
+  queue −10. Tier-2-with-fallback only helps or stays neutral (via fallback) across 3 neurons → safe
+  to enable on flagged chains; AVBR c12 (worst, queue 9) fell back to `_sam` and needs the GUI.)*
 - **[M3.5 auto · manual→M4]** **Negative points in video seeding.** `add_new_points_or_box` takes labelled points
   *and* a box on the prompt frame, so adding negatives to the video seed is trivial.
   Most useful for concave shapes (E/U neurons) where a box bounds a concavity that
