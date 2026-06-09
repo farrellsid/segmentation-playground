@@ -184,6 +184,30 @@ class CropWindow:
         return cls(origin_tif=(float(x0), float(y0)), size_tif=(int(w), int(h)),
                    crop_scale=int(crop_scale), sam_scale=int(sam_scale))
 
+    @classmethod
+    def around_box(cls, box_tif, *, pad_tif, image_hw_tif,
+                   crop_scale: int, sam_scale: int) -> "CropWindow":
+        """Window covering a `_tif` bbox (xyxy), expanded by `pad_tif`, clipped to image.
+
+        Unlike `around_node` (a fixed-size window slid inside the frame), this is the
+        *intersection* of the padded bbox with the image — so it is exactly the box's
+        extent, only smaller at an edge. This is the tier-2 per-chain window: pass the
+        bbox of a chain's whole skeleton xy-extent so the entire propagation runs in
+        one high-res crop (PIPELINE_CONTEXT §7 "Local high-res cropping" tier 2).
+
+        box_tif : (x0, y0, x1, y1) in full-res tif px.
+        image_hw_tif : (H, W) of the full-res frame.
+        """
+        x0, y0, x1, y1 = (float(v) for v in box_tif)
+        H_tif, W_tif = int(image_hw_tif[0]), int(image_hw_tif[1])
+        x0 = max(0, int(np.floor(x0 - pad_tif)))
+        y0 = max(0, int(np.floor(y0 - pad_tif)))
+        x1 = min(W_tif, int(np.ceil(x1 + pad_tif)))
+        y1 = min(H_tif, int(np.ceil(y1 + pad_tif)))
+        w, h = max(1, x1 - x0), max(1, y1 - y0)
+        return cls(origin_tif=(float(x0), float(y0)), size_tif=(int(w), int(h)),
+                   crop_scale=int(crop_scale), sam_scale=int(sam_scale))
+
     # --- array slice: numpy is [row, col] = [y, x]. THE only x/y swap. ---
     def slice_tif(self) -> Tuple[slice, slice]:
         """(row_slice, col_slice) to crop a full-res _tif array: img[slice_tif()]."""
@@ -213,6 +237,11 @@ class CropWindow:
     def tif_to_sam(self, xy_tif) -> np.ndarray:
         return np.asarray(xy_tif, dtype=float) / self.sam_scale
 
+    def sam_to_crop(self, xy_sam) -> np.ndarray:
+        """_sam px -> _crop px (via _tif). The map the tier-2 path uses to land the
+        _sam-built prompts/skeleton into the per-chain crop the propagation runs in."""
+        return self.tif_to_crop(np.asarray(xy_sam, dtype=float) * self.sam_scale)
+
     # --- box maps. boxes are xyxy. axis-aligned + positive scale, so corners
     #     map to corners and order is preserved. ---
     def box_crop_to_sam(self, box_crop) -> np.ndarray:
@@ -222,6 +251,19 @@ class CropWindow:
     def box_crop_to_tif(self, box_crop) -> np.ndarray:
         b = np.asarray(box_crop, dtype=float).reshape(2, 2)
         return self.crop_to_tif(b).reshape(4)
+
+    # --- (de)serialize: persisted in state.json so QC/review/GUI can rebuild the
+    #     crop space a tier-2 chain was propagated/saved in. ---
+    def to_dict(self) -> Dict[str, Any]:
+        return {"origin_tif": [float(v) for v in self.origin_tif],
+                "size_tif": [int(v) for v in self.size_tif],
+                "crop_scale": int(self.crop_scale), "sam_scale": int(self.sam_scale)}
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "CropWindow":
+        return cls(origin_tif=(float(d["origin_tif"][0]), float(d["origin_tif"][1])),
+                   size_tif=(int(d["size_tif"][0]), int(d["size_tif"][1])),
+                   crop_scale=int(d["crop_scale"]), sam_scale=int(d["sam_scale"]))
 
 
 # =============================================================================

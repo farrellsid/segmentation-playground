@@ -182,6 +182,7 @@ def compute_metrics(
     area_ratio_bounds: tuple[float, float] = (0.5, 2.0),
     temporal_iou_min: float = 0.3,
     pred_iou_min: float = 0.5,
+    crop_window: object = None,
 ) -> pd.DataFrame:
     """
     One-pass QC metric collection over a directory of SAM2-output masks.
@@ -230,6 +231,12 @@ def compute_metrics(
         A frame fires when pred_iou < this. Default 0.5. Live once ``pred_iou``
         (or ``pred_iou_csv``) is supplied; inert only when pred_iou stays NaN
         (no mapping/CSV joined). Set <= 0 to record pred_iou without flagging on it.
+    crop_window : alignment.CropWindow, optional
+        Tier-2 per-chain crop (`_pcrop`). When given, the masks live in this crop
+        space rather than _sam, so a skeleton node's (x_tif, y_tif) is mapped to
+        mask px via ``crop_window.sam_to... ``->`` tif_to_crop`` instead of being
+        divided by ``save_downscale``. ``None`` keeps the _sam ``/ save_downscale``
+        mapping (the default full-frame path).
 
     Returns
     -------
@@ -266,8 +273,13 @@ def compute_metrics(
         elif area == 0:
             contained = False                        # node exists, mask empty
         else:
-            # _tif skeleton node -> saved-mask px (== _sam when save_downscale == scale)
-            sx, sy = alignment.tif_to_sam(xy, save_downscale)
+            # _tif skeleton node -> saved-mask px. Tier-2: map _tif->_pcrop via the
+            # crop window (the node lookup must land in the crop the masks were saved
+            # in). Else _tif->_sam (== /save_downscale under the canonical rule).
+            if crop_window is not None:
+                sx, sy = np.asarray(crop_window.tif_to_crop(xy), dtype=float).ravel()[:2]
+            else:
+                sx, sy = alignment.tif_to_sam(xy, save_downscale)
             sx_i, sy_i = int(round(sx)), int(round(sy))
             if 0 <= sy_i < m.shape[0] and 0 <= sx_i < m.shape[1]:
                 contained = _node_contained(m, sx_i, sy_i, skeleton_dilation_px)

@@ -145,13 +145,19 @@ missed, which the queue alone can never surface.
 
 ## 6. Why it looks low-res (and `--hires-em`)
 
-The mask and the EM frames display at **scale-8** (`_sam` space, ~1152×1154 from a
-~9216×9230 EM frame), because that is the resolution the pipeline *propagates and
-saves* at. The high-res anchor crop only sharpens the one-frame seed; its box is
-mapped back to scale-8 and the crop is discarded.
+For a **standard (`_sam`) chain** the mask and EM frames display at **scale-8**
+(~1152×1154 from a ~9216×9230 EM frame), because that is the resolution the pipeline
+*propagated and saved* it at. The high-res anchor crop only sharpens the one-frame seed;
+its box is mapped back to scale-8 and the crop is discarded.
 
-- The **mask cannot be sharpened in the GUI** — genuinely higher-res masks require
-  re-propagating at higher resolution (the tier-2 per-chain crop, milestone 4.5).
+For a **tier-2 chain** (run with `chain_crop=True`) the mask and frames display at the
+chain's **crop resolution** (`_pcrop`, typically scale-2) — genuinely sharper, because the
+whole chain was propagated and saved in that crop. The GUI detects this from the chain's
+`state.json` (`crop_window`) and rebuilds the crop space automatically; nothing to toggle.
+
+- For an `_sam` chain the **mask cannot be sharpened in the GUI** — genuinely higher-res
+  masks require re-propagating at higher resolution, i.e. re-running that chain with
+  `chain_crop=True` (the tier-2 per-chain crop).
 - `--hires-em` loads the **full-resolution EM** as the background (lazy) and scales
   the still-scale-8 mask/points to overlay it, so the EM context is crisp for judging
   a fix. The mask stays blocky — that's expected.
@@ -186,11 +192,14 @@ All under your `--output-root`:
 
 Known limits (deferred):
 
-- **Mask resolution is scale-8** (§6) — working with the masks is "pixel art"; you
-  often can't see the true boundary. This is the headline limitation. The real fix is
-  re-propagating at higher resolution (**tier-2 per-chain crop, M4.5**); `--hires-em`
-  only sharpens the EM background. **Use `--hires-em`** until then.
-- **Re-predict is scale-8 full-frame**, not the high-res crop the batch uses.
+- **Mask resolution is scale-8 for `_sam` chains** (§6) — working with those masks is
+  "pixel art"; you often can't see the true boundary. The fix is re-propagating that chain
+  at higher resolution via the **tier-2 per-chain crop** (`chain_crop=True`), now landed —
+  tier-2 chains open at crop resolution. For an `_sam` chain `--hires-em` still only
+  sharpens the EM background; re-run the chain with `chain_crop=True` for a sharper mask.
+- **Re-predict matches the displayed frame**: scale-8 full-frame for an `_sam` chain (so it
+  won't reproduce the batch's anchor crop pixel-for-pixel); for a tier-2 chain it runs in
+  `_pcrop`, i.e. at the chain's crop resolution.
 - **No concurrent reviewers** — `_review.csv` has no cross-process lock yet; one
   reviewer at a time. "↻ refresh queue" re-reads the manifest on demand (e.g. to pick
   up chains a still-running batch just flagged).

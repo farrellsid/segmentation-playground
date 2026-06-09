@@ -185,6 +185,32 @@ class PipelineConfig:
     crop_size_tif: int = 1200          # crop window edge in full-res tif px
     crop_scale: int = 2                # crop read downscale (1 = full-res); input edge = size/scale px
 
+    # tier-2 per-chain crop (M4.5). The resolution lever that actually moves
+    # downstream propagation drift (PIPELINE_CONTEXT §7 "Local high-res cropping",
+    # tier 2): instead of propagating the scale-8 full frame, crop ONE window sized
+    # to the chain's whole skeleton xy-extent (+ chain_crop_pad_tif) and run the
+    # *entire* image+propagation in that crop at chain_crop_scale. Masks are then
+    # stored in this per-chain crop space (`_pcrop`), NOT _sam, and the CropWindow is
+    # persisted to state.json so QC/review/GUI can interpret them (alignment.CropWindow).
+    # Default OFF -> the _sam full-frame path above is unchanged (and the M1 baseline
+    # holds). When on it SUPERSEDES crop_anchor (the chain window is the anchor window
+    # too). chain_crop_scale is a *target*: a chain whose padded extent would exceed
+    # chain_crop_max_px on its longest edge is read coarser (scale bumped up) so the
+    # SAM2 input stays bounded. NB tier-2 loses the cross-chain decode cache (each
+    # window is unique) -> one full-res imread per frame per chain; a windowed/memmap
+    # read is the documented later optimisation.
+    chain_crop: bool = False
+    chain_crop_pad_tif: int = 64       # padding around the skeleton xy-extent, _tif px
+    chain_crop_scale: int = 2          # target read downscale (1 = full-res)
+    chain_crop_max_px: int = 1536      # cap on the crop's longest input edge (bounds VRAM)
+    # FLOOR on the crop's _tif extent. A low-motion chain (neurite barely moves in xy)
+    # otherwise gets a tiny over-zoomed window where SAM2 loses inter-frame context and
+    # the mask collapses to empty — the AIYL chain_02 A/B failure (June 2026). This pads
+    # the window out (centred) so the crop always carries enough surrounding context to
+    # track. 1024 _tif px -> ~512 px input at crop_scale 2, still ~4x the neurite
+    # resolution of the scale-8 full frame.
+    chain_crop_min_tif: int = 1024
+
     # multimask anchor auto-select (M3.5 item 2c). Ask SAM2 for its 3 candidate
     # masks and auto-pick (node-containment -> plausible-area -> single-CC -> IoU;
     # see _select_anchor_mask) instead of taking the single-mask output. Near-free:
@@ -262,6 +288,13 @@ class ChainState:
     frames_dir: Optional[str] = None
     frame_to_z: Optional[dict[int, int]] = None
     n_frames: Optional[int] = None
+
+    # tier-2 per-chain crop window (alignment.CropWindow.to_dict()), or None for the
+    # _sam full-frame path. When set, this chain's masks/frames/prompts all live in
+    # `_pcrop` (the crop space) rather than _sam, and QC/review/GUI rebuild the
+    # CropWindow from this to map skeleton nodes + clicks. Filled by run_chain when
+    # cfg.chain_crop is on.
+    crop_window: Optional[dict] = None
 
     # qc summary + triage (filled in milestone 2)
     qc_summary: Optional[dict] = None          # flag counts, worst frames, etc.
@@ -641,6 +674,7 @@ def score_anchor(mask_sam: np.ndarray, prompts: Prompts, *,
 def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[int, int],
                         anchor_node_id: int, prompts_sam: "Prompts", annotate_df: pd.DataFrame,
                         *, scale: int, crop_size_tif: int, crop_scale: int,
+                        cw: Optional["alignment.CropWindow"] = None,
                         multimask: bool = False, select_contain_radius_px: int = 0,
                         select_area_bounds: tuple[float, float] = (0.0, 1.0),
                         ) -> tuple[np.ndarray, float, "alignment.CropWindow", "Prompts"]:
@@ -664,20 +698,25 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
     `select_area_bounds` are frame-fraction bounds the crop config already tunes
     (PIPELINE_CONTEXT §7) — so selection scores in the same _crop space as the mask.
 
+    A prebuilt ``cw`` (tier-2 per-chain window) is used as-is — the image phase then
+    runs in the SAME crop the whole chain propagates in, so the seed needs no
+    _crop->_sam remap. When ``cw`` is None (tier-1 default) a fresh ``crop_size_tif``
+    window is centred on the anchor node.
+
     Returns (mask_crop bool HxW, score, cw, prompts_crop).
     """
     from sam2_utils import alignment
 
-    # anchor node in _tif (the space CropWindow centers in)
-    node = annotate_df.loc[annotate_df["node_id"].astype(str) == str(anchor_node_id)]
-    node_xy_tif = node[["x_tif", "y_tif"]].to_numpy(dtype=float)[0]
-
-    cw = alignment.CropWindow.around_node(
-        node_xy_tif, size_tif=crop_size_tif, image_hw_tif=full_hw,
-        crop_scale=crop_scale, sam_scale=scale)
+    if cw is None:
+        # tier-1: a fresh window centred on the anchor node (_tif).
+        node = annotate_df.loc[annotate_df["node_id"].astype(str) == str(anchor_node_id)]
+        node_xy_tif = node[["x_tif", "y_tif"]].to_numpy(dtype=float)[0]
+        cw = alignment.CropWindow.around_node(
+            node_xy_tif, size_tif=crop_size_tif, image_hw_tif=full_hw,
+            crop_scale=crop_scale, sam_scale=scale)
 
     crop_full = image_full[cw.slice_tif()]                  # _tif window
-    crop_img = _downscale_image(crop_full, crop_scale)      # _crop input image
+    crop_img = _downscale_image(crop_full, cw.crop_scale)   # _crop input image (window governs scale)
     H_crop, W_crop = crop_img.shape[:2]
 
     # _sam prompt points -> _tif -> _crop. Keep all positives; drop out-of-window negatives.
@@ -775,6 +814,112 @@ def prepare_video_frames(chain: dict, annotate_df: pd.DataFrame, *, scale: int,
 
     # init_state needs a STRING path, not a Path, or it raises
     # "Only MP4 video and JPEG folder are supported".
+    return str(view_dir), frame_to_z, anchor_frame_idx, len(subset_tifs)
+
+
+def _chain_skeleton_box_tif(chain: dict, annotate_df: pd.DataFrame) -> tuple[float, float, float, float]:
+    """(x0, y0, x1, y1) bbox of a chain's whole skeleton in _tif px."""
+    ids = {str(n) for n in chain["nodes"]}
+    sub = annotate_df[annotate_df["node_id"].astype(str).isin(ids)]
+    xs = sub["x_tif"].to_numpy(dtype=float)
+    ys = sub["y_tif"].to_numpy(dtype=float)
+    return float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
+
+
+def chain_crop_window(chain: dict, annotate_df: pd.DataFrame, *, cfg: "PipelineConfig",
+                      image_hw_tif: tuple[int, int]) -> "alignment.CropWindow":
+    """Tier-2 per-chain CropWindow: the chain's whole-skeleton xy-bbox in _tif,
+    padded by cfg.chain_crop_pad_tif, at an adaptive crop_scale.
+
+    crop_scale starts at cfg.chain_crop_scale and is bumped coarser if the padded
+    extent's longest edge would exceed cfg.chain_crop_max_px at that scale, so the
+    SAM2 input stays bounded for a chain that wanders far across the section. The
+    realized window is clipped to the frame (alignment.CropWindow.around_box).
+    """
+    box_tif = _chain_skeleton_box_tif(chain, annotate_df)
+    H_tif, W_tif = int(image_hw_tif[0]), int(image_hw_tif[1])
+    pad = int(cfg.chain_crop_pad_tif)
+    min_tif = int(cfg.chain_crop_min_tif)
+    # desired extent = skeleton bbox + pad, floored to chain_crop_min_tif (context for
+    # a low-motion chain), capped at the image. Expand symmetrically about the bbox
+    # centre, then hand a 0-pad box to around_box (which clips to the frame).
+    cx = 0.5 * (box_tif[0] + box_tif[2])
+    cy = 0.5 * (box_tif[1] + box_tif[3])
+    w_tif = min(W_tif, max((box_tif[2] - box_tif[0]) + 2 * pad, min_tif))
+    h_tif = min(H_tif, max((box_tif[3] - box_tif[1]) + 2 * pad, min_tif))
+    exp_box = (cx - w_tif / 2.0, cy - h_tif / 2.0, cx + w_tif / 2.0, cy + h_tif / 2.0)
+    longest = max(w_tif, h_tif, 1.0)
+    crop_scale = max(int(cfg.chain_crop_scale),
+                     int(np.ceil(longest / float(cfg.chain_crop_max_px))))
+    return alignment.CropWindow.around_box(
+        exp_box, pad_tif=0, image_hw_tif=image_hw_tif,
+        crop_scale=crop_scale, sam_scale=cfg.scale)
+
+
+def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
+                              cw: "alignment.CropWindow", *,
+                              frames_root: Optional[Path],
+                              anchor_catmaid_z: int,
+                              neuron: str, chain_idx: int
+                              ) -> tuple[str, dict[int, int], int, int]:
+    """Tier-2 video frames: the chain's frames cropped to `cw` and saved as a
+    0-indexed JPEG view in `_pcrop` space.
+
+    Each frame is the full-res tif cropped to ``cw.slice_tif()`` then downscaled by
+    ``cw.crop_scale`` — the SAME crop-then-downscale as ``anchor_crop_predict``, so
+    the anchor seed (computed in the crop) and the propagated frames share EXACT
+    `_pcrop` pixels. Unlike ``prepare_video_frames`` there is no cross-chain decode
+    cache (every chain's window is unique), so this pays one full-res imread per
+    frame; a windowed/memmap read is the documented later optimisation
+    (PIPELINE_CONTEXT §7). View dir is namespaced by neuron+chain+crop_scale and
+    rebuilt fresh. Returns (view_dir str, frame_to_z, anchor_frame_idx, n_frames).
+    """
+    import cv2
+    import shutil
+    from tqdm import tqdm
+
+    if frames_root is None:
+        raise ValueError("PipelineConfig.frames_root must be set for video frame prep")
+
+    chain_z = [
+        int(annotate_df.loc[
+            annotate_df["node_id"].astype(str) == str(n), "z"
+        ].item())
+        for n in chain["nodes"]
+    ]
+    start_z, end_z = min(chain_z), max(chain_z)
+    start_file_z = alignment.catmaid_z_to_file_z(start_z)
+    end_file_z = alignment.catmaid_z_to_file_z(end_z)
+    target_file_z = alignment.catmaid_z_to_file_z(anchor_catmaid_z)
+
+    all_tifs = sorted(config.WORM_PATH.glob("*.tif"), key=_parse_file_z)
+    subset_tifs = [f for f in all_tifs
+                   if start_file_z <= _parse_file_z(f) <= end_file_z]
+
+    frames_root = Path(frames_root)
+    view_dir = (frames_root / "chain_views"
+                / f"{neuron}_chain{chain_idx:02d}_pcrop_s{cw.crop_scale}")
+    if view_dir.exists():
+        shutil.rmtree(view_dir)
+    view_dir.mkdir(parents=True)
+
+    sl = cw.slice_tif()
+    frame_to_z: dict[int, int] = {}
+    anchor_frame_idx: Optional[int] = None
+    for i, tif_path in enumerate(tqdm(subset_tifs, desc="caching _pcrop frames", unit="frame")):
+        img = cv2.imread(str(tif_path))             # BGR full-res (matches _ensure_cached_frames)
+        crop = img[sl]                              # _tif window (the only [y,x] slice -> CropWindow)
+        crop = _downscale_image(crop, cw.crop_scale)
+        cv2.imwrite(str(view_dir / f"{i:05d}.jpg"), crop)
+        fz = _parse_file_z(tif_path)
+        frame_to_z[i] = alignment.file_z_to_catmaid_z(fz)
+        if fz == target_file_z:
+            anchor_frame_idx = i
+
+    if anchor_frame_idx is None:
+        raise AssertionError(
+            f"anchor file_z={target_file_z} not in [{start_file_z}, {end_file_z}]"
+        )
     return str(view_dir), frame_to_z, anchor_frame_idx, len(subset_tifs)
 
 
@@ -1124,7 +1269,9 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
            frame_conf: Optional[dict[int, float]],
            pred_iou: Optional[dict[int, float]] = None,
            cfg: PipelineConfig,
-           qc_csv_path: Optional[Path] = None) -> tuple[dict, list[int], str]:
+           qc_csv_path: Optional[Path] = None,
+           crop_window: Optional["alignment.CropWindow"] = None,
+           ) -> tuple[dict, list[int], str]:
     """Compute QC over the saved masks, write qc.csv, return (summary, triage_z, status).
 
     Resolves PIPELINE_CONTEXT §5.4 to the extent M2 needs: QC runs over the
@@ -1163,7 +1310,11 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
     # canonical rule already enforces this; the guard turns a future divergence
     # from a silent wrong-QC run into a loud failure. If you ever want resampled,
     # higher-res Blender masks, make save_masks resample first, then relax this.
-    if cfg.scale != cfg.save_downscale:
+    # The scale==save_downscale guard protects the _sam node lookup (skeleton / scale).
+    # Tier-2 masks live in _pcrop, where the node lookup goes through crop_window
+    # instead of / save_downscale, so the guard does not apply — skip it when a
+    # crop_window is supplied (and the node mapping is overridden below).
+    if crop_window is None and cfg.scale != cfg.save_downscale:
         raise ValueError(
             f"run_qc: scale ({cfg.scale}) != save_downscale ({cfg.save_downscale}), "
             "but pipeline.save_masks does not resample, so the on-disk masks are at "
@@ -1181,16 +1332,25 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
         pred_iou_z = {frame_to_z[fi]: v for fi, v in pred_iou.items()
                       if fi in frame_to_z}
 
+    # In _pcrop the node-containment radius is rescaled by scale/crop_scale (same
+    # space_ratio run_chain applies to the anchor gate), so the physical tolerance
+    # matches the _sam path; compute_metrics maps nodes _tif->_pcrop via crop_window.
+    dilation_px = cfg.qc_skeleton_dilation_px
+    if crop_window is not None:
+        dilation_px = int(round(cfg.qc_skeleton_dilation_px
+                                * crop_window.sam_scale / crop_window.crop_scale))
+
     df = qc.compute_metrics(
         masks_dir,
         skeleton=skeleton,
         scale=cfg.scale,
         save_downscale=cfg.save_downscale,
         pred_iou=pred_iou_z,
-        skeleton_dilation_px=cfg.qc_skeleton_dilation_px,
+        skeleton_dilation_px=dilation_px,
         area_ratio_bounds=cfg.qc_area_ratio_bounds,
         temporal_iou_min=cfg.qc_temporal_iou_min,
         pred_iou_min=cfg.qc_pred_iou_min,
+        crop_window=crop_window,
     )
 
     # Attach the inline confidence proxy as a *diagnostic* column (z-keyed).
@@ -1321,6 +1481,7 @@ def state_to_dict(state: ChainState) -> dict:
         "frames_dir": state.frames_dir,
         "frame_to_z": None if ftz is None else {str(k): int(v) for k, v in ftz.items()},
         "n_frames": state.n_frames,
+        "crop_window": state.crop_window,
         "qc_summary": state.qc_summary,
         "triage_frames": list(state.triage_frames),
         "obj_id": state.obj_id,
@@ -1345,6 +1506,7 @@ def state_from_dict(d: dict) -> ChainState:
         frames_dir=d.get("frames_dir"),
         frame_to_z=None if ftz is None else {int(k): int(v) for k, v in ftz.items()},
         n_frames=d.get("n_frames"),
+        crop_window=d.get("crop_window"),
         qc_summary=d.get("qc_summary"),
         triage_frames=list(d.get("triage_frames", [])),
         obj_id=d.get("obj_id", 1),
@@ -1418,10 +1580,21 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     state.anchor_node_id, state.anchor_catmaid_z = select_anchor(chain, annotate_df)
     print(f"    anchor node {state.anchor_node_id}  (CATMAID z={state.anchor_catmaid_z})")
 
-    # 2. anchor frame. The crop path needs the FULL-res frame to crop from; the
-    #    legacy path needs the scale-8 frame the image predictor runs on directly.
+    # 2. anchor frame. Both crop paths (tier-1 anchor crop, tier-2 chain crop) need
+    #    the FULL-res frame to crop from; the legacy path needs the scale-8 frame the
+    #    image predictor runs on directly. Tier-2 also fixes the per-chain crop window
+    #    here (it governs the image phase, the seed, the video frames, and QC).
     _step(2, "load anchor frame")
-    if cfg.crop_anchor:
+    cw_chain = None
+    if cfg.chain_crop:
+        image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1)   # _tif
+        image_sam = None
+        cw_chain = chain_crop_window(chain, annotate_df, cfg=cfg, image_hw_tif=full_hw)
+        state.crop_window = cw_chain.to_dict()
+        print(f"    full-res {full_hw[1]}x{full_hw[0]} -> _pcrop window "
+              f"{cw_chain.size_tif[0]}x{cw_chain.size_tif[1]}px @ crop_scale "
+              f"{cw_chain.crop_scale} -> {cw_chain.crop_hw[1]}x{cw_chain.crop_hw[0]} input")
+    elif cfg.crop_anchor:
         image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1)   # _tif
         image_sam = None
         print(f"    full-res frame {full_hw[1]}x{full_hw[0]} -> {cfg.crop_size_tif}px "
@@ -1449,15 +1622,20 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     # space as the mask: 1 _sam px = scale/crop_scale _crop px, so the contain radius
     # + box margin rescale under the crop. area_frac bounds are frame-fractions the
     # crop config already tunes (PIPELINE_CONTEXT §7), so they pass through unscaled.
-    space_ratio = (cfg.scale / cfg.crop_scale) if cfg.crop_anchor else 1.0
+    # tier-2 uses the chain window's (possibly bumped) crop_scale; tier-1 uses crop_scale.
+    crop_active = cfg.chain_crop or cfg.crop_anchor
+    eff_crop_scale = (cw_chain.crop_scale if cfg.chain_crop else cfg.crop_scale)
+    space_ratio = (cfg.scale / eff_crop_scale) if crop_active else 1.0
     contain_r = int(round(cfg.qc_skeleton_dilation_px * space_ratio))
     margin_local = int(round(cfg.box_margin * space_ratio))
     area_bounds = (cfg.gate_min_area_frac, cfg.gate_max_area_frac)
-    if cfg.crop_anchor:
+    if crop_active:
+        # cw=cw_chain -> tier-2 (image phase runs in the SAME window the chain
+        # propagates in); cw=None -> tier-1 (a fresh window centred on the node).
         mask_anchor, state.image_score, cw, prompts_anchor = anchor_crop_predict(
             image_predictor, image_full, full_hw, state.anchor_node_id,
             state.prompts, annotate_df, scale=cfg.scale,
-            crop_size_tif=cfg.crop_size_tif, crop_scale=cfg.crop_scale,
+            crop_size_tif=cfg.crop_size_tif, crop_scale=eff_crop_scale, cw=cw_chain,
             multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
             select_area_bounds=area_bounds)
     else:
@@ -1470,7 +1648,8 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     if cfg.multimask_anchor:
         print(f"    multimask auto-select on (3 candidates -> 1)")
     print(f"    mask {int(mask_anchor.sum())} px  |  score {state.image_score:.4f}"
-          + (f"  | _crop {image_hw_anchor[1]}x{image_hw_anchor[0]}" if cfg.crop_anchor else ""))
+          + (f"  | {'_pcrop' if cfg.chain_crop else '_crop'} "
+             f"{image_hw_anchor[1]}x{image_hw_anchor[0]}" if crop_active else ""))
 
     # 5. anchor gate + box (empty mask -> flag, stop). The gate scores the anchor
     #    mask in WHATEVER space it lives in (_crop under the crop path, _sam in
@@ -1497,23 +1676,42 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         state.status = "flagged"
         _finish()
         return state                          # [M4] later: re-pick anchor before flagging
-    # map the crop box back to _sam for the video seed (crop path), or use as-is.
-    box = box_local if cw is None else cw.box_crop_to_sam(box_local)
-    state.prompts.box_sam = np.asarray(box, dtype=np.float32)
-    print(f"    box (xyxy, _sam): {state.prompts.box_sam.astype(int).tolist()}")
+    if cfg.chain_crop:
+        # tier-2: the WHOLE chain propagates in _pcrop, so the seed stays there — the
+        # points (prompts_anchor, already mapped _sam->_pcrop) and box are crop coords,
+        # NOT mapped back to _sam. state.prompts is thus the _pcrop seed (box_sam/points_sam
+        # hold _pcrop px; the names are legacy). propagate() feeds them onto the _pcrop frames.
+        state.prompts = Prompts(
+            points_sam=np.asarray(prompts_anchor.points_sam, dtype=float),
+            labels=np.asarray(prompts_anchor.labels, dtype=int),
+            box_sam=np.asarray(box_local, dtype=np.float32))
+        print(f"    box (xyxy, _pcrop): {state.prompts.box_sam.astype(int).tolist()}")
+    else:
+        # tier-1 / legacy: map the crop box back to _sam for the video seed (or use as-is).
+        box = box_local if cw is None else cw.box_crop_to_sam(box_local)
+        state.prompts.box_sam = np.asarray(box, dtype=np.float32)
+        print(f"    box (xyxy, _sam): {state.prompts.box_sam.astype(int).tolist()}")
 
     # free the image embedding before video propagation (notebook does this).
     image_predictor.reset_predictor()
     if on_video_phase is not None:
         on_video_phase()
 
-    # 6. video frames
+    # 6. video frames -> tier-2 crops each frame to the chain window (_pcrop); else
+    #    the shared scale-8 cache + per-chain link view (_sam).
     _step(6, "prepare video frames")
-    (state.frames_dir, state.frame_to_z,
-     state.anchor_frame_idx, state.n_frames) = prepare_video_frames(
-        chain, annotate_df, scale=cfg.scale, frames_root=cfg.frames_root,
-        anchor_catmaid_z=state.anchor_catmaid_z,
-        neuron=state.neuron, chain_idx=state.chain_idx)
+    if cfg.chain_crop:
+        (state.frames_dir, state.frame_to_z,
+         state.anchor_frame_idx, state.n_frames) = prepare_chain_crop_frames(
+            chain, annotate_df, cw_chain, frames_root=cfg.frames_root,
+            anchor_catmaid_z=state.anchor_catmaid_z,
+            neuron=state.neuron, chain_idx=state.chain_idx)
+    else:
+        (state.frames_dir, state.frame_to_z,
+         state.anchor_frame_idx, state.n_frames) = prepare_video_frames(
+            chain, annotate_df, scale=cfg.scale, frames_root=cfg.frames_root,
+            anchor_catmaid_z=state.anchor_catmaid_z,
+            neuron=state.neuron, chain_idx=state.chain_idx)
     print(f"    {state.n_frames} frames  (anchor frame_idx={state.anchor_frame_idx})")
 
     # 7. propagate
@@ -1555,6 +1753,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         frame_to_z=state.frame_to_z,
         frame_conf=frame_conf, pred_iou=pred_iou, cfg=cfg,
         qc_csv_path=chain_dir / "qc.csv",
+        crop_window=cw_chain,            # tier-2: score in _pcrop (None -> _sam)
     )
     s = state.qc_summary
     print(f"    {s['n_flagged']}/{s['n_frames']} flagged "

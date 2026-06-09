@@ -642,9 +642,9 @@ a queue to clear (3) are its inputs. Building the GUI first means building it bl
   True) drops genuinely-split components in the *saved* mask and can mask a real propagation
   failure, so watch the flag distribution when enabling and consider False for chains where
   a process legitimately leaves/re-enters the plane.)*
-- **[M3.5 tier 1 LANDED as DEFAULT · tiers 2–3 → M4.5]** **Local high-res cropping (prior
-  art: Bader Lab `sam2maskpropagator`).** Attacks the core accuracy problem (a neurite is
-  ~3 px wide at scale 8). **Tier 1 (anchor-only crop) is now the default image phase**
+- **[tier 1 DEFAULT · tier 2 LANDED default-off (June 2026) · tier 3 → later]** **Local
+  high-res cropping (prior art: Bader Lab `sam2maskpropagator`).** Attacks the core accuracy
+  problem (a neurite is ~3 px wide at scale 8). **Tier 1 (anchor-only crop) is now the default image phase**
   (June 2026): `run_chain` loads the full-res anchor frame, crops a `crop_size_tif`
   (default 1200 px) window around the node via `alignment.CropWindow`, runs image mode in
   `_crop` at `crop_scale` (default 2 → ~600 px input, near the old 8× cost but ~6× the
@@ -657,16 +657,55 @@ a queue to clear (3) are its inputs. Building the GUI first means building it bl
   `noskel` queue ~unchanged — as expected, since an anchor-only crop does not touch
   propagation resolution. Compute note: the default path adds one full-res `imread`
   (~240 MB at ~9k²) per chain's anchor, freed after; a windowed/memmap tiff read is a
-  later optimisation. **Tiers 2–3 → M4.5, label-gated (moved out of M3.5, June 2026):** (2)
-  one **per-chain** crop sized to the chain's whole skeleton xy-extent at scale 1–2 for the
-  *entire propagation* — most of the resolution win, no per-frame remap, no risk to SAM2
-  frame-to-frame memory, and the lever that would actually move the downstream drift; reuses
-  the same `CropWindow`; (3) **per-frame tracked** crop following skeleton xy(z) — max
-  resolution, but a shifting origin per frame (per-frame remap; may help by centring the
-  object, may confuse tracking — speculative). Both are gated on M4 labels: tier 1 already
-  showed seed-sharpening alone leaves the `noskel` queue unmoved, so investing in tier 2's
-  per-chain propagation crop is only justified once labels confirm that residue is *real
-  drift* and not benign branch / z-gap centroids — hence M4.5, not pre-GUI.
+  later optimisation. **Tier 2 — per-chain propagation crop — LANDED default-off (June 2026,
+  supervisor-authorized accuracy-first; brought forward from M4.5 at the lab's request).** A
+  new space `_pcrop`: `run_chain` crops ONE window sized to the chain's whole skeleton
+  xy-extent (+ `chain_crop_pad_tif`, default 64) and runs the *entire* image phase **and**
+  propagation inside it at `chain_crop_scale` (default 2), instead of the scale-8 full frame —
+  the lever that actually moves downstream propagation resolution (tier 1 only sharpened the
+  seed). Knobs on `PipelineConfig`: `chain_crop` (master switch, **default False** → the _sam
+  full-frame path and the M1 baseline are unchanged), `chain_crop_pad_tif`, `chain_crop_scale`
+  (a *target* — bumped coarser per chain so the input's longest edge stays ≤ `chain_crop_max_px`,
+  default 1536, bounding VRAM for a chain that wanders far) and `chain_crop_min_tif` (default
+  1024 — a **floor** on the window extent: a low-motion chain whose xy-bbox is tiny otherwise
+  over-zooms and SAM2 loses inter-frame context; see the A/B below). Implementation reuses the
+  single `CropWindow` home (new `around_box` builder + `sam_to_crop`; the only `[y,x]` swap
+  stays in `slice_tif`). **Masks are stored in `_pcrop`** (the resolution win is kept on disk, for
+  Blender), and the `CropWindow` is persisted to `state.json` (`ChainState.crop_window`) so
+  QC, `review`, and the GUI rebuild the crop space: `qc.compute_metrics` maps skeleton nodes
+  `_tif→_pcrop` via the window (the `scale==save_downscale` guard is skipped in crop mode, the
+  containment radius rescaled by `scale/crop_scale`), and the napari GUI reconstructs the
+  window for skeleton overlay + `--hires-em` (everything it shows — frames, masks, clicks —
+  already shares the `_pcrop` grid, so a click is a `_pcrop` coord and re-predict/resume need
+  no transform; this also incidentally gives tier-2 chains the **crop-space re-predict** the
+  M4 GUI had deferred). Frame prep (`prepare_chain_crop_frames`) crops each frame the SAME
+  crop-then-downscale way as the anchor, so seed and propagated frames share exact `_pcrop`
+  pixels; it loses the cross-chain decode cache (each window is unique → one full-res imread
+  per frame; windowed/memmap read is the documented follow-up). Window math + crop-aware QC
+  are unit-tested (`tests/test_alignment.py`, +4 cases; 17/17). **A/B MEASURED (June 2026,
+  real SAM2, RTX 3050 6GB, `ab_tier2.py` harness, 3 AIYL chains, large model, tier-2 on vs
+  off):** tier-2 moved **2/3 chains `flagged`→`done`** — c12 (3 queued→0), c29 (3 queued→0,
+  5 noskel→0) — at the crop's higher resolution (masks ~512px in `_pcrop` vs a ~3px-wide
+  neurite speck at scale-8; ~17–30× the foreground pixels describing the same process), and
+  the 3rd chain (c02, already clean) stayed clean — **no regression once the min-extent guard
+  was in**. *The guard came directly from this A/B:* an **un-guarded first pass catastrophically
+  failed c02** — a low-motion neurite (tiny xy-bbox) produced a 156×244 over-zoomed window where
+  the anchor scored 0.52 and propagation collapsed to **empty masks on 29/39 frames** (→ 30
+  queued). Adding `chain_crop_min_tif=1024` (floor the window, pad out for context) recovered it
+  to anchor 0.90 / 0 empty / `done`. **So: tier-2 is a strong per-chain lever (eliminates the
+  `noskel` queue on chains that have xy-motion) but NOT safe to enable blindly — over-zoom on
+  low-motion chains is a real failure mode; the min-extent floor mitigates it, and the
+  `image_score`/anchor gate should guard a per-chain fall-back to `_sam` (next step).** Cost:
+  tier-2 ran ~2× the wall-time of baseline here, dominated by the per-frame full-res `imread`
+  in frame-prep (propagation itself is *cheaper* than the full frame) → the windowed/memmap
+  read is the priority optimisation. Verified non-degenerate + visually (overlay grids in
+  `ab_figs/`). **Open next:** (a) image_score/anchor-gated auto fall-back to `_sam` when a crop
+  anchor is poor; (b) tune `chain_crop_min_tif` (1024 slightly relaxed c12's tight win —
+  0 queued either way); (c) the windowed/memmap frame read; (d) wider A/B across neurons +
+  M4-label confirmation that the remaining single-signal `noskel` is benign. **Tier 3 → later:**
+  (3) **per-frame tracked** crop following skeleton xy(z) — max resolution, but a shifting origin
+  per frame (per-frame remap; may help by centring the object, may confuse tracking —
+  speculative); still unbuilt.
 - **[M3.5 auto seed · human anchor→M4]** **Video seed: box vs mask (confidence-gated), incl. human-painted anchors.** The box
   doesn't *avoid* needing an accurate anchor mask — it *delegates* making one to SAM2:
   a box seed has SAM2's decoder produce the anchor mask and stores *that* in the memory

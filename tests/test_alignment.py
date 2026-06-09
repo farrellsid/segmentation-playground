@@ -195,6 +195,46 @@ def test_cropwindow_window_cannot_exceed_image():
 
 
 # ---------------------------------------------------------------------------
+# CropWindow.around_box + sam_to_crop + (de)serialize - the tier-2 per-chain crop
+# ---------------------------------------------------------------------------
+
+def test_cropwindow_around_box_pad_and_intersection():
+    # bbox (1000,2000)-(1400,2600) + 50 pad, clipped to a big frame -> exact extent.
+    cw = alignment.CropWindow.around_box(
+        (1000.0, 2000.0, 1400.0, 2600.0), pad_tif=50,
+        image_hw_tif=(9230, 9216), crop_scale=2, sam_scale=8)
+    assert cw.origin_tif == (950.0, 1950.0)
+    assert cw.size_tif == (500, 700)                # (1450-950, 2650-1950)
+    assert cw.crop_hw == (350, 250)                 # (h, w) / crop_scale
+
+
+def test_cropwindow_around_box_clips_at_corner():
+    # a box hugging the top-left: padded origin floors below 0 -> clamps to 0.
+    cw = alignment.CropWindow.around_box(
+        (10.0, 5.0, 100.0, 90.0), pad_tif=64,
+        image_hw_tif=(9230, 9216), crop_scale=1, sam_scale=8)
+    assert cw.origin_tif == (0.0, 0.0)
+
+
+def test_cropwindow_sam_to_crop_matches_tif_path():
+    # sam_to_crop == tif_to_crop(xy_sam * sam_scale): the tier-2 prompt/skeleton map.
+    cw = alignment.CropWindow.around_box(
+        (1000.0, 2000.0, 1400.0, 2600.0), pad_tif=50,
+        image_hw_tif=(9230, 9216), crop_scale=2, sam_scale=8)
+    p_tif = np.array([1200.0, 2300.0])
+    assert np.allclose(cw.sam_to_crop(p_tif / 8.0), cw.tif_to_crop(p_tif))
+
+
+def test_cropwindow_dict_roundtrip():
+    cw = alignment.CropWindow.around_box(
+        (1000.0, 2000.0, 1400.0, 2600.0), pad_tif=50,
+        image_hw_tif=(9230, 9216), crop_scale=2, sam_scale=8)
+    cw2 = alignment.CropWindow.from_dict(cw.to_dict())
+    assert (cw2.origin_tif, cw2.size_tif, cw2.crop_scale, cw2.sam_scale) == \
+           (cw.origin_tif, cw.size_tif, cw.crop_scale, cw.sam_scale)
+
+
+# ---------------------------------------------------------------------------
 # Plain runner (no pytest required)
 # ---------------------------------------------------------------------------
 

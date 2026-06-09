@@ -71,11 +71,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+# Silence an upstream deprecation surfaced by the lazy frame loader: dask_image.imread
+# -> pims.ImageSequence still calls skimage.io with the deprecated `plugin` parameter
+# (removed in skimage 0.27). It's harmless and not our code; suppress just that message
+# so it doesn't spam the GUI console. The eager fallback (_load_frame_stack) is unaffected.
+warnings.filterwarnings(
+    "ignore", message="The plugin infrastructure in", category=FutureWarning)
 
 from sam2_utils import config, alignment, review, review_queue, labels as labels_mod
 import pipeline
@@ -244,6 +252,7 @@ class ReviewGUI:
         self.data: Optional[review.ReviewData] = None      # ReviewData from review.load_chain
         self.chain: Optional[dict] = None                  # chain dict (nodes)
         self._state: Optional[pipeline.ChainState] = None  # the chain's serialized state (seed prompts)
+        self._cw = None                                    # alignment.CropWindow for tier-2 chains, else None
         self.qc_df: Optional[pd.DataFrame] = None          # z-indexed
         self.session: Optional[pipeline.PropagationSession] = None  # built lazily on resume
 
@@ -274,6 +283,16 @@ class ReviewGUI:
         # point). Also reused by _anchor_dict.
         sp = chain_dir / "state.json"
         self._state = pipeline.load_state(sp) if sp.exists() else None
+        # tier-2 chains were propagated/saved in a per-chain crop space (_pcrop). The
+        # CropWindow (persisted in state.json) is what maps _tif skeleton nodes + drives
+        # crop-aware QC. The displayed EM/mask/prompts are ALL _pcrop already (frames_dir
+        # points at the crop view, masks are crop-sized), so a click is a _pcrop coord and
+        # re-predict/resume need no transform — only skeleton/QC/hires consult the window.
+        self._cw = None
+        if self._state is not None and getattr(self._state, "crop_window", None):
+            self._cw = alignment.CropWindow.from_dict(self._state.crop_window)
+            print(f"[gui] tier-2 crop chain: _pcrop window {self._cw.size_tif} "
+                  f"@ crop_scale {self._cw.crop_scale}")
 
         # frame stack + dims
         t = max(self.data.video_segments) + 1 if self.data.video_segments else 0
@@ -292,9 +311,13 @@ class ReviewGUI:
             em = self._load_hires_stack(self.data.frame_to_z, t)
         else:
             em = _load_frame_stack(self.data.frames_dir, t)
-        self._em_world = float(em.shape[1]) / float(H) if H else 1.0   # ~8 hires, 1 else
+        # world units (EM px) per mask px. Both EM axes are the mask scaled uniformly
+        # (by `scale` for the full frame, by crop_scale for a tier-2 crop window), so
+        # use the WIDTH ratio — correct for non-square crop windows, identical to before
+        # for the near-square full frame. ~8 / crop_scale hires, 1 else.
+        self._em_world = float(em.shape[1]) / float(W) if W else 1.0
         s = self._em_world
-        lscale = self._lscale = (1.0, s, s)                            # _sam -> EM world
+        lscale = self._lscale = (1.0, s, s)                            # mask -> EM world
 
         # (re)build layers
         self.viewer.layers.clear()
@@ -376,9 +399,13 @@ class ReviewGUI:
             fi = z_to_frame.get(int(r["z"]))
             if fi is None:
                 continue
-            xy_sam = alignment.tif_to_sam(np.array([[r["x_tif"], r["y_tif"]]], float),
+            # tier-2: _tif -> _pcrop (the displayed grid); else _tif -> _sam.
+            if self._cw is not None:
+                xy = np.asarray(self._cw.tif_to_crop([r["x_tif"], r["y_tif"]]), float).ravel()
+            else:
+                xy = alignment.tif_to_sam(np.array([[r["x_tif"], r["y_tif"]]], float),
                                           self.ctx.cfg.scale)[0]
-            pts.append([fi, xy_sam[1], xy_sam[0]])          # (t, y, x)
+            pts.append([fi, xy[1], xy[0]])                  # (t, y, x)
         return np.array(pts, dtype=float) if pts else np.empty((0, 3))
 
     # -- reading the human's prompts ------------------------------------------
@@ -417,6 +444,8 @@ class ReviewGUI:
 
             def _read(z):
                 img, _ = pipeline.load_frame_sam(int(z), scale=1)   # full-res RGB
+                if self._cw is not None:
+                    img = img[self._cw.slice_tif()]   # tier-2: crop to the chain window
                 return img
 
             sample = _read(order[0])                                # one eager read for shape/dtype
@@ -759,7 +788,8 @@ class ReviewGUI:
             summary, triage_z, status = pipeline.run_qc(
                 masks_dir, skel_chain, frame_to_z=self.data.frame_to_z,
                 frame_conf=frame_conf, pred_iou=pred_iou, cfg=cfg,
-                qc_csv_path=chain_dir / "qc.csv")
+                qc_csv_path=chain_dir / "qc.csv",
+                crop_window=self._cw)            # tier-2: re-score in _pcrop
         except Exception as e:                                  # QC must never lose the masks
             print(f"[gui] QC skipped after resume ({e}); masks were saved")
             return
