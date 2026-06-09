@@ -162,6 +162,18 @@ The interactive `PromptRefiner` / `PointClicker` classes in the notebook are
 matplotlib-widget based and currently **unresponsive in Jupyter**. They are the
 prototype for the refinement GUI but should be rebuilt in napari, not patched.
 
+**M4.5 measurement round landed (June 2026) — see §8 for the full A/B + decisions log.**
+Tier-2 per-chain cropping (`chain_crop`, default-off) is now safe and fast: an `image_score`-gated
+fall-back to `_sam` when a crop anchor is poor (item b), and a windowed memmap frame read that is
+bit-identical and ~48× faster (item c). The video anchor seed is now a sweepable spec
+(`seed_box`/`seed_points`/`seed_negatives`/`seed_mask` + `box_margin_frac`), defaults reproducing
+M1. Measured outcomes: **box+positive is the best AUTO seed** (mask-seed needs a high-quality anchor
+→ GUI/tier-2 only; negatives are chain-dependent → default-off); **`box_margin_frac` fixes real
+under-filled anchors** (validated, kept as a targeted lever); **tier-2+fallback is regression-free**
+across 3 neurons (net queue −10). Commits `0155c2b`, `8f00330`, `2cf448e`. Two decisions still rest
+with the lab: flip tier-2 default-on for flagged chains, and the (e) re-propagate-corrected-as-tier-2
+GUI path (= the crisp-manual-paint lever).
+
 ---
 
 ## 3. Target architecture
@@ -793,35 +805,8 @@ a queue to clear (3) are its inputs. Building the GUI first means building it bl
   question is now an A/B switch — still unmeasured. Risk to watch: the k-nearest negatives
   can include the same neuron's other chains / nearby branches, so on concave E/U chains
   confirm they suppress the *neighbour*, not legitimate foreground.)*
-- **[M4.5 session — June 2026 considerations]** Open ideas raised alongside the tier-2 work, recorded
-  here so they aren't lost:
-  - **GUI manual-paint resolution is bounded by the propagation space.** The paintable MASK
-    (Labels layer) lives at whatever resolution the chain was propagated/saved in: scale-8 for
-    M1/tier-1 `_sam` chains, `_pcrop` (crop_scale≈2) for tier-2. `hires_em=True` sharpens only the
-    EM *background*, not the mask — so on a scale-8 chain a hand-painted stroke is an 8×-coarse grid
-    that becomes 8×8 blocky blocks when upscaled to full-res output. This is inherent, not a bug:
-    `add_new_mask` must match the frame resolution SAM2 is propagating, so you cannot paint finer
-    than the frame space. **The fix is to paint in a higher-res space = tier-2** — its `_pcrop` view
-    *is* the crisp mask-edit surface the lab wanted. So crisp manual paint and open step (e)
-    (re-propagate a corrected `_sam` chain as tier-2) are the same lever. Keep manual paint; route
-    chains that need hand-correction through tier-2.
-  - **Mask-vs-box video seed + %-of-mask-width margin** (extends the §7 box-vs-mask bullet above).
-    The box is still the headless AUTO seed; the GUI already seeds mask-only. Now that the GUI can
-    produce ground-truth labels, A/B mask-seed vs box-seed under the same confidence gate as step
-    (b). The fixed `box_margin=10` px is the suspect in the "box from an underfilled mask doesn't
-    contain the whole cell" failure: replace/augment with a margin = X% of the mask's width so the
-    box pad scales with cell size. If box-with-%-margin recovers the underfill cases, the box stays
-    viable as the low-confidence fallback rather than being scrapped outright.
-  - **Stricter flag (QC gate) params — shelved until the predictor exists.** Idea: open the flag
-    thresholds very wide initially (catch every possible failure), then tighten as collected
-    review-label data trains a predictor. Deferred: only worth tuning once the predictor that
-    consumes the labels is actually being built, else we're hand-tuning thresholds twice.
-  - **Split the GUI into a marking pass and an intervention pass.** Current single window has too
-    many controls and lets the user scroll *all* frames even when only the root/center/flagged node
-    should be reviewed — which confuses the seeding/resume logic. Proposed flow: (1) *marking mode* —
-    load a chain's whole frame stack, reviewer marks good frames OK; (2) *intervention mode* —
-    entered on hitting a bad frame, shows only the flagged/picked frame for correction. Constrains
-    review to the frames the pipeline actually conditions on. For consideration; not yet scoped.
+  *(Measured June 2026 — see §8.3: negatives are chain-dependent (c12 4→1, c29 2→5), net wash, so
+  they stay default-off as a targeted lever rather than a blanket seed.)*
 - **[M3 — landed]** **Runtime telemetry — landed.** `run_chain`'s `_step` now wraps each phase in
   `perf_counter`, accumulating per-phase seconds into `state.phase_seconds`; the batch
   driver brackets each chain with `diagnostics.reset_peak_vram()` / `peak_vram_gb()`
@@ -881,6 +866,119 @@ a queue to clear (3) are its inputs. Building the GUI first means building it bl
   early and late chains silently mix two configs. Until the learned detector exists, the
   rule's job is recall, not precision — the human is the precision filter, and every
   decision is a label.
+
+---
+
+## 8. M4.5 A/B results & decisions log (June 2026)
+
+The full record of the M4.5 measurement round — **what we tried, what the numbers were, what we
+decided, and (just as important for future reports) what we REJECTED and why.** Ruler per §6:
+relative review-queue deltas at fixed thresholds, not absolute correctness. Throwaway harnesses
+(`ab_fallback.py`, `ab_seed.py`, `ab_tier2_wide.py`, `ab_underfill.py`) are committed for repro;
+their `*.log` outputs are scratch. Commits: `0155c2b` (items b+c), `8f00330` (seed ablation),
+`2cf448e` (underfill). All measured on the RTX 3050 / `large` model.
+
+### 8.1 Item (b) — anchor-gated fall-back tier-2 → `_sam`  ·  LANDED, default ON
+**Goal (safety):** make `chain_crop` safe to enable broadly — a chain with a poor per-chain crop
+should not propagate a collapsed `_pcrop` mask. **A/B (`ab_fallback.py`):** forced the c02 over-zoom
+by dropping `chain_crop_min_tif` to 1.
+
+| run | result |
+|---|---|
+| over-zoom, gate-only fallback (floor 0) | did NOT fall back — collapsed (95% flagged, 156×244) |
+| over-zoom, `image_score` floor 0.7 | **fell back → recovered baseline** (done, 0 queued) at no extra wall-time |
+| good crop (score 0.879), floor 0.7 | did NOT fall back — kept tier-2, no regression |
+
+**Decision:** `chain_crop_fallback=True`, `chain_crop_min_image_score=0.7` (first-pass).
+**Key finding / why the obvious approach was REJECTED:** the over-zoom collapse is a *propagation*
+effect — the over-zoomed anchor *passes* the geometry gate (clean blob, contains node), so a
+**gate-only criterion was rejected as insufficient** (it never fires). SAM2's anchor `image_score`
+(over-zoom 0.516 vs healthy 0.85+) is the discriminating pre-propagation signal. **Also rejected:**
+(a) *flag the chain* on a bad crop — wastes the chain vs. just using the working `_sam` path;
+(b) *post-propagation* fallback (re-run in `_sam` only after QC sees the collapse) — costs a full
+~300-frame propagate before deciding, vs. the score floor which decides on one anchor frame.
+
+### 8.2 Item (c) — windowed memmap frame read  ·  LANDED, default
+**Goal (perf):** kill the ~2× tier-2 wall-time from the full-frame `imread` in
+`prepare_chain_crop_frames`. **A/B:** `_read_tif_window` vs `cv2.imread(tif)[sl]` over sample frames.
+**Result:** **bit-identical** (the correctness bar for a pure-perf change) and **~48× faster**
+(566→12 ms/frame). **Decision:** landed as the default read (EM tifs are uncompressed single-strip
+8-bit grayscale → memmappable; full-`imread` fallback retained for any tif that isn't). **Nothing
+rejected** — full-imread was the prior baseline; this strictly dominates on this data.
+
+### 8.3 Seed ablation — mask vs box vs points vs negatives  ·  defaults UNCHANGED (`box_pos`)
+**Goal (quality / "find the sweet spot"):** the lab asked whether scrapping the bounding box was
+right, and noted *more prompts ≠ better*. **API fact baked into the harness:** SAM2 makes MASK and
+POINTS/BOX **mutually exclusive per frame** (`add_new_mask` pops `point_inputs` and vice-versa), so
+"mask + points on the anchor" is **not a real config** — the valid space is mask-only OR any subset
+of {box, pos, neg}. **A/B (`ab_seed.py`, 3 AIYL chains, 88 frames, anchor held at scale-8 `_sam` to
+isolate seed type), ranked by total queue (lower=better):**
+
+| seed | queue | note |
+|---|---|---|
+| **box_pos** (default), box_pos_neg, boxfrac_pos, boxfrac_pos_neg | **6** | box+positive family wins |
+| box_only, boxfrac_only, mask_only, pos_neg | 8 | |
+| pos_only | 9 | worst |
+
+**Decisions:** default seed stays **`box_pos`** (it won); `seed_negatives` stays **default-off**;
+`seed_mask` stays **default-off**. The new knobs are additive (defaults reproduce M1 exactly).
+**Rejected alternatives & why:**
+- **mask-seed as the AUTO default — REJECTED.** `mask_only` (8) lost to `box_pos` (6) at scale-8.
+  The mask seed bakes a curated boundary into memory, which only helps when that boundary is
+  *right*; a scale-8 anchor is a coarse ~3px speck, no more informative than its box. This is
+  **why both past decisions were correct and consistent**: keep the box for AUTO (scale-8), but the
+  GUI *did* drop the box because there the human paints a high-quality mask — the one regime where
+  the mask seed wins. The mask seed's home is the GUI / tier-2 `_pcrop`, not scale-8 AUTO.
+- **negatives as a default — REJECTED.** Net wash in aggregate (6 vs 6) hiding *opposite* per-chain
+  effects: c12 queue 4→1 *with* negatives, c29 2→5. Helps concave/cluttered, hurts clean → keep it
+  a targeted lever, not a blanket default. (Confirms the lab's "more prompts ≠ better".)
+- **point-only / box-removal — REJECTED.** `pos_only` (9) is the worst; dropping the box regresses.
+- *Caveat:* small sample, weak deltas (6 vs 8-9) — directional, not definitive.
+
+### 8.4 `box_margin_frac` (%-of-bbox box pad, the underfill fix)  ·  VALIDATED, default OFF (targeted lever)
+**Goal:** the lab's stated reason for revisiting the box — *"if the mask under-fills, a fixed box
+doesn't enclose the whole cell."* **A/B (`ab_underfill.py`):** scan 23 chains/5 neurons for the
+underfill proxy (anchor *contained* but high per-frame noskel), then A/B fixed vs frac vs mask on the
+top-3 suspects.
+
+| suspect | fixed box | **frac box (0.5)** | mask | |
+|---|---|---|---|---|
+| **RIML c25** | noskel 9, queue 4, *flagged* | **noskel 0, queue 0, *done*** | noskel 13 | **frac fixes a real underfill** |
+| AIYL c12 | 12 | 12 (inert) | 12 | tracking drift, not underfill |
+| AVBR c12 | 15 | 15 (inert) | 18 | poor anchor (score 0.27), not underfill |
+
+**Decision:** `box_margin_frac` is **validated but stays default-OFF** as a **targeted retry lever**
+— a chain that flags with high noskel + a contained anchor is the trigger to re-run with the frac
+margin (same retry-on-failure pattern as item b). **Rejected:** (a) **frac as a universal default —
+REJECTED**: inert on the 2 non-underfill suspects and `boxfrac`≈`box` on all non-underfill ablation
+chains, so it offers no broad gain and could over-pad; (b) **mask seed for underfill — REJECTED**:
+worse than fixed on all 3 suspects. **Confirms the lab's instinct:** under-filled anchors are a real
+failure mode and the size-relative margin fixes them — so the box stays viable (with this lever)
+rather than being scrapped.
+
+### 8.5 Item (d) — wider tier-2 A/B  ·  DECISION PENDING (lab's call)
+**Goal:** decide whether flagged chains run tier-2 by default. **A/B (`ab_tier2_wide.py`, 15 chains
+× AIYL/RMDR/AVBR, tier-2 with the item-b fallback on):** **improved 3, regressed 0, unchanged 12,
+fallback fired 6/15, net queue −10.** Tier-2-with-fallback only helped or stayed neutral (via
+fallback) — zero regressions across 3 neurons. **Decision input:** safe to enable on flagged chains.
+**Still the lab's call** (not flipped). AVBR c12 (worst, queue 9) fell back to `_sam` and needs the
+GUI — tier-2 can't rescue a chain whose crop anchor is also poor.
+
+### 8.6 GUI manual-paint resolution  ·  finding, no code change
+**Finding:** the paintable mask lives at the propagation resolution (scale-8 for `_sam` chains), and
+`hires_em` sharpens only the EM *background*, not the mask — so hand-painted strokes on a scale-8
+chain are 8×8-blocky when upscaled. This is inherent (`add_new_mask` must match the frame resolution
+SAM2 propagates). **Decision:** keep manual paint; **crisp paint requires a higher-res propagation
+space = tier-2** — its `_pcrop` view *is* the high-res paint surface, so "crisp manual paint" and
+open item (e) (re-propagate a corrected `_sam` chain as tier-2) are the same lever.
+
+### 8.7 Deferred (recorded with the reason)
+- **frac-margin auto-retry lever** — implement the §8.4 trigger (high-noskel+contained flag → retry
+  with frac). Cheap; mirrors item b. Not built this round (validated the mechanism first).
+- **Flip tier-2 default-on for flagged chains** — §8.5 supports it; awaiting the lab's decision.
+- **Stricter flag params** — see the strict-by-default bullet in §7; shelved until the learned
+  `P(error)` detector has labels to set the operating point against (else we hand-tune twice).
+- **Split marking/intervention GUI** — see the §7 bullet; not built, current single panel works.
 
 ---
 
