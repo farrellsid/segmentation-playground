@@ -764,8 +764,17 @@ a queue to clear (3) are its inputs. Building the GUI first means building it bl
   the two decisions are consistent, not contradictory. (3) **Negatives are chain-dependent**, not a
   blanket win: c12 queue 4→1 with negatives, but c29 2→5 — helps concave/cluttered, hurts clean,
   net wash. Keep `seed_negatives` a targeted lever, default-off. (4) **`box_margin_frac` (underfill
-  fix) is UNTESTED** — none of the 3 chains under-filled (anchors 0.85-0.89), so `boxfrac` ≈ `box`
-  here; needs a chain whose anchor under-segments to validate. Caveat: small sample, weak deltas
+  fix) — VALIDATED** (`ab_underfill.py`, scan 23 chains -> A/B the top-3 high-noskel suspects).
+  **RIML c25 was a genuine underfill**: fixed-10px box -> noskel 9/21, queue 4, *flagged*;
+  `box_margin_frac=0.5` -> **noskel 0, queue 0, *done*** (the size-relative pad enclosed the whole
+  cell the fixed box clipped). Your bounding-box instinct was right — under-filled anchors are a
+  real failure mode and the frac margin fixes them. BUT it's TARGETED, not universal: of 3
+  high-noskel suspects only RIML c25 was true underfill; AIYL c12 (noskel identical across all
+  seeds) was tracking drift and AVBR c12 (img_score 0.27) a poor anchor — frac was inert on both,
+  and `mask_only` was WORSE on all three (re-confirming the mask seed needs a good anchor). So keep
+  `box_margin_frac` default-OFF and make it a **targeted retry lever**: a chain that flags with high
+  noskel + a contained anchor is the signal to re-run it with the frac margin (the same
+  retry-on-failure pattern as the item-b tier-2 fallback). Caveat: small sample, weak deltas
   (6 vs 8-9) — directional. Default seed unchanged (`box_pos` won); the knobs are additive.)*
   *(Update June 2026 — **wider tier-2 A/B** (`ab_tier2_wide.py`, 15 chains × AIYL/RMDR/AVBR, tier-2
   with the item-b fallback on): improved 3, **regressed 0**, unchanged 12, fallback fired 6/15, net
