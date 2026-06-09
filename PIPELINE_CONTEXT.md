@@ -982,4 +982,76 @@ open item (e) (re-propagate a corrected `_sam` chain as tier-2) are the same lev
 
 ---
 
+## 9. Backlog from first real GUI use (June 2026)
+
+Observed problems and ideas from actually driving the M4 GUI on flagged chains — not yet
+scheduled, not yet decided. Recorded here so they survive the session. Two groups: error
+detection / flagging (the M4.5-adjacent accuracy thread) and GUI / pipeline bugs (the M4
+thread). Items here are **raw field notes**, deliberately less polished than §7/§8.
+
+### 9.1 Flagging & error detection
+
+- **Flagging is a bad A/B metric — and we've been leaning on it.** Every A/B result in §8 is
+  scored on review-queue deltas, i.e. on the flag rule, which is itself unreliable. This is the
+  §6 *ruler* caveat made concrete: relative deltas at fixed thresholds, never absolute
+  correctness. **Implication:** the learned `P(error)` detector (§6 M4.5(a), §7 *GUI as label
+  engine*) should arguably come *before* further accuracy-lever tuning — we may be optimizing
+  against a noisy yardstick. Lean toward building the prediction model first.
+- **Error detection is the weakest part of the system right now.** The current detector scores
+  the saved chain post-hoc; it is not sampling enough of the propagation to be trustworthy.
+  **Proposed minimum sampling per chain before a model exists:** the starting (anchor) frame,
+  one frame in *each* direction of propagation, plus a random sample and the flagged frames.
+  Sampling a single frame is too thin. **Wilder idea:** use a separate image model purely as an
+  error detector (does this mask look like a plausible neuron cross-section?). Connects to §7
+  *Features bound the model* — the stable-but-wrong case needs richer features than the four
+  geometric/IoU signals.
+- **False-positive rate is genuinely high, and the queue only surfaces flagged chains.** Even
+  after the item-4 intervene-gating (§7), too many queued frames aren't real errors. Worse, the
+  human only ever sees *flagged* chains, so unflagged-but-wrong chains (silent errors) are
+  invisible — exactly the §7 *selection bias is the killer* failure mode. **Proposed fix: GUI
+  presets.** A **verify-everything mode** (walk every frame, for data collection / the unflagged
+  random sample the §7 label engine requires) plus other presets tuned for feeding the predictor
+  model. The presets are how M4 collects unbiased labels, not just corrections.
+- **Detection fires downstream of where the error starts.** A chain flags at frame N, but on
+  rewinding the propagation error actually began a few frames upstream — it's only *detected* and
+  flagged once it has degraded enough downstream. Detection must be more conservative / earlier.
+  **Experiment to try:** drop the intervention threshold to a **single flag** (`qc_triage_min_signals=1`,
+  the legacy "queue every flag" setting — see §7 item 4) and see how recall/precision move. This
+  is the §6 M4 *strict-by-default flagging* idea — flag aggressively for recall now, loosen once
+  the learned detector can set the operating point.
+- **Fastest near-term win for detection is probably just more metrics.** More signals in the QC
+  vector → more corroboration for `intervene` and more features for the eventual model. Cheaper
+  than a model and feeds it.
+
+### 9.2 GUI & general pipeline bugs
+
+- **Non-central nodes don't auto-pick-up annotations.** Opening a frame whose chain node isn't
+  the central one still shows "no positive nodes" — the annotation isn't seeded onto the frame.
+- **Painted masks sometimes change after re-propagation.** A hand-painted correction looks
+  different after a resume. **Suspect:** mask post-processing (`pipeline.postprocess_mask`,
+  open→close→largest-CC→fill-holes, §6 M3.5 item 5) running over the painted mask. Distinct from
+  the already-fixed `correct_as_cond` silent-revert bug (§2, M4 review-testing pass item 4) —
+  worth confirming it isn't post-processing reshaping the stroke. **Action: just try scrapping
+  post-processing** (it's already default-off in the headless path, so this is low-risk — only the
+  save-time fold needs to skip it for painted masks) and see if the drift stops; if we keep it, **A/B
+  it in the future** (post-proc on vs off, queue delta + does the painted stroke survive a resume
+  bit-identical). Cheap to test, and it directly addresses a correctness complaint rather than a
+  queue-size one.
+- **Multi-node-per-layer chains read as separate objects.** Some z-layers carry multiple nodes of
+  the *same* neuron; these are read as distinct objects. In some cases the multiple nodes really
+  are connected and just carry multiple annotations for viewer clarity — the GUI should recognize
+  that rather than splitting them.
+- **No explicit save button for manual mask painting.** Painting persists on re-propagation, but
+  there's no standalone save. A save button could double as a top-level "this mask is now
+  confirmed-correct" signal (a strong positive label for the §7 label engine). May be unnecessary
+  given the implicit save-on-repropagate — decide later.
+- **Direction-limited resume.** Option to resume propagation in *one* direction only, for the rare
+  case where the other direction is already correct (and possibly mark that direction's frames as
+  confirmed-correct — more labels). Edge case; risks clobbering the correct side, needs care.
+  Worth it only if the central-node-refined-but-one-side-already-good case shows up often.
+- **Image contrast control.** Let the reviewer raise/lower EM contrast in the GUI.
+- **MP4 generation is broken.** (Overlay video export — gif path works, mp4 does not.)
+
+---
+
 *Update this doc as decisions land — it's the shared big-picture reference.*

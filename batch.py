@@ -81,7 +81,7 @@ key_neurons = ['AIYR', 'AIYL', 'AIAR', 'AIAL', 'AIZL', 'AIZR', 'AIBL', 'AIBR', '
 
 
 # RUN KNOBS (edit per launch)z
-NEURONS: Optional[Sequence[str]] =  key_neurons[1] # e.g. ["AVAL", "AVAR"]; None = all objects
+NEURONS: Optional[Sequence[str]] =  ["AVAL"] # e.g. ["AVAL", "AVAR"]; None = all objects
 
 CLEAN = True                             # True = wipe prior outputs and start fresh
 
@@ -606,7 +606,7 @@ def main() -> None:
         model_size="large",
         scale=8,
         save_downscale=8,        # canonical: == scale, no resample, no 2x skeleton bug
-        k_max_neg=7,
+        k_max_neg=3,
         neg_radius=150,          # accepted but unused in M1 (see build_prompts docstring)
         box_margin=10,
         output_root=OUTPUT_ROOT,

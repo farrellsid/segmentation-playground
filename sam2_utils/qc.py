@@ -349,7 +349,7 @@ def compute_metrics(
         fc = fc + (df["skeleton_contained"] == False).astype(int)  # noqa: E712 — NaN must not count
     df["flag_count"] = fc
     df["flag"] = fc >= 1
-    df["intervene"] = fc >= 2
+    df["intervene"] = fc >= 1 # changed intervention threshold to all flagged frames.
 
     # Friendly summary print
     n = len(df)

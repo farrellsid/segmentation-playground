@@ -1,0 +1,483 @@
+C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\sam2\modeling\position_encoding.py:96: UserWarning: expandable_segments not supported on this platform (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\c10/cuda/CUDAAllocatorConfig.h:40.)
+  torch.arange(1, H + 1, dtype=torch.float32, device=device)
+building predictors (large; image + video)...
+PyTorch: 2.12.0+cu130
+CUDA available: True
+Using device: cuda
+Checkpoint already present: checkpoints\sam2.1_hiera_large.pt
+PyTorch: 2.12.0+cu130
+CUDA available: True
+Using device: cuda
+Checkpoint already present: checkpoints\sam2.1_hiera_large.pt
+
+=======================================================
+  Snapshot: after model load
+=======================================================
+  [RAM]       used=18.57 GB / total=21.17 GB
+  [Pagefile]  used=32.01 GB / total=42.34 GB
+  [VRAM]      allocated=1.96 GB  reserved=2.04 GB
+  [Disk] notebook dir:       1176.20 MB  (D:\Zhen Lab\SAM2 Segmentation\segmentation-playground)
+  [Disk] .ipynb_checkpoints: 0.00 MB
+  [Disk] Jupyter runtime:    1276.30 MB
+  [Disk] system temp:        1276.30 MB
+  [Files] open handles: 22
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Locator.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.debugpy\Python Debugger.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\2-Jupyter Server Console.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\3-autoDocstring.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\4-GitHub Copilot Log (Code References).log
+       1.38 MB  C:\Windows\System32\en-US\KernelBase.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\GitHub.copilot-chat\GitHub Copilot Chat.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\mechatroner.rainbow-csv\rainbow_csv_debug_channel.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.git\Git.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github\GitHub.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github-authentication\GitHub Authentication.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.vscode-python-envs\Python Environments.log
+       0.06 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\Anthropic.claude-code\Claude VSCode.log
+      80.05 MB  C:\Windows\System32\DriverStore\FileRepository\nvlt.inf_amd64_45df1d07baab9850\nvcubins.bin
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\exthost.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Language Server.log
+       0.00 MB  D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\ab_tier2_run2.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.microsoft-authentication\Microsoft Authentication.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\extHostTelemetry.log
+       0.05 MB  C:\Windows\System32\en-US\tzres.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\1-Jupyter.log
+
+
+========== AIYL chain 29 [baseline] ==========
+
+[AIYL chain 29] step 1/9 -> select anchor
+    anchor node 25530784  (CATMAID z=1430)
+
+[AIYL chain 29] step 2/9 -> load anchor frame
+    full-res frame 9230x9216 -> 1200px _tif crop @ crop_scale 2
+
+[AIYL chain 29] step 3/9 -> build prompts
+    1 positive + 3 negative point(s)
+
+[AIYL chain 29] step 4/9 -> image-mode prediction
+    mask 3775 px  |  score 0.8516  | _crop 600x600
+
+[AIYL chain 29] step 5/9 -> box from mask
+    anchor gate: PASS  (cc=1 lcc=1.00 area_frac=0.01049 contained=True)
+    box (xyxy, _sam): [411, 248, 451, 288]
+
+=======================================================
+  Snapshot: after cleanup
+=======================================================
+  [RAM]       used=19.50 GB / total=21.17 GB
+  [Pagefile]  used=33.98 GB / total=42.34 GB
+  [VRAM]      allocated=1.97 GB  reserved=2.04 GB
+  [Disk] notebook dir:       1176.20 MB  (D:\Zhen Lab\SAM2 Segmentation\segmentation-playground)
+  [Disk] .ipynb_checkpoints: 0.00 MB
+  [Disk] Jupyter runtime:    1276.30 MB
+  [Disk] system temp:        1276.30 MB
+  [Files] open handles: 22
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Locator.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.debugpy\Python Debugger.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\2-Jupyter Server Console.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\3-autoDocstring.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\4-GitHub Copilot Log (Code References).log
+       1.38 MB  C:\Windows\System32\en-US\KernelBase.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\GitHub.copilot-chat\GitHub Copilot Chat.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\mechatroner.rainbow-csv\rainbow_csv_debug_channel.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.git\Git.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github\GitHub.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github-authentication\GitHub Authentication.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.vscode-python-envs\Python Environments.log
+       0.06 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\Anthropic.claude-code\Claude VSCode.log
+      80.05 MB  C:\Windows\System32\DriverStore\FileRepository\nvlt.inf_amd64_45df1d07baab9850\nvcubins.bin
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\exthost.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Language Server.log
+       0.00 MB  D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\ab_tier2_run2.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.microsoft-authentication\Microsoft Authentication.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\extHostTelemetry.log
+       0.05 MB  C:\Windows\System32\en-US\tzres.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\1-Jupyter.log
+
+
+[AIYL chain 29] step 6/9 -> prepare video frames
+    21 frames  (anchor frame_idx=10)
+
+[AIYL chain 29] step 7/9 -> propagate (bidirectional)
+frame loading (JPEG):   0%|          | 0/21 [00:00<?, ?it/s]frame loading (JPEG):   5%|4         | 1/21 [00:00<00:02,  9.90it/s]frame loading (JPEG):  14%|#4        | 3/21 [00:00<00:01, 11.20it/s]frame loading (JPEG):  24%|##3       | 5/21 [00:00<00:01, 11.28it/s]frame loading (JPEG):  33%|###3      | 7/21 [00:00<00:01, 12.06it/s]frame loading (JPEG):  43%|####2     | 9/21 [00:00<00:00, 12.09it/s]frame loading (JPEG):  52%|#####2    | 11/21 [00:00<00:00, 11.87it/s]frame loading (JPEG):  62%|######1   | 13/21 [00:01<00:00, 12.14it/s]frame loading (JPEG):  71%|#######1  | 15/21 [00:01<00:00, 11.92it/s]frame loading (JPEG):  81%|########  | 17/21 [00:01<00:00, 11.72it/s]frame loading (JPEG):  90%|######### | 19/21 [00:01<00:00, 11.78it/s]frame loading (JPEG): 100%|##########| 21/21 [00:01<00:00, 11.99it/s]frame loading (JPEG): 100%|##########| 21/21 [00:01<00:00, 11.84it/s]
+C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\sam2\sam2_video_predictor.py:786: UserWarning: cannot import name '_C' from 'sam2' (C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\sam2\__init__.py)
+
+Skipping the post-processing step due to the error above. You can still use SAM 2 and it's OK to ignore the error above, although some post-processing functionality may be limited (which doesn't affect the results in most cases; see https://github.com/facebookresearch/sam2/blob/main/INSTALL.md).
+  pred_masks_gpu = fill_holes_in_mask_scores(
+propagate in video:   0%|          | 0/11 [00:00<?, ?it/s]propagate in video:  18%|#8        | 2/11 [00:00<00:01,  5.96it/s]propagate in video:  27%|##7       | 3/11 [00:00<00:01,  4.24it/s]propagate in video:  36%|###6      | 4/11 [00:01<00:01,  3.65it/s]propagate in video:  45%|####5     | 5/11 [00:01<00:01,  3.34it/s]propagate in video:  55%|#####4    | 6/11 [00:01<00:01,  3.15it/s]propagate in video:  64%|######3   | 7/11 [00:02<00:01,  3.01it/s]propagate in video:  73%|#######2  | 8/11 [00:02<00:01,  2.88it/s]propagate in video:  82%|########1 | 9/11 [00:02<00:00,  2.82it/s]propagate in video:  91%|######### | 10/11 [00:03<00:00,  2.77it/s]propagate in video: 100%|##########| 11/11 [00:03<00:00,  2.74it/s]propagate in video: 100%|##########| 11/11 [00:03<00:00,  3.08it/s]
+propagate in video:   0%|          | 0/11 [00:00<?, ?it/s]propagate in video:  18%|#8        | 2/11 [00:00<00:01,  5.47it/s]propagate in video:  27%|##7       | 3/11 [00:00<00:02,  3.88it/s]propagate in video:  36%|###6      | 4/11 [00:01<00:02,  3.35it/s]propagate in video:  45%|####5     | 5/11 [00:01<00:01,  3.12it/s]propagate in video:  55%|#####4    | 6/11 [00:01<00:01,  2.99it/s]propagate in video:  64%|######3   | 7/11 [00:02<00:01,  2.91it/s]propagate in video:  73%|#######2  | 8/11 [00:02<00:01,  2.83it/s]propagate in video:  82%|########1 | 9/11 [00:02<00:00,  2.78it/s]propagate in video:  91%|######### | 10/11 [00:03<00:00,  2.75it/s]propagate in video: 100%|##########| 11/11 [00:03<00:00,  2.72it/s]propagate in video: 100%|##########| 11/11 [00:03<00:00,  2.99it/s]
+
+[AIYL chain 29] step 8/9 -> save masks
+[save_masks] wrote 21 masks (0 frames skipped, obj_id 1 absent) -> E:\ZhenLab\Data\output_masks\ab_tier2\baseline\AIYL\chain_29\masks  (0/255 uint8, named by catmaid_z)
+
+[AIYL chain 29] step 9/9 -> qc + flag
+[qc] 21 frames | flagged: 10 (48%) | intervene: 3 (14%) | skel miss: 5 | skel n/a: 0
+    10/21 flagged (3 queued)(48%), 3 intervene -> status 'flagged'
+
+=======================================================
+  Snapshot: after cleanup
+=======================================================
+  [RAM]       used=19.28 GB / total=21.17 GB
+  [Pagefile]  used=33.72 GB / total=42.34 GB
+  [VRAM]      allocated=1.97 GB  reserved=2.04 GB
+  [Disk] notebook dir:       1176.21 MB  (D:\Zhen Lab\SAM2 Segmentation\segmentation-playground)
+  [Disk] .ipynb_checkpoints: 0.00 MB
+  [Disk] Jupyter runtime:    1276.30 MB
+  [Disk] system temp:        1276.30 MB
+  [Files] open handles: 22
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Locator.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.debugpy\Python Debugger.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\2-Jupyter Server Console.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\3-autoDocstring.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\4-GitHub Copilot Log (Code References).log
+       1.38 MB  C:\Windows\System32\en-US\KernelBase.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\GitHub.copilot-chat\GitHub Copilot Chat.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\mechatroner.rainbow-csv\rainbow_csv_debug_channel.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.git\Git.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github\GitHub.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github-authentication\GitHub Authentication.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.vscode-python-envs\Python Environments.log
+       0.06 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\Anthropic.claude-code\Claude VSCode.log
+      80.05 MB  C:\Windows\System32\DriverStore\FileRepository\nvlt.inf_amd64_45df1d07baab9850\nvcubins.bin
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\exthost.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Language Server.log
+       0.01 MB  D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\ab_tier2_run2.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.microsoft-authentication\Microsoft Authentication.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\extHostTelemetry.log
+       0.05 MB  C:\Windows\System32\en-US\tzres.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\1-Jupyter.log
+
+
+========== AIYL chain 29 [tier2] ==========
+
+[AIYL chain 29] step 1/9 -> select anchor
+    anchor node 25530784  (CATMAID z=1430)
+
+[AIYL chain 29] step 2/9 -> load anchor frame
+    full-res 9230x9216 -> _pcrop window 973x506px @ crop_scale 2 -> 486x253 input
+
+[AIYL chain 29] step 3/9 -> build prompts
+    1 positive + 3 negative point(s)
+
+[AIYL chain 29] step 4/9 -> image-mode prediction
+    mask 3669 px  |  score 0.8047  | _pcrop 486x253
+
+[AIYL chain 29] step 5/9 -> box from mask
+    anchor gate: PASS  (cc=5 lcc=1.00 area_frac=0.02984 contained=True)
+    box (xyxy, _pcrop): [98, 40, 253, 203]
+
+=======================================================
+  Snapshot: after cleanup
+=======================================================
+  [RAM]       used=19.57 GB / total=21.17 GB
+  [Pagefile]  used=34.06 GB / total=42.34 GB
+  [VRAM]      allocated=1.97 GB  reserved=2.04 GB
+  [Disk] notebook dir:       1176.21 MB  (D:\Zhen Lab\SAM2 Segmentation\segmentation-playground)
+  [Disk] .ipynb_checkpoints: 0.00 MB
+  [Disk] Jupyter runtime:    1276.30 MB
+  [Disk] system temp:        1276.30 MB
+  [Files] open handles: 22
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Locator.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.debugpy\Python Debugger.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\2-Jupyter Server Console.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\3-autoDocstring.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\4-GitHub Copilot Log (Code References).log
+       1.38 MB  C:\Windows\System32\en-US\KernelBase.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\GitHub.copilot-chat\GitHub Copilot Chat.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\mechatroner.rainbow-csv\rainbow_csv_debug_channel.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.git\Git.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github\GitHub.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github-authentication\GitHub Authentication.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.vscode-python-envs\Python Environments.log
+       0.06 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\Anthropic.claude-code\Claude VSCode.log
+      80.05 MB  C:\Windows\System32\DriverStore\FileRepository\nvlt.inf_amd64_45df1d07baab9850\nvcubins.bin
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\exthost.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Language Server.log
+       0.02 MB  D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\ab_tier2_run2.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.microsoft-authentication\Microsoft Authentication.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\extHostTelemetry.log
+       0.05 MB  C:\Windows\System32\en-US\tzres.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\1-Jupyter.log
+
+
+[AIYL chain 29] step 6/9 -> prepare video frames
+caching _pcrop frames:   0%|          | 0/21 [00:00<?, ?frame/s]caching _pcrop frames:   5%|4         | 1/21 [00:00<00:15,  1.29frame/s]caching _pcrop frames:  10%|9         | 2/21 [00:01<00:15,  1.23frame/s]caching _pcrop frames:  14%|#4        | 3/21 [00:02<00:14,  1.23frame/s]caching _pcrop frames:  19%|#9        | 4/21 [00:03<00:13,  1.24frame/s]caching _pcrop frames:  24%|##3       | 5/21 [00:03<00:12,  1.27frame/s]caching _pcrop frames:  29%|##8       | 6/21 [00:04<00:11,  1.27frame/s]caching _pcrop frames:  33%|###3      | 7/21 [00:05<00:11,  1.25frame/s]caching _pcrop frames:  38%|###8      | 8/21 [00:06<00:10,  1.24frame/s]caching _pcrop frames:  43%|####2     | 9/21 [00:07<00:09,  1.24frame/s]caching _pcrop frames:  48%|####7     | 10/21 [00:08<00:08,  1.24frame/s]caching _pcrop frames:  52%|#####2    | 11/21 [00:08<00:08,  1.25frame/s]caching _pcrop frames:  57%|#####7    | 12/21 [00:09<00:07,  1.24frame/s]caching _pcrop frames:  62%|######1   | 13/21 [00:10<00:06,  1.24frame/s]caching _pcrop frames:  67%|######6   | 14/21 [00:11<00:05,  1.25frame/s]caching _pcrop frames:  71%|#######1  | 15/21 [00:11<00:04,  1.27frame/s]caching _pcrop frames:  76%|#######6  | 16/21 [00:12<00:03,  1.26frame/s]caching _pcrop frames:  81%|########  | 17/21 [00:13<00:03,  1.24frame/s]caching _pcrop frames:  86%|########5 | 18/21 [00:14<00:02,  1.24frame/s]caching _pcrop frames:  90%|######### | 19/21 [00:15<00:01,  1.24frame/s]caching _pcrop frames:  95%|#########5| 20/21 [00:16<00:00,  1.25frame/s]caching _pcrop frames: 100%|##########| 21/21 [00:16<00:00,  1.23frame/s]caching _pcrop frames: 100%|##########| 21/21 [00:16<00:00,  1.25frame/s]
+    21 frames  (anchor frame_idx=10)
+
+[AIYL chain 29] step 7/9 -> propagate (bidirectional)
+frame loading (JPEG):   0%|          | 0/21 [00:00<?, ?it/s]frame loading (JPEG):  10%|9         | 2/21 [00:00<00:01, 17.24it/s]frame loading (JPEG):  24%|##3       | 5/21 [00:00<00:00, 19.26it/s]frame loading (JPEG):  33%|###3      | 7/21 [00:00<00:00, 19.45it/s]frame loading (JPEG):  48%|####7     | 10/21 [00:00<00:00, 20.54it/s]frame loading (JPEG):  62%|######1   | 13/21 [00:00<00:00, 19.64it/s]frame loading (JPEG):  76%|#######6  | 16/21 [00:00<00:00, 20.46it/s]frame loading (JPEG):  90%|######### | 19/21 [00:00<00:00, 20.76it/s]frame loading (JPEG): 100%|##########| 21/21 [00:01<00:00, 20.30it/s]
+C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\sam2\sam2_video_predictor.py:786: UserWarning: cannot import name '_C' from 'sam2' (C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\sam2\__init__.py)
+
+Skipping the post-processing step due to the error above. You can still use SAM 2 and it's OK to ignore the error above, although some post-processing functionality may be limited (which doesn't affect the results in most cases; see https://github.com/facebookresearch/sam2/blob/main/INSTALL.md).
+  pred_masks_gpu = fill_holes_in_mask_scores(
+propagate in video:   0%|          | 0/11 [00:00<?, ?it/s]propagate in video:  18%|#8        | 2/11 [00:00<00:01,  6.17it/s]propagate in video:  27%|##7       | 3/11 [00:00<00:01,  4.30it/s]propagate in video:  36%|###6      | 4/11 [00:00<00:01,  3.68it/s]propagate in video:  45%|####5     | 5/11 [00:01<00:01,  3.36it/s]propagate in video:  55%|#####4    | 6/11 [00:01<00:01,  3.16it/s]propagate in video:  64%|######3   | 7/11 [00:02<00:01,  3.01it/s]propagate in video:  73%|#######2  | 8/11 [00:02<00:01,  2.91it/s]propagate in video:  82%|########1 | 9/11 [00:02<00:00,  2.83it/s]propagate in video:  91%|######### | 10/11 [00:03<00:00,  2.78it/s]propagate in video: 100%|##########| 11/11 [00:03<00:00,  2.75it/s]propagate in video: 100%|##########| 11/11 [00:03<00:00,  3.10it/s]
+propagate in video:   0%|          | 0/11 [00:00<?, ?it/s]propagate in video:  18%|#8        | 2/11 [00:00<00:01,  5.46it/s]propagate in video:  27%|##7       | 3/11 [00:00<00:02,  3.88it/s]propagate in video:  36%|###6      | 4/11 [00:01<00:02,  3.36it/s]propagate in video:  45%|####5     | 5/11 [00:01<00:01,  3.12it/s]propagate in video:  55%|#####4    | 6/11 [00:01<00:01,  2.98it/s]propagate in video:  64%|######3   | 7/11 [00:02<00:01,  2.91it/s]propagate in video:  73%|#######2  | 8/11 [00:02<00:01,  2.84it/s]propagate in video:  82%|########1 | 9/11 [00:02<00:00,  2.79it/s]propagate in video:  91%|######### | 10/11 [00:03<00:00,  2.76it/s]propagate in video: 100%|##########| 11/11 [00:03<00:00,  2.74it/s]propagate in video: 100%|##########| 11/11 [00:03<00:00,  3.00it/s]
+
+[AIYL chain 29] step 8/9 -> save masks
+[save_masks] wrote 21 masks (0 frames skipped, obj_id 1 absent) -> E:\ZhenLab\Data\output_masks\ab_tier2\tier2\AIYL\chain_29\masks  (0/255 uint8, named by catmaid_z)
+
+[AIYL chain 29] step 9/9 -> qc + flag
+[qc] 21 frames | flagged: 3 (14%) | intervene: 0 (0%) | skel miss: 0 | skel n/a: 0
+    3/21 flagged (0 queued)(14%), 0 intervene -> status 'done'
+
+=======================================================
+  Snapshot: after cleanup
+=======================================================
+  [RAM]       used=19.06 GB / total=21.17 GB
+  [Pagefile]  used=33.75 GB / total=42.34 GB
+  [VRAM]      allocated=1.97 GB  reserved=2.04 GB
+  [Disk] notebook dir:       1176.22 MB  (D:\Zhen Lab\SAM2 Segmentation\segmentation-playground)
+  [Disk] .ipynb_checkpoints: 0.00 MB
+  [Disk] Jupyter runtime:    1276.30 MB
+  [Disk] system temp:        1276.30 MB
+  [Files] open handles: 22
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Locator.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.debugpy\Python Debugger.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\2-Jupyter Server Console.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\3-autoDocstring.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\4-GitHub Copilot Log (Code References).log
+       1.38 MB  C:\Windows\System32\en-US\KernelBase.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\GitHub.copilot-chat\GitHub Copilot Chat.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\mechatroner.rainbow-csv\rainbow_csv_debug_channel.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.git\Git.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github\GitHub.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github-authentication\GitHub Authentication.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.vscode-python-envs\Python Environments.log
+       0.06 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\Anthropic.claude-code\Claude VSCode.log
+      80.05 MB  C:\Windows\System32\DriverStore\FileRepository\nvlt.inf_amd64_45df1d07baab9850\nvcubins.bin
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\exthost.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Language Server.log
+       0.02 MB  D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\ab_tier2_run2.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.microsoft-authentication\Microsoft Authentication.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\extHostTelemetry.log
+       0.05 MB  C:\Windows\System32\en-US\tzres.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\1-Jupyter.log
+
+
+========== AIYL chain 02 [baseline] ==========
+
+[AIYL chain 02] step 1/9 -> select anchor
+    anchor node v_25501222_1569  (CATMAID z=1569)
+
+[AIYL chain 02] step 2/9 -> load anchor frame
+    full-res frame 9230x9216 -> 1200px _tif crop @ crop_scale 2
+
+[AIYL chain 02] step 3/9 -> build prompts
+    1 positive + 3 negative point(s)
+
+[AIYL chain 02] step 4/9 -> image-mode prediction
+    mask 40068 px  |  score 0.8477  | _crop 600x600
+
+[AIYL chain 02] step 5/9 -> box from mask
+    anchor gate: PASS  (cc=12 lcc=1.00 area_frac=0.11130 contained=True)
+    box (xyxy, _sam): [539, 879, 613, 969]
+
+=======================================================
+  Snapshot: after cleanup
+=======================================================
+  [RAM]       used=19.36 GB / total=21.17 GB
+  [Pagefile]  used=34.11 GB / total=42.34 GB
+  [VRAM]      allocated=1.97 GB  reserved=2.04 GB
+  [Disk] notebook dir:       1176.22 MB  (D:\Zhen Lab\SAM2 Segmentation\segmentation-playground)
+  [Disk] .ipynb_checkpoints: 0.00 MB
+  [Disk] Jupyter runtime:    1276.30 MB
+  [Disk] system temp:        1276.30 MB
+  [Files] open handles: 22
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Locator.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.debugpy\Python Debugger.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\2-Jupyter Server Console.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\3-autoDocstring.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\4-GitHub Copilot Log (Code References).log
+       1.38 MB  C:\Windows\System32\en-US\KernelBase.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\GitHub.copilot-chat\GitHub Copilot Chat.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\mechatroner.rainbow-csv\rainbow_csv_debug_channel.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.git\Git.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github\GitHub.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github-authentication\GitHub Authentication.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.vscode-python-envs\Python Environments.log
+       0.06 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\Anthropic.claude-code\Claude VSCode.log
+      80.05 MB  C:\Windows\System32\DriverStore\FileRepository\nvlt.inf_amd64_45df1d07baab9850\nvcubins.bin
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\exthost.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Language Server.log
+       0.03 MB  D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\ab_tier2_run2.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.microsoft-authentication\Microsoft Authentication.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\extHostTelemetry.log
+       0.05 MB  C:\Windows\System32\en-US\tzres.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\1-Jupyter.log
+
+
+[AIYL chain 02] step 6/9 -> prepare video frames
+    39 frames  (anchor frame_idx=19)
+
+[AIYL chain 02] step 7/9 -> propagate (bidirectional)
+frame loading (JPEG):   0%|          | 0/39 [00:00<?, ?it/s]frame loading (JPEG):   5%|5         | 2/39 [00:00<00:03, 12.25it/s]frame loading (JPEG):  10%|#         | 4/39 [00:00<00:02, 12.02it/s]frame loading (JPEG):  15%|#5        | 6/39 [00:00<00:02, 11.62it/s]frame loading (JPEG):  21%|##        | 8/39 [00:00<00:02, 12.20it/s]frame loading (JPEG):  26%|##5       | 10/39 [00:00<00:02, 12.79it/s]frame loading (JPEG):  31%|###       | 12/39 [00:00<00:02, 12.15it/s]frame loading (JPEG):  36%|###5      | 14/39 [00:01<00:01, 12.57it/s]frame loading (JPEG):  41%|####1     | 16/39 [00:01<00:01, 12.43it/s]frame loading (JPEG):  46%|####6     | 18/39 [00:01<00:01, 12.64it/s]frame loading (JPEG):  51%|#####1    | 20/39 [00:01<00:01, 12.50it/s]frame loading (JPEG):  56%|#####6    | 22/39 [00:01<00:01, 12.34it/s]frame loading (JPEG):  62%|######1   | 24/39 [00:01<00:01, 11.88it/s]frame loading (JPEG):  67%|######6   | 26/39 [00:02<00:01, 11.97it/s]frame loading (JPEG):  72%|#######1  | 28/39 [00:02<00:00, 12.06it/s]frame loading (JPEG):  77%|#######6  | 30/39 [00:02<00:00, 12.23it/s]frame loading (JPEG):  82%|########2 | 32/39 [00:02<00:00, 12.25it/s]frame loading (JPEG):  87%|########7 | 34/39 [00:02<00:00, 12.26it/s]frame loading (JPEG):  92%|#########2| 36/39 [00:02<00:00, 12.73it/s]frame loading (JPEG):  97%|#########7| 38/39 [00:03<00:00, 12.44it/s]frame loading (JPEG): 100%|##########| 39/39 [00:03<00:00, 12.34it/s]
+C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\sam2\sam2_video_predictor.py:786: UserWarning: cannot import name '_C' from 'sam2' (C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\sam2\__init__.py)
+
+Skipping the post-processing step due to the error above. You can still use SAM 2 and it's OK to ignore the error above, although some post-processing functionality may be limited (which doesn't affect the results in most cases; see https://github.com/facebookresearch/sam2/blob/main/INSTALL.md).
+  pred_masks_gpu = fill_holes_in_mask_scores(
+propagate in video:   0%|          | 0/20 [00:00<?, ?it/s]propagate in video:  10%|#         | 2/20 [00:00<00:03,  5.99it/s]propagate in video:  15%|#5        | 3/20 [00:00<00:04,  4.23it/s]propagate in video:  20%|##        | 4/20 [00:01<00:04,  3.62it/s]propagate in video:  25%|##5       | 5/20 [00:01<00:04,  3.32it/s]propagate in video:  30%|###       | 6/20 [00:01<00:04,  3.12it/s]propagate in video:  35%|###5      | 7/20 [00:02<00:04,  2.98it/s]propagate in video:  40%|####      | 8/20 [00:02<00:04,  2.87it/s]propagate in video:  45%|####5     | 9/20 [00:02<00:03,  2.81it/s]propagate in video:  50%|#####     | 10/20 [00:03<00:03,  2.77it/s]propagate in video:  55%|#####5    | 11/20 [00:03<00:03,  2.74it/s]propagate in video:  60%|######    | 12/20 [00:03<00:02,  2.72it/s]propagate in video:  65%|######5   | 13/20 [00:04<00:02,  2.70it/s]propagate in video:  70%|#######   | 14/20 [00:04<00:02,  2.69it/s]propagate in video:  75%|#######5  | 15/20 [00:05<00:01,  2.68it/s]propagate in video:  80%|########  | 16/20 [00:05<00:01,  2.67it/s]propagate in video:  85%|########5 | 17/20 [00:05<00:01,  2.67it/s]propagate in video:  90%|######### | 18/20 [00:06<00:00,  2.66it/s]propagate in video:  95%|#########5| 19/20 [00:06<00:00,  2.67it/s]propagate in video: 100%|##########| 20/20 [00:06<00:00,  2.67it/s]propagate in video: 100%|##########| 20/20 [00:06<00:00,  2.87it/s]
+propagate in video:   0%|          | 0/20 [00:00<?, ?it/s]propagate in video:  10%|#         | 2/20 [00:00<00:03,  5.46it/s]propagate in video:  15%|#5        | 3/20 [00:00<00:04,  3.86it/s]propagate in video:  20%|##        | 4/20 [00:01<00:04,  3.35it/s]propagate in video:  25%|##5       | 5/20 [00:01<00:04,  3.11it/s]propagate in video:  30%|###       | 6/20 [00:01<00:04,  2.97it/s]propagate in video:  35%|###5      | 7/20 [00:02<00:04,  2.90it/s]propagate in video:  40%|####      | 8/20 [00:02<00:04,  2.82it/s]propagate in video:  45%|####5     | 9/20 [00:02<00:03,  2.77it/s]propagate in video:  50%|#####     | 10/20 [00:03<00:03,  2.74it/s]propagate in video:  55%|#####5    | 11/20 [00:03<00:03,  2.72it/s]propagate in video:  60%|######    | 12/20 [00:04<00:02,  2.70it/s]propagate in video:  65%|######5   | 13/20 [00:04<00:02,  2.69it/s]propagate in video:  70%|#######   | 14/20 [00:04<00:02,  2.68it/s]propagate in video:  75%|#######5  | 15/20 [00:05<00:01,  2.68it/s]propagate in video:  80%|########  | 16/20 [00:05<00:01,  2.67it/s]propagate in video:  85%|########5 | 17/20 [00:05<00:01,  2.67it/s]propagate in video:  90%|######### | 18/20 [00:06<00:00,  2.66it/s]propagate in video:  95%|#########5| 19/20 [00:06<00:00,  2.67it/s]propagate in video: 100%|##########| 20/20 [00:07<00:00,  2.67it/s]propagate in video: 100%|##########| 20/20 [00:07<00:00,  2.83it/s]
+
+[AIYL chain 02] step 8/9 -> save masks
+[save_masks] wrote 39 masks (0 frames skipped, obj_id 1 absent) -> E:\ZhenLab\Data\output_masks\ab_tier2\baseline\AIYL\chain_02\masks  (0/255 uint8, named by catmaid_z)
+
+[AIYL chain 02] step 9/9 -> qc + flag
+[qc] 39 frames | flagged: 0 (0%) | intervene: 0 (0%) | skel miss: 0 | skel n/a: 0
+    0/39 flagged (0 queued)(0%), 0 intervene -> status 'done'
+
+=======================================================
+  Snapshot: after cleanup
+=======================================================
+  [RAM]       used=19.07 GB / total=21.17 GB
+  [Pagefile]  used=33.75 GB / total=42.34 GB
+  [VRAM]      allocated=1.97 GB  reserved=2.04 GB
+  [Disk] notebook dir:       1176.23 MB  (D:\Zhen Lab\SAM2 Segmentation\segmentation-playground)
+  [Disk] .ipynb_checkpoints: 0.00 MB
+  [Disk] Jupyter runtime:    1276.30 MB
+  [Disk] system temp:        1276.30 MB
+  [Files] open handles: 22
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Locator.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.debugpy\Python Debugger.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\2-Jupyter Server Console.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\3-autoDocstring.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\4-GitHub Copilot Log (Code References).log
+       1.38 MB  C:\Windows\System32\en-US\KernelBase.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\GitHub.copilot-chat\GitHub Copilot Chat.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\mechatroner.rainbow-csv\rainbow_csv_debug_channel.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.git\Git.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github\GitHub.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github-authentication\GitHub Authentication.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.vscode-python-envs\Python Environments.log
+       0.06 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\Anthropic.claude-code\Claude VSCode.log
+      80.05 MB  C:\Windows\System32\DriverStore\FileRepository\nvlt.inf_amd64_45df1d07baab9850\nvcubins.bin
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\exthost.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Language Server.log
+       0.04 MB  D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\ab_tier2_run2.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.microsoft-authentication\Microsoft Authentication.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\extHostTelemetry.log
+       0.05 MB  C:\Windows\System32\en-US\tzres.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\1-Jupyter.log
+
+
+========== AIYL chain 02 [tier2] ==========
+
+[AIYL chain 02] step 1/9 -> select anchor
+    anchor node v_25501222_1569  (CATMAID z=1569)
+
+[AIYL chain 02] step 2/9 -> load anchor frame
+    full-res 9230x9216 -> _pcrop window 311x489px @ crop_scale 2 -> 156x244 input
+
+[AIYL chain 02] step 3/9 -> build prompts
+    1 positive + 3 negative point(s)
+
+[AIYL chain 02] step 4/9 -> image-mode prediction
+    mask 564 px  |  score 0.5156  | _pcrop 156x244
+
+[AIYL chain 02] step 5/9 -> box from mask
+    anchor gate: PASS  (cc=2 lcc=1.00 area_frac=0.01482 contained=True)
+    box (xyxy, _pcrop): [48, 121, 155, 228]
+
+=======================================================
+  Snapshot: after cleanup
+=======================================================
+  [RAM]       used=19.31 GB / total=21.17 GB
+  [Pagefile]  used=34.02 GB / total=42.34 GB
+  [VRAM]      allocated=1.97 GB  reserved=2.04 GB
+  [Disk] notebook dir:       1176.24 MB  (D:\Zhen Lab\SAM2 Segmentation\segmentation-playground)
+  [Disk] .ipynb_checkpoints: 0.00 MB
+  [Disk] Jupyter runtime:    1276.30 MB
+  [Disk] system temp:        1276.30 MB
+  [Files] open handles: 22
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Locator.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.debugpy\Python Debugger.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\2-Jupyter Server Console.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\3-autoDocstring.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\4-GitHub Copilot Log (Code References).log
+       1.38 MB  C:\Windows\System32\en-US\KernelBase.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\GitHub.copilot-chat\GitHub Copilot Chat.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\mechatroner.rainbow-csv\rainbow_csv_debug_channel.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.git\Git.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github\GitHub.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github-authentication\GitHub Authentication.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.vscode-python-envs\Python Environments.log
+       0.06 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\Anthropic.claude-code\Claude VSCode.log
+      80.05 MB  C:\Windows\System32\DriverStore\FileRepository\nvlt.inf_amd64_45df1d07baab9850\nvcubins.bin
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\exthost.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Language Server.log
+       0.04 MB  D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\ab_tier2_run2.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.microsoft-authentication\Microsoft Authentication.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\extHostTelemetry.log
+       0.05 MB  C:\Windows\System32\en-US\tzres.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\1-Jupyter.log
+
+
+[AIYL chain 02] step 6/9 -> prepare video frames
+caching _pcrop frames:   0%|          | 0/39 [00:00<?, ?frame/s]caching _pcrop frames:   3%|2         | 1/39 [00:00<00:29,  1.28frame/s]caching _pcrop frames:   5%|5         | 2/39 [00:01<00:29,  1.27frame/s]caching _pcrop frames:   8%|7         | 3/39 [00:02<00:28,  1.28frame/s]caching _pcrop frames:  10%|#         | 4/39 [00:03<00:27,  1.30frame/s]caching _pcrop frames:  13%|#2        | 5/39 [00:03<00:26,  1.30frame/s]caching _pcrop frames:  15%|#5        | 6/39 [00:04<00:25,  1.28frame/s]caching _pcrop frames:  18%|#7        | 7/39 [00:05<00:25,  1.27frame/s]caching _pcrop frames:  21%|##        | 8/39 [00:06<00:24,  1.24frame/s]caching _pcrop frames:  23%|##3       | 9/39 [00:07<00:27,  1.10frame/s]caching _pcrop frames:  26%|##5       | 10/39 [00:08<00:26,  1.09frame/s]caching _pcrop frames:  28%|##8       | 11/39 [00:09<00:26,  1.05frame/s]caching _pcrop frames:  31%|###       | 12/39 [00:10<00:26,  1.02frame/s]caching _pcrop frames:  33%|###3      | 13/39 [00:11<00:24,  1.07frame/s]caching _pcrop frames:  36%|###5      | 14/39 [00:12<00:22,  1.11frame/s]caching _pcrop frames:  38%|###8      | 15/39 [00:13<00:22,  1.07frame/s]caching _pcrop frames:  41%|####1     | 16/39 [00:14<00:21,  1.09frame/s]caching _pcrop frames:  44%|####3     | 17/39 [00:14<00:19,  1.12frame/s]caching _pcrop frames:  46%|####6     | 18/39 [00:15<00:18,  1.16frame/s]caching _pcrop frames:  49%|####8     | 19/39 [00:16<00:18,  1.08frame/s]caching _pcrop frames:  51%|#####1    | 20/39 [00:17<00:17,  1.07frame/s]caching _pcrop frames:  54%|#####3    | 21/39 [00:18<00:17,  1.05frame/s]caching _pcrop frames:  56%|#####6    | 22/39 [00:19<00:16,  1.01frame/s]caching _pcrop frames:  59%|#####8    | 23/39 [00:20<00:15,  1.02frame/s]caching _pcrop frames:  62%|######1   | 24/39 [00:21<00:13,  1.08frame/s]caching _pcrop frames:  64%|######4   | 25/39 [00:22<00:12,  1.11frame/s]caching _pcrop frames:  67%|######6   | 26/39 [00:23<00:11,  1.15frame/s]caching _pcrop frames:  69%|######9   | 27/39 [00:24<00:11,  1.08frame/s]caching _pcrop frames:  72%|#######1  | 28/39 [00:25<00:09,  1.12frame/s]caching _pcrop frames:  74%|#######4  | 29/39 [00:25<00:08,  1.14frame/s]caching _pcrop frames:  77%|#######6  | 30/39 [00:26<00:08,  1.12frame/s]caching _pcrop frames:  79%|#######9  | 31/39 [00:27<00:07,  1.14frame/s]caching _pcrop frames:  82%|########2 | 32/39 [00:28<00:05,  1.17frame/s]caching _pcrop frames:  85%|########4 | 33/39 [00:29<00:05,  1.20frame/s]caching _pcrop frames:  87%|########7 | 34/39 [00:29<00:04,  1.23frame/s]caching _pcrop frames:  90%|########9 | 35/39 [00:30<00:03,  1.23frame/s]caching _pcrop frames:  92%|#########2| 36/39 [00:31<00:02,  1.23frame/s]caching _pcrop frames:  95%|#########4| 37/39 [00:32<00:01,  1.24frame/s]caching _pcrop frames:  97%|#########7| 38/39 [00:33<00:00,  1.25frame/s]caching _pcrop frames: 100%|##########| 39/39 [00:33<00:00,  1.25frame/s]caching _pcrop frames: 100%|##########| 39/39 [00:33<00:00,  1.15frame/s]
+    39 frames  (anchor frame_idx=19)
+
+[AIYL chain 02] step 7/9 -> propagate (bidirectional)
+frame loading (JPEG):   0%|          | 0/39 [00:00<?, ?it/s]frame loading (JPEG):   5%|5         | 2/39 [00:00<00:01, 19.37it/s]frame loading (JPEG):  13%|#2        | 5/39 [00:00<00:01, 20.04it/s]frame loading (JPEG):  21%|##        | 8/39 [00:00<00:01, 20.32it/s]frame loading (JPEG):  28%|##8       | 11/39 [00:00<00:01, 21.50it/s]frame loading (JPEG):  36%|###5      | 14/39 [00:00<00:01, 21.31it/s]frame loading (JPEG):  44%|####3     | 17/39 [00:00<00:01, 20.63it/s]frame loading (JPEG):  51%|#####1    | 20/39 [00:00<00:00, 20.43it/s]frame loading (JPEG):  59%|#####8    | 23/39 [00:01<00:00, 20.93it/s]frame loading (JPEG):  67%|######6   | 26/39 [00:01<00:00, 20.22it/s]frame loading (JPEG):  74%|#######4  | 29/39 [00:01<00:00, 20.27it/s]frame loading (JPEG):  82%|########2 | 32/39 [00:01<00:00, 20.65it/s]frame loading (JPEG):  90%|########9 | 35/39 [00:01<00:00, 20.62it/s]frame loading (JPEG):  97%|#########7| 38/39 [00:01<00:00, 20.97it/s]frame loading (JPEG): 100%|##########| 39/39 [00:01<00:00, 20.76it/s]
+C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\sam2\sam2_video_predictor.py:786: UserWarning: cannot import name '_C' from 'sam2' (C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\sam2\__init__.py)
+
+Skipping the post-processing step due to the error above. You can still use SAM 2 and it's OK to ignore the error above, although some post-processing functionality may be limited (which doesn't affect the results in most cases; see https://github.com/facebookresearch/sam2/blob/main/INSTALL.md).
+  pred_masks_gpu = fill_holes_in_mask_scores(
+propagate in video:   0%|          | 0/20 [00:00<?, ?it/s]propagate in video:  10%|#         | 2/20 [00:00<00:02,  6.14it/s]propagate in video:  15%|#5        | 3/20 [00:00<00:03,  4.28it/s]propagate in video:  20%|##        | 4/20 [00:00<00:04,  3.66it/s]propagate in video:  25%|##5       | 5/20 [00:01<00:04,  3.35it/s]propagate in video:  30%|###       | 6/20 [00:01<00:04,  3.15it/s]propagate in video:  35%|###5      | 7/20 [00:02<00:04,  3.01it/s]propagate in video:  40%|####      | 8/20 [00:02<00:04,  2.89it/s]propagate in video:  45%|####5     | 9/20 [00:02<00:03,  2.82it/s]propagate in video:  50%|#####     | 10/20 [00:03<00:03,  2.77it/s]propagate in video:  55%|#####5    | 11/20 [00:03<00:03,  2.74it/s]propagate in video:  60%|######    | 12/20 [00:03<00:02,  2.71it/s]propagate in video:  65%|######5   | 13/20 [00:04<00:02,  2.70it/s]propagate in video:  70%|#######   | 14/20 [00:04<00:02,  2.69it/s]propagate in video:  75%|#######5  | 15/20 [00:05<00:01,  2.69it/s]propagate in video:  80%|########  | 16/20 [00:05<00:01,  2.68it/s]propagate in video:  85%|########5 | 17/20 [00:05<00:01,  2.69it/s]propagate in video:  90%|######### | 18/20 [00:06<00:00,  2.68it/s]propagate in video:  95%|#########5| 19/20 [00:06<00:00,  2.69it/s]propagate in video: 100%|##########| 20/20 [00:06<00:00,  2.69it/s]propagate in video: 100%|##########| 20/20 [00:06<00:00,  2.89it/s]
+propagate in video:   0%|          | 0/20 [00:00<?, ?it/s]propagate in video:  10%|#         | 2/20 [00:00<00:03,  5.52it/s]propagate in video:  15%|#5        | 3/20 [00:00<00:04,  3.90it/s]propagate in video:  20%|##        | 4/20 [00:01<00:04,  3.38it/s]propagate in video:  25%|##5       | 5/20 [00:01<00:04,  3.13it/s]propagate in video:  30%|###       | 6/20 [00:01<00:04,  2.99it/s]propagate in video:  35%|###5      | 7/20 [00:02<00:04,  2.91it/s]propagate in video:  40%|####      | 8/20 [00:02<00:04,  2.84it/s]propagate in video:  45%|####5     | 9/20 [00:02<00:03,  2.78it/s]propagate in video:  50%|#####     | 10/20 [00:03<00:03,  2.76it/s]propagate in video:  55%|#####5    | 11/20 [00:03<00:03,  2.73it/s]propagate in video:  60%|######    | 12/20 [00:04<00:02,  2.71it/s]propagate in video:  65%|######5   | 13/20 [00:04<00:02,  2.70it/s]propagate in video:  70%|#######   | 14/20 [00:04<00:02,  2.69it/s]propagate in video:  75%|#######5  | 15/20 [00:05<00:01,  2.69it/s]propagate in video:  80%|########  | 16/20 [00:05<00:01,  2.68it/s]propagate in video:  85%|########5 | 17/20 [00:05<00:01,  2.68it/s]propagate in video:  90%|######### | 18/20 [00:06<00:00,  2.68it/s]propagate in video:  95%|#########5| 19/20 [00:06<00:00,  2.67it/s]propagate in video: 100%|##########| 20/20 [00:07<00:00,  2.67it/s]propagate in video: 100%|##########| 20/20 [00:07<00:00,  2.84it/s]
+
+[AIYL chain 02] step 8/9 -> save masks
+[save_masks] wrote 39 masks (0 frames skipped, obj_id 1 absent) -> E:\ZhenLab\Data\output_masks\ab_tier2\tier2\AIYL\chain_02\masks  (0/255 uint8, named by catmaid_z)
+
+[AIYL chain 02] step 9/9 -> qc + flag
+[qc] 39 frames | flagged: 37 (95%) | intervene: 30 (77%) | skel miss: 29 | skel n/a: 0
+    37/39 flagged (30 queued)(95%), 30 intervene -> status 'flagged'
+
+=======================================================
+  Snapshot: after cleanup
+=======================================================
+  [RAM]       used=19.04 GB / total=21.17 GB
+  [Pagefile]  used=33.75 GB / total=42.34 GB
+  [VRAM]      allocated=1.97 GB  reserved=2.04 GB
+  [Disk] notebook dir:       1176.25 MB  (D:\Zhen Lab\SAM2 Segmentation\segmentation-playground)
+  [Disk] .ipynb_checkpoints: 0.00 MB
+  [Disk] Jupyter runtime:    1276.30 MB
+  [Disk] system temp:        1276.30 MB
+  [Files] open handles: 22
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Locator.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.debugpy\Python Debugger.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\2-Jupyter Server Console.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\3-autoDocstring.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\4-GitHub Copilot Log (Code References).log
+       1.38 MB  C:\Windows\System32\en-US\KernelBase.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\GitHub.copilot-chat\GitHub Copilot Chat.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\mechatroner.rainbow-csv\rainbow_csv_debug_channel.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.git\Git.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github\GitHub.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.github-authentication\GitHub Authentication.log
+       0.01 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.vscode-python-envs\Python Environments.log
+       0.06 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\Anthropic.claude-code\Claude VSCode.log
+      80.05 MB  C:\Windows\System32\DriverStore\FileRepository\nvlt.inf_amd64_45df1d07baab9850\nvcubins.bin
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\exthost.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\ms-python.python\Python Language Server.log
+       0.05 MB  D:\Zhen Lab\SAM2 Segmentation\segmentation-playground\ab_tier2_run2.log
+       0.02 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\vscode.microsoft-authentication\Microsoft Authentication.log
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\extHostTelemetry.log
+       0.05 MB  C:\Windows\System32\en-US\tzres.dll.mui
+       0.00 MB  C:\Users\User\AppData\Roaming\Code\logs\20260609T002532\window1\exthost\output_logging_20260609T002534\1-Jupyter.log
+
+
+
+================ A/B SUMMARY ================
+AIYL c29 baseline  | status=flagged  n_frames=21  n_flagged=10  n_queue=3  n_intervene=3  n_noskel=5  flag_rate=0.4762  queue_rate=0.1429  mask_dims=1154x1152  crop_scale=None  image_score=0.852  t_total=23.0
+AIYL c29 tier2     | status=done  n_frames=21  n_flagged=3  n_queue=0  n_intervene=0  n_noskel=0  flag_rate=0.1429  queue_rate=0.0  mask_dims=486x253  crop_scale=2  image_score=0.805  t_total=28.9
+AIYL c02 baseline  | status=done  n_frames=39  n_flagged=0  n_queue=0  n_intervene=0  n_noskel=0  flag_rate=0.0  queue_rate=0.0  mask_dims=1154x1152  crop_scale=None  image_score=0.848  t_total=22.8
+AIYL c02 tier2     | status=flagged  n_frames=39  n_flagged=37  n_queue=30  n_intervene=30  n_noskel=29  flag_rate=0.9487  queue_rate=0.7692  mask_dims=156x244  crop_scale=2  image_score=0.516  t_total=53.6
