@@ -702,7 +702,24 @@ a queue to clear (3) are its inputs. Building the GUI first means building it bl
   `ab_figs/`). **Open next:** (a) image_score/anchor-gated auto fall-back to `_sam` when a crop
   anchor is poor; (b) tune `chain_crop_min_tif` (1024 slightly relaxed c12's tight win —
   0 queued either way); (c) the windowed/memmap frame read; (d) wider A/B across neurons +
-  M4-label confirmation that the remaining single-signal `noskel` is benign. **Tier 3 → later:**
+  M4-label confirmation that the remaining single-signal `noskel` is benign.
+  *(Update June 2026 — items (a) and (c) landed; ab_fallback.py.)* **(a) anchor-gated fall-back to
+  `_sam`** is in (`chain_crop_fallback`, default on): when a chain's `_pcrop` anchor is poor it
+  re-runs the whole chain in the plain `_sam` path instead of propagating a collapsed crop.
+  **Key correction from the A/B:** the geometry gate alone does NOT catch the over-zoom — the
+  over-zoomed anchor *passes* it (clean blob, contains the node); the collapse is a propagation
+  effect, invisible at the anchor frame. The discriminating signal is SAM2's anchor `image_score`
+  (over-zoom **0.516** vs healthy **0.848 / 0.879**), so the fall-back fires on
+  `chain_crop_min_image_score` (default **0.7**, first-pass — tune in the wider A/B). Verified: the
+  forced-over-zoom chain falls back and recovers the clean baseline (status `done`, 0 queued, _sam
+  dims) at no extra wall-time; a good-crop chain (0.879) stays tier-2 and does not regress
+  (`fell_back_to_sam` recorded on ChainState for the P(error) features). **(c) windowed/memmap
+  frame read** is in (`_read_tif_window`): a `tifffile.memmap` row-window slice (the EM tifs are
+  uncompressed single-strip 8-bit grayscale → memmappable), with a full-`imread` fallback for any
+  tif that isn't. Measured **bit-identical** to `cv2.imread(tif)[sl]` and **~48× faster** per frame
+  (566→12 ms), so the ~2× tier-2 wall-time penalty above is essentially gone. Still open: (b) tune
+  `chain_crop_min_tif`; (d) wider A/B across neurons + the `image_score` floor's true value.
+  **Tier 3 → later:**
   (3) **per-frame tracked** crop following skeleton xy(z) — max resolution, but a shifting origin
   per frame (per-frame remap; may help by centring the object, may confuse tracking —
   speculative); still unbuilt.
@@ -746,6 +763,35 @@ a queue to clear (3) are its inputs. Building the GUI first means building it bl
   question is now an A/B switch — still unmeasured. Risk to watch: the k-nearest negatives
   can include the same neuron's other chains / nearby branches, so on concave E/U chains
   confirm they suppress the *neighbour*, not legitimate foreground.)*
+- **[M4.5 session — June 2026 considerations]** Open ideas raised alongside the tier-2 work, recorded
+  here so they aren't lost:
+  - **GUI manual-paint resolution is bounded by the propagation space.** The paintable MASK
+    (Labels layer) lives at whatever resolution the chain was propagated/saved in: scale-8 for
+    M1/tier-1 `_sam` chains, `_pcrop` (crop_scale≈2) for tier-2. `hires_em=True` sharpens only the
+    EM *background*, not the mask — so on a scale-8 chain a hand-painted stroke is an 8×-coarse grid
+    that becomes 8×8 blocky blocks when upscaled to full-res output. This is inherent, not a bug:
+    `add_new_mask` must match the frame resolution SAM2 is propagating, so you cannot paint finer
+    than the frame space. **The fix is to paint in a higher-res space = tier-2** — its `_pcrop` view
+    *is* the crisp mask-edit surface the lab wanted. So crisp manual paint and open step (e)
+    (re-propagate a corrected `_sam` chain as tier-2) are the same lever. Keep manual paint; route
+    chains that need hand-correction through tier-2.
+  - **Mask-vs-box video seed + %-of-mask-width margin** (extends the §7 box-vs-mask bullet above).
+    The box is still the headless AUTO seed; the GUI already seeds mask-only. Now that the GUI can
+    produce ground-truth labels, A/B mask-seed vs box-seed under the same confidence gate as step
+    (b). The fixed `box_margin=10` px is the suspect in the "box from an underfilled mask doesn't
+    contain the whole cell" failure: replace/augment with a margin = X% of the mask's width so the
+    box pad scales with cell size. If box-with-%-margin recovers the underfill cases, the box stays
+    viable as the low-confidence fallback rather than being scrapped outright.
+  - **Stricter flag (QC gate) params — shelved until the predictor exists.** Idea: open the flag
+    thresholds very wide initially (catch every possible failure), then tighten as collected
+    review-label data trains a predictor. Deferred: only worth tuning once the predictor that
+    consumes the labels is actually being built, else we're hand-tuning thresholds twice.
+  - **Split the GUI into a marking pass and an intervention pass.** Current single window has too
+    many controls and lets the user scroll *all* frames even when only the root/center/flagged node
+    should be reviewed — which confuses the seeding/resume logic. Proposed flow: (1) *marking mode* —
+    load a chain's whole frame stack, reviewer marks good frames OK; (2) *intervention mode* —
+    entered on hitting a bad frame, shows only the flagged/picked frame for correction. Constrains
+    review to the frames the pipeline actually conditions on. For consideration; not yet scoped.
 - **[M3 — landed]** **Runtime telemetry — landed.** `run_chain`'s `_step` now wraps each phase in
   `perf_counter`, accumulating per-phase seconds into `state.phase_seconds`; the batch
   driver brackets each chain with `diagnostics.reset_peak_vram()` / `peak_vram_gb()`

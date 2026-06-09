@@ -77,6 +77,34 @@ def _downscale_image(img: np.ndarray, scale: int) -> np.ndarray:
                       interpolation=cv2.INTER_AREA)
 
 
+def _read_tif_window(tif_path, sl) -> np.ndarray:
+    """Return the [y0:y1, x0:x1] window `sl` of a tif as BGR HxWx3 uint8 — EXACTLY what
+    ``cv2.imread(str(tif_path))[sl]`` returns, but read lazily so only the window's rows
+    page in instead of decoding the whole frame (the §7 tier-2 perf optimisation, item c).
+
+    The Zhen EM tifs are uncompressed, single-strip (row-contiguous), 8-bit grayscale, so a
+    ``tifffile.memmap`` slice touches only the sliced rows: ~(y1-y0)*W bytes vs the full
+    ~85 MB frame. The window is COPIED out (np.array) so the file mapping is released and the
+    returned array is plain in-memory. cv2.imread loads grayscale as 3-channel BGR by
+    replication, so GRAY2BGR reproduces it bit-for-bit (and BGR==RGB here anyway since the
+    source is grayscale). Any tif that can't be windowed this way (compressed, tiled,
+    multi-page/3-channel, or tifffile missing) falls through to a full cv2.imread+slice, so
+    the output is invariant to the read path — only the wall-time differs."""
+    import cv2
+    try:
+        import tifffile
+        mm = tifffile.memmap(str(tif_path), mode="r")
+        try:
+            if mm.ndim != 2:                         # only 2D grayscale is windowable here
+                raise ValueError("not a 2D grayscale tif")
+            win = np.array(mm[sl])                    # copy of just the window (pages in its rows)
+        finally:
+            del mm                                    # release the mapping
+        return cv2.cvtColor(win, cv2.COLOR_GRAY2BGR)  # -> BGR 3-ch, matching cv2.imread
+    except Exception:
+        return cv2.imread(str(tif_path))[sl]          # safe full-read fallback (pre-c behaviour)
+
+
 def _ensure_cached_frames(subset_tifs, cache_dir: Path, scale: int) -> None:
     """Decode+downscale any tifs not yet in the shared cache.
 
@@ -211,6 +239,28 @@ class PipelineConfig:
     # resolution of the scale-8 full frame.
     chain_crop_min_tif: int = 1024
 
+    # Tier-2 SAFETY (M4.5 item b). When the per-chain crop yields a POOR anchor, do
+    # not propagate a bad crop (or flag the chain); re-run the image phase + the whole
+    # propagation in the plain _sam full-frame path instead. "Poor" = empty anchor mask
+    # in the crop, OR the anchor gate fires (area/frag/noskel), OR (if a floor is set)
+    # image_score below chain_crop_min_image_score. This is what makes chain_crop safe
+    # to enable broadly: a chain only KEEPS the crop when its anchor is trustworthy
+    # there, else it degrades to the M1 path rather than to a collapsed _pcrop mask
+    # (the AIYL chain_02 over-zoom failure, June 2026). Only active when chain_crop is on;
+    # records ChainState.fell_back_to_sam for the A/B + the future P(error) features.
+    chain_crop_fallback: bool = True
+    # image_score floor that triggers the fallback. THIS, not the geometry gate, is what
+    # catches the over-zoom: the ab_fallback.py A/B (June 2026) showed the over-zoomed
+    # _pcrop anchor PASSES the geometry gate (clean single blob, contains the node) yet
+    # collapses during propagation — the failure is a tracking effect, invisible at the
+    # anchor frame. SAM2's own anchor confidence IS the pre-propagation tell: over-zoom
+    # scored 0.516 vs 0.848 / 0.879 for healthy crops, so a 0.7 floor cleanly separates
+    # them (over-zoom -> fall back to _sam and recover the clean baseline; healthy ->
+    # keep tier-2). First-pass value per the §6 "permissive, tune don't trust" rule;
+    # widen the A/B (item d) before trusting it. 0 disables the floor (gate-only, which
+    # the A/B proved insufficient on its own).
+    chain_crop_min_image_score: float = 0.7
+
     # multimask anchor auto-select (M3.5 item 2c). Ask SAM2 for its 3 candidate
     # masks and auto-pick (node-containment -> plausible-area -> single-CC -> IoU;
     # see _select_anchor_mask) instead of taking the single-mask output. Near-free:
@@ -295,6 +345,12 @@ class ChainState:
     # CropWindow from this to map skeleton nodes + clicks. Filled by run_chain when
     # cfg.chain_crop is on.
     crop_window: Optional[dict] = None
+
+    # tier-2 SAFETY (M4.5 item b): True when cfg.chain_crop was requested but the
+    # per-chain crop anchor was poor, so this chain was re-run in the plain _sam path
+    # (crop_window is then None and masks/frames are _sam, exactly like an M1 run).
+    # Recorded for the A/B (how often the fallback fires) and as a P(error) feature.
+    fell_back_to_sam: bool = False
 
     # qc summary + triage (filled in milestone 2)
     qc_summary: Optional[dict] = None          # flag counts, worst frames, etc.
@@ -869,9 +925,10 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     ``cw.crop_scale`` — the SAME crop-then-downscale as ``anchor_crop_predict``, so
     the anchor seed (computed in the crop) and the propagated frames share EXACT
     `_pcrop` pixels. Unlike ``prepare_video_frames`` there is no cross-chain decode
-    cache (every chain's window is unique), so this pays one full-res imread per
-    frame; a windowed/memmap read is the documented later optimisation
-    (PIPELINE_CONTEXT §7). View dir is namespaced by neuron+chain+crop_scale and
+    cache (every chain's window is unique). The per-frame read goes through
+    ``_read_tif_window`` (item c): a windowed memmap slice that pages in only the
+    window's rows instead of decoding the whole ~85 MB frame, which is where this
+    function's wall-time lived. View dir is namespaced by neuron+chain+crop_scale and
     rebuilt fresh. Returns (view_dir str, frame_to_z, anchor_frame_idx, n_frames).
     """
     import cv2
@@ -907,8 +964,7 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     frame_to_z: dict[int, int] = {}
     anchor_frame_idx: Optional[int] = None
     for i, tif_path in enumerate(tqdm(subset_tifs, desc="caching _pcrop frames", unit="frame")):
-        img = cv2.imread(str(tif_path))             # BGR full-res (matches _ensure_cached_frames)
-        crop = img[sl]                              # _tif window (the only [y,x] slice -> CropWindow)
+        crop = _read_tif_window(tif_path, sl)       # windowed read (item c); == cv2.imread(tif)[sl]
         crop = _downscale_image(crop, cw.crop_scale)
         cv2.imwrite(str(view_dir / f"{i:05d}.jpg"), crop)
         fz = _parse_file_z(tif_path)
@@ -1482,6 +1538,7 @@ def state_to_dict(state: ChainState) -> dict:
         "frame_to_z": None if ftz is None else {str(k): int(v) for k, v in ftz.items()},
         "n_frames": state.n_frames,
         "crop_window": state.crop_window,
+        "fell_back_to_sam": bool(state.fell_back_to_sam),
         "qc_summary": state.qc_summary,
         "triage_frames": list(state.triage_frames),
         "obj_id": state.obj_id,
@@ -1507,6 +1564,7 @@ def state_from_dict(d: dict) -> ChainState:
         frame_to_z=None if ftz is None else {int(k): int(v) for k, v in ftz.items()},
         n_frames=d.get("n_frames"),
         crop_window=d.get("crop_window"),
+        fell_back_to_sam=bool(d.get("fell_back_to_sam", False)),
         qc_summary=d.get("qc_summary"),
         triage_frames=list(d.get("triage_frames", [])),
         obj_id=d.get("obj_id", 1),
@@ -1580,117 +1638,158 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     state.anchor_node_id, state.anchor_catmaid_z = select_anchor(chain, annotate_df)
     print(f"    anchor node {state.anchor_node_id}  (CATMAID z={state.anchor_catmaid_z})")
 
-    # 2. anchor frame. Both crop paths (tier-1 anchor crop, tier-2 chain crop) need
-    #    the FULL-res frame to crop from; the legacy path needs the scale-8 frame the
-    #    image predictor runs on directly. Tier-2 also fixes the per-chain crop window
-    #    here (it governs the image phase, the seed, the video frames, and QC).
-    _step(2, "load anchor frame")
-    cw_chain = None
-    if cfg.chain_crop:
-        image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1)   # _tif
-        image_sam = None
-        cw_chain = chain_crop_window(chain, annotate_df, cfg=cfg, image_hw_tif=full_hw)
-        state.crop_window = cw_chain.to_dict()
-        print(f"    full-res {full_hw[1]}x{full_hw[0]} -> _pcrop window "
-              f"{cw_chain.size_tif[0]}x{cw_chain.size_tif[1]}px @ crop_scale "
-              f"{cw_chain.crop_scale} -> {cw_chain.crop_hw[1]}x{cw_chain.crop_hw[0]} input")
-    elif cfg.crop_anchor:
-        image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1)   # _tif
-        image_sam = None
-        print(f"    full-res frame {full_hw[1]}x{full_hw[0]} -> {cfg.crop_size_tif}px "
-              f"_tif crop @ crop_scale {cfg.crop_scale}")
-    else:
-        image_sam, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=cfg.scale)
-        image_full = None
-        print(f"    _sam frame {image_sam.shape[1]}x{image_sam.shape[0]} "
-              f"(full {full_hw[1]}x{full_hw[0]}, scale {cfg.scale})")
+    # 2-5. Anchor phase (load frame -> prompts -> image-mode predict -> gate + box),
+    #    factored into a closure so the tier-2 SAFETY fallback (item b) can re-run it in
+    #    the plain _sam path when the per-chain crop yields a poor anchor (the c02
+    #    over-zoom mode: a tiny/over-zoomed window where SAM2 loses inter-frame context
+    #    and the anchor mask collapses). use_chain_crop=False reproduces the legacy /
+    #    tier-1 _sam path EXACTLY (build_prompts in _sam, crop_anchor honoured), so the
+    #    M1 baseline and the gate's observational role are unchanged on non-tier-2 runs.
+    #    Returns (cw_chain|None, anchor verdict, box_present); sets state.prompts /
+    #    image_score / anchor_score / crop_window. (build_prompts is inside so the _sam
+    #    rerun rebuilds the seed in its own space; running it twice is deterministic.)
+    def _anchor_phase(use_chain_crop: bool):
+        cw_chain_l = None
+        # 2. anchor frame.
+        _step(2, "load anchor frame")
+        state.crop_window = None
+        if use_chain_crop:
+            image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1)   # _tif
+            image_sam = None
+            cw_chain_l = chain_crop_window(chain, annotate_df, cfg=cfg, image_hw_tif=full_hw)
+            state.crop_window = cw_chain_l.to_dict()
+            print(f"    full-res {full_hw[1]}x{full_hw[0]} -> _pcrop window "
+                  f"{cw_chain_l.size_tif[0]}x{cw_chain_l.size_tif[1]}px @ crop_scale "
+                  f"{cw_chain_l.crop_scale} -> {cw_chain_l.crop_hw[1]}x{cw_chain_l.crop_hw[0]} input")
+        elif cfg.crop_anchor:
+            image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1)   # _tif
+            image_sam = None
+            print(f"    full-res frame {full_hw[1]}x{full_hw[0]} -> {cfg.crop_size_tif}px "
+                  f"_tif crop @ crop_scale {cfg.crop_scale}")
+        else:
+            image_sam, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=cfg.scale)
+            image_full = None
+            print(f"    _sam frame {image_sam.shape[1]}x{image_sam.shape[0]} "
+                  f"(full {full_hw[1]}x{full_hw[0]}, scale {cfg.scale})")
 
-    # 3. prompts (always built in _sam -> they seed the video positive point; the
-    #    crop path remaps a copy into _crop for the anchor prediction).
-    _step(3, "build prompts")
-    state.prompts = build_prompts(state.anchor_node_id, state.anchor_catmaid_z,
-                                  annotate_df, scale=cfg.scale,
-                                  k_max_neg=cfg.k_max_neg, neg_radius=cfg.neg_radius)
-    n_pos = int((state.prompts.labels == 1).sum())
-    n_neg = int((state.prompts.labels == 0).sum())
-    print(f"    {n_pos} positive + {n_neg} negative point(s)")
+        # 3. prompts (always built in _sam -> they seed the video positive point; the
+        #    crop path remaps a copy into _crop for the anchor prediction).
+        _step(3, "build prompts")
+        state.prompts = build_prompts(state.anchor_node_id, state.anchor_catmaid_z,
+                                      annotate_df, scale=cfg.scale,
+                                      k_max_neg=cfg.k_max_neg, neg_radius=cfg.neg_radius)
+        n_pos = int((state.prompts.labels == 1).sum())
+        n_neg = int((state.prompts.labels == 0).sum())
+        print(f"    {n_pos} positive + {n_neg} negative point(s)")
 
-    # 4. image mode -> on a high-res crop by default (M3.5 item 2), else scale-8.
-    _step(4, "image-mode prediction")
-    # Space-relative tolerances, computed ONCE up front so the multimask pick (step 4)
-    # and the anchor gate (step 5) score with the same radius/area bounds in the same
-    # space as the mask: 1 _sam px = scale/crop_scale _crop px, so the contain radius
-    # + box margin rescale under the crop. area_frac bounds are frame-fractions the
-    # crop config already tunes (PIPELINE_CONTEXT §7), so they pass through unscaled.
-    # tier-2 uses the chain window's (possibly bumped) crop_scale; tier-1 uses crop_scale.
-    crop_active = cfg.chain_crop or cfg.crop_anchor
-    eff_crop_scale = (cw_chain.crop_scale if cfg.chain_crop else cfg.crop_scale)
-    space_ratio = (cfg.scale / eff_crop_scale) if crop_active else 1.0
-    contain_r = int(round(cfg.qc_skeleton_dilation_px * space_ratio))
-    margin_local = int(round(cfg.box_margin * space_ratio))
-    area_bounds = (cfg.gate_min_area_frac, cfg.gate_max_area_frac)
-    if crop_active:
-        # cw=cw_chain -> tier-2 (image phase runs in the SAME window the chain
-        # propagates in); cw=None -> tier-1 (a fresh window centred on the node).
-        mask_anchor, state.image_score, cw, prompts_anchor = anchor_crop_predict(
-            image_predictor, image_full, full_hw, state.anchor_node_id,
-            state.prompts, annotate_df, scale=cfg.scale,
-            crop_size_tif=cfg.crop_size_tif, crop_scale=eff_crop_scale, cw=cw_chain,
-            multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
-            select_area_bounds=area_bounds)
-    else:
-        mask_anchor, state.image_score, _logits = image_predict(
-            image_predictor, image_sam, state.prompts,
-            multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
-            select_area_bounds=area_bounds)
-        cw, prompts_anchor = None, state.prompts
-    image_hw_anchor = mask_anchor.shape[:2]
-    if cfg.multimask_anchor:
-        print(f"    multimask auto-select on (3 candidates -> 1)")
-    print(f"    mask {int(mask_anchor.sum())} px  |  score {state.image_score:.4f}"
-          + (f"  | {'_pcrop' if cfg.chain_crop else '_crop'} "
-             f"{image_hw_anchor[1]}x{image_hw_anchor[0]}" if crop_active else ""))
+        # 4. image mode -> on a high-res crop by default (M3.5 item 2), else scale-8.
+        _step(4, "image-mode prediction")
+        # Space-relative tolerances, computed ONCE up front so the multimask pick (step 4)
+        # and the anchor gate (step 5) score with the same radius/area bounds in the same
+        # space as the mask: 1 _sam px = scale/crop_scale _crop px, so the contain radius
+        # + box margin rescale under the crop. area_frac bounds are frame-fractions the
+        # crop config already tunes (PIPELINE_CONTEXT §7), so they pass through unscaled.
+        # tier-2 uses the chain window's (possibly bumped) crop_scale; tier-1 uses crop_scale.
+        crop_active = use_chain_crop or cfg.crop_anchor
+        eff_crop_scale = (cw_chain_l.crop_scale if use_chain_crop else cfg.crop_scale)
+        space_ratio = (cfg.scale / eff_crop_scale) if crop_active else 1.0
+        contain_r = int(round(cfg.qc_skeleton_dilation_px * space_ratio))
+        margin_local = int(round(cfg.box_margin * space_ratio))
+        area_bounds = (cfg.gate_min_area_frac, cfg.gate_max_area_frac)
+        if crop_active:
+            # cw=cw_chain_l -> tier-2 (image phase runs in the SAME window the chain
+            # propagates in); cw=None -> tier-1 (a fresh window centred on the node).
+            mask_anchor, state.image_score, cw, prompts_anchor = anchor_crop_predict(
+                image_predictor, image_full, full_hw, state.anchor_node_id,
+                state.prompts, annotate_df, scale=cfg.scale,
+                crop_size_tif=cfg.crop_size_tif, crop_scale=eff_crop_scale, cw=cw_chain_l,
+                multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
+                select_area_bounds=area_bounds)
+        else:
+            mask_anchor, state.image_score, _logits = image_predict(
+                image_predictor, image_sam, state.prompts,
+                multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
+                select_area_bounds=area_bounds)
+            cw, prompts_anchor = None, state.prompts
+        image_hw_anchor = mask_anchor.shape[:2]
+        if cfg.multimask_anchor:
+            print(f"    multimask auto-select on (3 candidates -> 1)")
+        print(f"    mask {int(mask_anchor.sum())} px  |  score {state.image_score:.4f}"
+              + (f"  | {'_pcrop' if use_chain_crop else '_crop'} "
+                 f"{image_hw_anchor[1]}x{image_hw_anchor[0]}" if crop_active else ""))
 
-    # 5. anchor gate + box (empty mask -> flag, stop). The gate scores the anchor
-    #    mask in WHATEVER space it lives in (_crop under the crop path, _sam in
-    #    legacy); score_anchor is space-agnostic, we just feed it matching coords +
-    #    a space-correct contain radius. Still OBSERVATIONAL -> record, don't branch.
-    _step(5, "box from mask")
-    anchor = score_anchor(
-        mask_anchor, prompts_anchor, image_hw_sam=image_hw_anchor,
-        contain_radius_px=contain_r,
-        min_area_frac=cfg.gate_min_area_frac,
-        max_area_frac=cfg.gate_max_area_frac,
-        min_largest_cc_frac=cfg.gate_min_largest_cc_frac,
-    )
-    state.anchor_score = _anchor_score_to_dict(anchor)
-    _contained = "n/a" if anchor.contained is None else anchor.contained
-    print(f"    anchor gate: {'PASS' if anchor.passed else 'FAIL'}  "
-          f"(cc={anchor.n_components} lcc={anchor.largest_cc_frac:.2f} "
-          f"area_frac={anchor.area_frac:.5f} contained={_contained})"
-          + (f"  reasons: {', '.join(anchor.reasons)}" if anchor.reasons else ""))
+        # 5. anchor gate + box (empty mask -> box_present False). The gate scores the
+        #    anchor mask in WHATEVER space it lives in (_crop under the crop path, _sam
+        #    in legacy); score_anchor is space-agnostic, we just feed it matching coords
+        #    + a space-correct contain radius. Still OBSERVATIONAL for flagging -> the
+        #    only branch it drives is the tier-2->_sam fallback (item b), decided below.
+        _step(5, "box from mask")
+        anchor = score_anchor(
+            mask_anchor, prompts_anchor, image_hw_sam=image_hw_anchor,
+            contain_radius_px=contain_r,
+            min_area_frac=cfg.gate_min_area_frac,
+            max_area_frac=cfg.gate_max_area_frac,
+            min_largest_cc_frac=cfg.gate_min_largest_cc_frac,
+        )
+        state.anchor_score = _anchor_score_to_dict(anchor)
+        _contained = "n/a" if anchor.contained is None else anchor.contained
+        print(f"    anchor gate: {'PASS' if anchor.passed else 'FAIL'}  "
+              f"(cc={anchor.n_components} lcc={anchor.largest_cc_frac:.2f} "
+              f"area_frac={anchor.area_frac:.5f} contained={_contained})"
+              + (f"  reasons: {', '.join(anchor.reasons)}" if anchor.reasons else ""))
 
-    box_local = box_from_mask(mask_anchor, margin=margin_local, image_hw_sam=image_hw_anchor)
-    if box_local is None:
+        box_local = box_from_mask(mask_anchor, margin=margin_local, image_hw_sam=image_hw_anchor)
+        box_present = box_local is not None
+        if not box_present:
+            print("    empty anchor mask")
+        elif use_chain_crop:
+            # tier-2: the WHOLE chain propagates in _pcrop, so the seed stays there — the
+            # points (prompts_anchor, already mapped _sam->_pcrop) and box are crop coords,
+            # NOT mapped back to _sam. state.prompts is thus the _pcrop seed (box_sam/points_sam
+            # hold _pcrop px; the names are legacy). propagate() feeds them onto the _pcrop frames.
+            state.prompts = Prompts(
+                points_sam=np.asarray(prompts_anchor.points_sam, dtype=float),
+                labels=np.asarray(prompts_anchor.labels, dtype=int),
+                box_sam=np.asarray(box_local, dtype=np.float32))
+            print(f"    box (xyxy, _pcrop): {state.prompts.box_sam.astype(int).tolist()}")
+        else:
+            # tier-1 / legacy: map the crop box back to _sam for the video seed (or use as-is).
+            box = box_local if cw is None else cw.box_crop_to_sam(box_local)
+            state.prompts.box_sam = np.asarray(box, dtype=np.float32)
+            print(f"    box (xyxy, _sam): {state.prompts.box_sam.astype(int).tolist()}")
+        return cw_chain_l, anchor, box_present
+
+    def _anchor_poor(anchor, box_present: bool) -> bool:
+        """The crop anchor is untrustworthy -> tier-2 should fall back to _sam."""
+        if not box_present:                        # empty mask in the crop
+            return True
+        if not anchor.passed:                      # gate fired (area / frag / noskel)
+            return True
+        floor = cfg.chain_crop_min_image_score
+        if floor > 0 and (state.image_score or 0.0) < floor:
+            return True
+        return False
+
+    cw_chain, anchor, box_present = _anchor_phase(use_chain_crop=cfg.chain_crop)
+    if cfg.chain_crop and cfg.chain_crop_fallback and _anchor_poor(anchor, box_present):
+        reasons = []
+        if not box_present: reasons.append("empty-mask")
+        if not anchor.passed: reasons.append(f"gate({','.join(anchor.reasons) or 'fail'})")
+        if cfg.chain_crop_min_image_score > 0 and (state.image_score or 0.0) < cfg.chain_crop_min_image_score:
+            reasons.append(f"score<{cfg.chain_crop_min_image_score}")
+        print(f"    [tier-2 fallback] poor _pcrop anchor [{', '.join(reasons)}] "
+              f"-> re-running this chain in the plain _sam path")
+        state.fell_back_to_sam = True
+        cw_chain, anchor, box_present = _anchor_phase(use_chain_crop=False)
+
+    # Effective space for the rest of the run: tier-2 only if we didn't fall back.
+    eff_chain_crop = cfg.chain_crop and not state.fell_back_to_sam
+
+    if not box_present:
         print("    empty anchor mask -> flagging chain for human review")
         state.status = "flagged"
         _finish()
         return state                          # [M4] later: re-pick anchor before flagging
-    if cfg.chain_crop:
-        # tier-2: the WHOLE chain propagates in _pcrop, so the seed stays there — the
-        # points (prompts_anchor, already mapped _sam->_pcrop) and box are crop coords,
-        # NOT mapped back to _sam. state.prompts is thus the _pcrop seed (box_sam/points_sam
-        # hold _pcrop px; the names are legacy). propagate() feeds them onto the _pcrop frames.
-        state.prompts = Prompts(
-            points_sam=np.asarray(prompts_anchor.points_sam, dtype=float),
-            labels=np.asarray(prompts_anchor.labels, dtype=int),
-            box_sam=np.asarray(box_local, dtype=np.float32))
-        print(f"    box (xyxy, _pcrop): {state.prompts.box_sam.astype(int).tolist()}")
-    else:
-        # tier-1 / legacy: map the crop box back to _sam for the video seed (or use as-is).
-        box = box_local if cw is None else cw.box_crop_to_sam(box_local)
-        state.prompts.box_sam = np.asarray(box, dtype=np.float32)
-        print(f"    box (xyxy, _sam): {state.prompts.box_sam.astype(int).tolist()}")
 
     # free the image embedding before video propagation (notebook does this).
     image_predictor.reset_predictor()
@@ -1698,9 +1797,10 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         on_video_phase()
 
     # 6. video frames -> tier-2 crops each frame to the chain window (_pcrop); else
-    #    the shared scale-8 cache + per-chain link view (_sam).
+    #    the shared scale-8 cache + per-chain link view (_sam). eff_chain_crop (not
+    #    cfg.chain_crop) so a chain that fell back to _sam (item b) preps _sam frames.
     _step(6, "prepare video frames")
-    if cfg.chain_crop:
+    if eff_chain_crop:
         (state.frames_dir, state.frame_to_z,
          state.anchor_frame_idx, state.n_frames) = prepare_chain_crop_frames(
             chain, annotate_df, cw_chain, frames_root=cfg.frames_root,
