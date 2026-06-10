@@ -372,13 +372,31 @@ Mostly research-flavoured and label-gated — do once detection (C) is trustwort
 31. **Instance-label encoding** (uint16, foreground == obj_id) for multi-object aggregation. *(old §5)*
 
 ### G. Housekeeping *(opportunistic)*
-32. **Repo tidy.** Separate the durable library (`pipeline.py`, `sam2_utils/`, `batch.py`, `gui.py`,
-    `run_aval.py`, `tests/`) from scratch (`ab_*.py` + `*.log`, `sweep_dilation.py`,
-    `calibration.py`/`.ipynb`, exploratory notebooks, `somethin.txt`) — e.g. `experiments/` +
-    `archive/`. Tag each file **keep / archive / delete / needs-decision** and surface the
-    `needs-decision` set for a human call. *(old §9.4)*
-33. **Docs reorg.** *(This task — partially done: PIPELINE_CONTEXT split from PIPELINE_HISTORY.
-    Remaining: the README/GUI_GUIDE pass and the file-by-file keep/archive/delete tagging.)*
+32. **Repo tidy.** ✅ **Done (June 2026, branch `repo-reorg`).** The durable library
+    (`pipeline.py`, `sam2_utils/`, `batch.py`, `gui.py`, `run_aval.py`, `tests/`, `data/`) is
+    separated from scratch via `git mv` (history preserved): A/B harnesses + sweeps + logs/figs →
+    `experiments/` (with a README mapping each to old §8); reference notebooks → `notebooks/`;
+    shelved `calibration.py`/`.ipynb` → `archive/`. Tests stayed green after every move; no durable
+    file moved or behaviour changed; nothing deleted. Next-phase scaffolds (`eval/`, `finetune/`,
+    `data/groundtruth/`) added as stub-README-only homes. *(old §9.4)*
+    **Needs-decision checklist (human call — nothing deleted yet):**
+    - [ ] Delete the 7 tracked `experiments/*.log` (~1.2 MB) or keep archived? (`experiments/*.log`
+      now git-ignored going forward; existing tracked ones await a `git rm`.)
+    - [ ] Delete `experiments/ab_figs/` (tracked, 6.2 MB A/B PNGs) or keep?
+    - [ ] `archive/calibration.py` + `calibration.ipynb` (shelved-but-parked) — archive (done) or delete?
+    - [ ] `experiments/ab_tier2.py` — superseded by `ab_tier2_wide.py` + §8.8 landing. Keep for repro or delete?
+    - [ ] `somethin.txt` (root) — stray `WinError 123` traceback. Delete? *(Surfaces a real latent
+      bug: `batch.py` chain-dir `mkdir` breaks on neuron names containing `?` e.g. `VA2?` — worth its
+      own ticket.)*
+    - [ ] `datatest.ipynb` (root, 4 KB) — tiny exploratory nb, role unclear. Delete / archive / keep?
+    - [ ] `notebooks/make_deck_figures.ipynb` + `figures/` — keep as live reporting (current) or archive?
+    - [ ] `images/` — left **tracked** (sample EM crops, source); the §8 "ensure git-ignored" note
+      conflicts with its tracked-source status. Confirm leave-tracked, or untrack?
+    *(`somethin.txt` and `datatest.ipynb` were left in place pending these calls.)*
+33. **Docs reorg.** *(This task — substantially done. PIPELINE_CONTEXT split from PIPELINE_HISTORY
+    (committed); FUTURE_DIRECTIONS added; README file-structure section updated to the tidied layout;
+    file-by-file keep/archive/delete tagging done (item 32 + the per-dir READMEs). Remaining: an
+    optional GUI_GUIDE pass.)*
 
 ---
 
