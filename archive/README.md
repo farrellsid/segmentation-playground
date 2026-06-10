@@ -1,11 +1,12 @@
-# archive/ — shelved code (kept, not deleted)
+# archive/ — superseded / parked material (kept, not on the critical path)
 
-Code that is **shelved but parked** — superseded or paused, kept for reference rather than deleted.
-Nothing here is imported by the durable library or any driver.
+Material kept for reference but not part of the live pipeline.
 
-| File | Why it's here |
+| Item | Why it's here |
 |---|---|
-| `calibration.py` | Shelved-but-parked calibration script. Imports only `sam2_utils.review` (lazily, inside a function). Its role was never folded into the durable pipeline; parked pending a keep-vs-delete call. **Needs-decision** — see [`../PIPELINE_CONTEXT.md`](../PIPELINE_CONTEXT.md) §8 item 32. |
-| `calibration.ipynb` | The notebook companion to `calibration.py` (~6.8 MB). Same shelved status; pairs with the script for the delete decision. |
+| `make_deck_figures.ipynb` | Generates slide-deck / report figures (the `figures/` PNGs below). Archived in the June 2026 tidy — kept for regenerating report figures, off the working path. |
+| `figures/` | The deck/report figure outputs from the notebook above: `fig_correct_overlay`, `fig_failure_overlay`, `fig_skeleton_overlay`, `fig_funnel`, `fig_riskcoverage`. |
 
-These are **flagged for a human keep/delete call**, not slated for deletion in the reorg pass.
+> The shelved `calibration.py` / `calibration.ipynb` were **deleted** in the June 2026 reorg (lab
+> decision) — the manual gold-set labeling approach they sketched is superseded; the design intent is
+> recorded in [`../PIPELINE_HISTORY.md`](../PIPELINE_HISTORY.md) (old §6/§7 "GUI as label engine").
