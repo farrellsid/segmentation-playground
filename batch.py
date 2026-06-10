@@ -39,7 +39,7 @@ import shutil
 import tempfile
 import traceback
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +86,9 @@ NEURONS: Optional[Sequence[str]] =  ["AVAL"] # e.g. ["AVAL", "AVAR"]; None = all
 CLEAN = True                             # True = wipe prior outputs and start fresh
 
 GIF_MODE = "all"                        # "off" | "flagged" | "all": per-chain overlay gifs via review
+
+TIER2_ON_FLAGGED = True                 # decision 1 (§8.5/§8.7): re-run a flagged _sam chain
+                                        # once with tier-2 crop. False = legacy single _sam pass.
 
 # Status vocabulary (matches ChainState.status / PIPELINE_CONTEXT §3b).
 PENDING, RUNNING, DONE, FLAGGED, FAILED = (
@@ -327,6 +330,30 @@ def _should_run(status: str, retry_failed: bool, force: bool) -> bool:
     return True   # pending / running / anything unrecognized
 
 
+def _should_tier2_rerun(status: str, cfg_chain_crop: bool, tier2_on_flagged: bool) -> bool:
+    """Decision 1 (PIPELINE_CONTEXT §8.5 / §8.7): should a just-run chain get a second,
+    tier-2 (per-chain crop) pass?
+
+    Yes iff:
+      - the knob is on (tier2_on_flagged), AND
+      - the first pass ran in _sam, NOT already tier-2 (`not cfg_chain_crop`) — a chain
+        whose config already enabled chain_crop got tier-2 on its only pass, AND
+      - QC flagged the chain (`status == FLAGGED`) — clean `done` chains stay _sam.
+
+    Tier-2's own item-b fallback (chain_crop_fallback) reverts a chain with a poor crop
+    anchor to the plain _sam path, so this second pass is regression-free (§8.5: improved
+    3, regressed 0). The win is landing flagged chains in _pcrop — higher-res propagation
+    for the genuinely-real drift, and a crisp manual-paint surface when the human opens the
+    chain in the GUI (§8.6) — and possibly clearing the flag outright.
+
+    NB this fires only in the SAME invocation, right after the first pass produces
+    `flagged`. A chain already `flagged` on disk from a prior run is skipped by
+    `_should_run` (flagged ∈ COMPLETE_STATUSES), so it is never re-run twice; to upgrade a
+    pre-existing flagged backlog to tier-2, re-run those chains with `force=True`.
+    """
+    return bool(tier2_on_flagged) and (not cfg_chain_crop) and (status == FLAGGED)
+
+
 # =============================================================================
 # Per-chain run — THE wire-in point
 # =============================================================================
@@ -343,6 +370,21 @@ class Session:
     chains: Sequence[dict]
 
 
+def _run_chain_once(session: Session, cfg: PipelineConfig, neuron: str,
+                    chain_idx: int, chain: dict) -> ChainState:
+    """One pipeline.run_chain call with the batch's standard wiring. Factored out so
+    the tier-2 second pass (decision 1) can re-invoke it with a chain_crop override."""
+    state = ChainState(neuron=neuron, chain_idx=chain_idx, config=cfg)
+    return pipeline.run_chain(
+        state,
+        on_video_phase=diagnostics.cleanup_vram,
+        image_predictor=session.image_predictor,
+        video_predictor=session.video_predictor,
+        annotate_df=session.annotate_df,
+        chain=chain,                 # a single chain dict; enumerate_chains already indexed it
+    )
+
+
 def _run_one_chain(
     session: Session,
     cfg: PipelineConfig,
@@ -350,6 +392,8 @@ def _run_one_chain(
     chain_idx: int,
     chain: dict,
     chain_dir: Path,
+    *,
+    tier2_on_flagged: bool = True,
 ) -> ChainState:
     """Run a single chain to completion and return its populated ChainState.
 
@@ -360,16 +404,25 @@ def _run_one_chain(
     and returns the populated state. Validated against run_aval.py on the M3
     subset run. on_video_phase=cleanup_vram reclaims VRAM between the image and
     video phases (run_chain owns reset_predictor() internally).
+
+    Decision 1 (PIPELINE_CONTEXT §8.5 / §8.7): if the first (_sam) pass is FLAGGED and
+    `tier2_on_flagged` is set, re-run the chain ONCE with chain_crop=True. We keep the
+    tier-2 result unconditionally — its item-b fallback already reverts a poor crop anchor
+    to _sam, so the second pass never regresses (§8.5) and a kept-tier-2 chain lands in
+    _pcrop (crisp GUI paint, §8.6). The second run's save_masks overwrites the first pass's
+    PNGs in place (same z-range/filenames), so there are no orphans. See _should_tier2_rerun
+    for the precise trigger and the once-per-chain / backlog-upgrade semantics.
     """
-    state = ChainState(neuron=neuron, chain_idx=chain_idx, config=cfg)
-    state = pipeline.run_chain(
-        state,
-        on_video_phase=diagnostics.cleanup_vram,
-        image_predictor=session.image_predictor,
-        video_predictor=session.video_predictor,
-        annotate_df=session.annotate_df,
-        chain=chain,                 # a single chain dict; enumerate_chains already indexed it
-    )
+    state = _run_chain_once(session, cfg, neuron, chain_idx, chain)
+    if _should_tier2_rerun(getattr(state, "status", ""), cfg.chain_crop, tier2_on_flagged):
+        print(f"[batch] tier-2 re-run (flagged in _sam) {neuron}/chain_{chain_idx:02d}")
+        diagnostics.cleanup_vram()                       # reclaim before the second pass
+        state = _run_chain_once(session, replace(cfg, chain_crop=True),
+                                neuron, chain_idx, chain)
+        kept = ("fell back to _sam" if getattr(state, "fell_back_to_sam", False)
+                else "kept tier-2 (_pcrop)")
+        print(f"[batch] tier-2 re-run done {neuron}/chain_{chain_idx:02d}: "
+              f"{kept}, status={getattr(state, 'status', '?')}")
     save_state(state, chain_dir / "state.json")
     return state
 
@@ -494,6 +547,9 @@ def run_batch(
     clean: bool = False,         # True = delete prior outputs before running.
                                  #   full reset if neurons is None; else only those neurons.
     gif_mode: str = "flagged",   # "off" | "flagged" | "all": per-chain overlay gifs via review
+    tier2_on_flagged: bool = True,  # decision 1 (§8.5/§8.7): re-run a flagged _sam chain
+                                    # once with tier-2 crop (regression-free via item-b fallback).
+                                    # Set False to keep the legacy single-pass _sam behaviour.
 ) -> pd.DataFrame:
     """Run every (selected) chain, recording status to the manifest as it goes.
 
@@ -536,7 +592,8 @@ def run_batch(
 
         try:
             diagnostics.reset_peak_vram()
-            state = _run_one_chain(session, cfg, neuron, idx, chain, chain_dir)
+            state = _run_one_chain(session, cfg, neuron, idx, chain, chain_dir,
+                                   tier2_on_flagged=tier2_on_flagged)
             try:
                 _append_timing(output_root, neuron, idx, state, diagnostics.peak_vram_gb())
             except Exception as e:
@@ -614,7 +671,8 @@ def main() -> None:
         )                     
     output_root = Path(cfg.output_root)        # TODONE[M3]: confirmed attr names on PipelineConfig
     session = _build_session(cfg)
-    run_batch(session, cfg, output_root, neurons=NEURONS, clean=CLEAN, gif_mode=GIF_MODE)
+    run_batch(session, cfg, output_root, neurons=NEURONS, clean=CLEAN, gif_mode=GIF_MODE,
+              tier2_on_flagged=TIER2_ON_FLAGGED)
 
 
 if __name__ == "__main__":
