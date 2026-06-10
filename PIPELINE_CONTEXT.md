@@ -379,20 +379,17 @@ Mostly research-flavoured and label-gated — do once detection (C) is trustwort
     shelved `calibration.py`/`.ipynb` → `archive/`. Tests stayed green after every move; no durable
     file moved or behaviour changed; nothing deleted. Next-phase scaffolds (`eval/`, `finetune/`,
     `data/groundtruth/`) added as stub-README-only homes. *(old §9.4)*
-    **Needs-decision checklist (human call — nothing deleted yet):**
-    - [ ] Delete the 7 tracked `experiments/*.log` (~1.2 MB) or keep archived? (`experiments/*.log`
-      now git-ignored going forward; existing tracked ones await a `git rm`.)
-    - [ ] Delete `experiments/ab_figs/` (tracked, 6.2 MB A/B PNGs) or keep?
-    - [ ] `archive/calibration.py` + `calibration.ipynb` (shelved-but-parked) — archive (done) or delete?
-    - [ ] `experiments/ab_tier2.py` — superseded by `ab_tier2_wide.py` + §8.8 landing. Keep for repro or delete?
-    - [ ] `somethin.txt` (root) — stray `WinError 123` traceback. Delete? *(Surfaces a real latent
-      bug: `batch.py` chain-dir `mkdir` breaks on neuron names containing `?` e.g. `VA2?` — worth its
-      own ticket.)*
-    - [ ] `datatest.ipynb` (root, 4 KB) — tiny exploratory nb, role unclear. Delete / archive / keep?
-    - [ ] `notebooks/make_deck_figures.ipynb` + `figures/` — keep as live reporting (current) or archive?
-    - [ ] `images/` — left **tracked** (sample EM crops, source); the §8 "ensure git-ignored" note
-      conflicts with its tracked-source status. Confirm leave-tracked, or untrack?
-    *(`somethin.txt` and `datatest.ipynb` were left in place pending these calls.)*
+    **Needs-decision — resolved (lab review, June 2026):**
+    - [x] `experiments/*.log` (~1.2 MB) + `experiments/ab_figs/` (6.2 MB) — **kept for now**; revisit
+      once the Stage 0 evaluation pipeline exists (`experiments/*.log` git-ignored going forward).
+    - [x] `archive/calibration.py` + `.ipynb` — **deleted** (shelved approach superseded).
+    - [x] `somethin.txt` — **deleted** (stray traceback). *(Still a real latent bug to fix separately:
+      `batch.py` chain-dir `mkdir` breaks on neuron names containing `?`, e.g. `VA2?`.)*
+    - [x] `datatest.ipynb` — **deleted** (dead exploratory nb).
+    - [x] `make_deck_figures.ipynb` + `figures/` — **archived** → `archive/`.
+    - [x] `images/` — **deleted** (sample crops; not the actual source used).
+    - [ ] `experiments/ab_tier2.py` — superseded by `ab_tier2_wide.py` + §8.8 landing; kept for repro,
+      revisit with the logs/figs after Stage 0.
 33. **Docs reorg.** *(This task — substantially done. PIPELINE_CONTEXT split from PIPELINE_HISTORY
     (committed); FUTURE_DIRECTIONS added; README file-structure section updated to the tidied layout;
     file-by-file keep/archive/delete tagging done (item 32 + the per-dir READMEs). Remaining: an
