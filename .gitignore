@@ -3,5 +3,15 @@ __pycache__/
 *.pyc
 checkpoints/
 .ipynb_checkpoints/
-data/
+output/
 references/
+
+# Generated run logs from experiments/ are disposable (findings live in PIPELINE_HISTORY old §8).
+experiments/*.log
+
+# data/ contents are not committed (CATMAID-derived + large GT). Track only the
+# groundtruth scaffold README. (`data/*` not `data/` so git descends to find the negation.)
+data/*
+!data/groundtruth/
+data/groundtruth/*
+!data/groundtruth/README.md
