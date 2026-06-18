@@ -1,4 +1,6 @@
 .env
+# Local-only Claude session guide; intentionally not tracked.
+CLAUDE.md
 __pycache__/
 *.pyc
 *.egg-info/
