@@ -28,6 +28,6 @@ in the library, never in a driver.
 - The single-chain driver doubles as a regression harness: it reproduces the reference notebook
   output, so a refactor can prove it changed nothing.
 - The library does not import any driver. This keeps the dependency graph acyclic and is enforced in
-  CI (see [0011](0011-flat-layout-over-src.md) and the import-linter contract).
+  CI (see [0011](0011-flat-layout-over-src.md) and `tests/test_import_direction.py`).
 - A reader who wants to know "what does the pipeline do" reads the library; "how do I run it" reads a
   driver. The two questions have two homes.

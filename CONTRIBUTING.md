@@ -7,7 +7,7 @@ make a change, and check it without tribal knowledge. For the bigger picture, re
 ## Set up
 
 ```bash
-pip install -e ".[dev]"      # library, test deps, and linters (pytest, scipy, scikit-image, ruff, import-linter)
+pip install -e ".[dev]"      # library, test deps, and the linter (pytest, scipy, scikit-image, ruff)
 pip install 'git+https://github.com/facebookresearch/sam2.git'
 ```
 
@@ -37,14 +37,14 @@ Keep new tests for pure geometry or pure pandas torch-free, so they stay in this
 ```bash
 ruff check .
 ruff format --check .
-lint-imports          # enforces the dependency direction below
+py -3 -m pytest tests/test_import_direction.py   # enforces the dependency direction below
 ```
 
 ## Dependency direction
 
 The library (`pipeline.py`, `sam2_utils/`) must not import the drivers (`batch.py`, `gui.py`,
 `run_aval.py`) or `eval/`. Drivers and `eval/` import the library, never the reverse. This is
-enforced by import-linter. Shared logic between two drivers belongs in the library. See
+enforced by `tests/test_import_direction.py`. Shared logic between two drivers belongs in the library. See
 [ADR 0001](docs/adr/0001-library-plus-thin-drivers.md) and
 [ADR 0011](docs/adr/0011-flat-layout-over-src.md).
 

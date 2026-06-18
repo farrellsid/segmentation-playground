@@ -22,8 +22,8 @@ friction for the users, which is the case here.
 
 Make the package cleanly installable in place instead: `pip install -e .` works, the test config puts
 the repo root on the path so `import pipeline` and `import eval` resolve, and the dependency
-direction (drivers and eval import the library, never the reverse) is enforced with import-linter in
-CI.
+direction (drivers and eval import the library, never the reverse) is enforced by
+`tests/test_import_direction.py` in CI.
 
 ## Consequences
 

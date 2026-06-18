@@ -139,5 +139,6 @@ run_aval.py / batch.py / gui.py / eval/   (volatile edges)
             sam2_utils/                    (stable utilities)
 ```
 
-The library may not import the drivers. This is checked in CI with import-linter so the rule cannot
-drift silently. If you need shared logic in two drivers, it belongs in the library.
+The library may not import the drivers. This is checked by `tests/test_import_direction.py` (a static
+AST test that runs in CI) so the rule cannot drift silently. If you need shared logic in two drivers,
+it belongs in the library.

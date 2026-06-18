@@ -27,15 +27,24 @@ dependencies = [
 # lazily. scipy and scikit-image are used by the pipeline-math tests but are
 # not part of the runtime-core dependency set above.
 test = ["pytest", "scipy", "scikit-image"]
-# Contributor toolchain: tests plus linters.
-dev = ["pytest", "scipy", "scikit-image", "ruff", "import-linter"]
+# Contributor toolchain: tests plus the linter/formatter.
+dev = ["pytest", "scipy", "scikit-image", "ruff"]
+
+# pipeline.py is a top-level module (flat layout, see ADR 0011), so it must be
+# declared explicitly for `pip install -e .` to expose `import pipeline`.
+[tool.setuptools]
+py-modules = ["pipeline"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["sam2_utils*"]
+include = ["sam2_utils*", "eval*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Put the repo root on sys.path so `import pipeline` and `import eval` resolve
 # regardless of how pytest is invoked (they are root-level, not under a package).
 pythonpath = ["."]
+
+# Dependency direction (ADR 0001): the library must not import the drivers. This
+# is enforced by tests/test_import_direction.py, a static AST check that runs in
+# the normal suite (a flat single-file-module layout does not fit import-linter).

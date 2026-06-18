@@ -42,6 +42,10 @@ def apply_affine(xy: np.ndarray, M: np.ndarray, t: np.ndarray) -> np.ndarray:
     """Map a (N, 2) array of (x, y) points: out = xy @ M.T + t.
 
     Accepts a single (2,) point too; returns (2,) in that case.
+
+    >>> import numpy as np
+    >>> apply_affine([1.0, 2.0], np.eye(2), np.array([10.0, 20.0])).tolist()
+    [11.0, 22.0]
     """
     xy = np.asarray(xy, dtype=float)
     single = xy.ndim == 1
@@ -84,12 +88,19 @@ def tif_to_sam(xy_tif, scale) -> np.ndarray:
     `scale` is any full-res downscale factor. Pass SCALE to land in _sam (the
     video-propagation and canonical mask space); pass `save_downscale` to land in
     the saved-mask px space (identical to _sam under save_downscale == SCALE).
+
+    >>> tif_to_sam([16, 32], 8).tolist()
+    [2.0, 4.0]
     """
     return np.asarray(xy_tif, dtype=float) / float(scale)
 
 
 def sam_to_tif(xy_sam, scale) -> np.ndarray:
-    """Inverse of tif_to_sam: a scale-downscaled px space -> full-res tif px."""
+    """Inverse of tif_to_sam: a scale-downscaled px space -> full-res tif px.
+
+    >>> sam_to_tif([2, 4], 8).tolist()
+    [16.0, 32.0]
+    """
     return np.asarray(xy_sam, dtype=float) * float(scale)
 
 
