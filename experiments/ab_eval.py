@@ -58,6 +58,11 @@ BASELINE = PipelineConfig(
     multimask_anchor=False, multimask_exclude_neg=False,
     postprocess_masks=False,
     seed_box="fixed", seed_points=True, seed_negatives=False, seed_mask=False,
+    # Shared across all variants: the frame cache (frames_cache_s{scale}/z*.jpg) is keyed by
+    # z+scale, config-independent, so the expensive full-res decode happens once (first variant)
+    # and is reused; per-chain views are rebuilt fresh each run, so no stale crop frames leak
+    # between variants. output_root is set per-variant in run_and_screen.
+    frames_root=config.GT_PRED_DIR / "frames",
 )
 
 # (label, human description, config overrides, tier2_on_flagged). Ordered by value: baseline first,
