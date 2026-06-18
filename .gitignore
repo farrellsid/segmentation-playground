@@ -17,6 +17,8 @@ experiments/*.log
 
 # Generated eval results (per-run CSVs + measurement logs) — project-generated, not source.
 eval/out_gt*/
+# Generated A/B campaign reports (experiments/ab_eval.py) — project-generated, not source.
+experiments/ab_eval/
 
 # Vendored upstream SAM2 example notebooks (~24 MB) — reference only, not project code.
 examples/
