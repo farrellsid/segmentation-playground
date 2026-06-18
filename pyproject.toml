@@ -17,10 +17,25 @@ dependencies = [
     "requests",
     "tqdm",
     # `progressbar2` is optional; setup.py uses a fallback if absent.
-    # `torch` is intentionally NOT listed — install the CUDA build that
+    # `torch` is intentionally NOT listed. Install the CUDA build that
     # matches your environment from pytorch.org first.
 ]
+
+[project.optional-dependencies]
+# Everything needed to run the test suite. The suite is CPU-only: it never
+# loads a SAM2 checkpoint or touches the GPU, because pipeline imports torch
+# lazily. scipy and scikit-image are used by the pipeline-math tests but are
+# not part of the runtime-core dependency set above.
+test = ["pytest", "scipy", "scikit-image"]
+# Contributor toolchain: tests plus linters.
+dev = ["pytest", "scipy", "scikit-image", "ruff", "import-linter"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sam2_utils*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Put the repo root on sys.path so `import pipeline` and `import eval` resolve
+# regardless of how pytest is invoked (they are root-level, not under a package).
+pythonpath = ["."]
