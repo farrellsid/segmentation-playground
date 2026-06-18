@@ -30,8 +30,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
+# This script lives in scripts/, so put the repo root on sys.path to import the
+# sam2_utils package when run as `py -3 scripts/pull_worm.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sam2_utils import config
 from sam2_utils.catmaid import Catmaid

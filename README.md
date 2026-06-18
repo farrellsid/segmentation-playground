@@ -51,13 +51,13 @@ segmentation-playground/
   run_aval.py            # driver: run one chain (the regression harness)
   batch.py               # driver: headless batch over all chains, with resume
   gui.py                 # driver: napari review / correction GUI
-  pull_worm.py           # utility: pull a worm's annotations from CATMAID
   sam2_utils/            # importable helpers (config, setup, alignment, qc, review, labels, ...)
   eval/                  # ground-truth evaluation (region IoU, VOI, ARAND, ERL, registration)
   finetune/              # scaffold for SAM2 finetuning (not yet implemented)
   tests/                 # unit tests (the suite is CPU-only)
   experiments/           # one-off A/B harnesses, kept for reproducibility
   notebooks/             # reference and exploration notebooks
+  scripts/               # standalone utilities (pull_worm.py: pull annotations from CATMAID)
   archive/               # superseded material, kept for reference
   data/                  # (git-ignored) CATMAID-derived inputs and the GT landing spot
   docs/                  # documentation (see below)

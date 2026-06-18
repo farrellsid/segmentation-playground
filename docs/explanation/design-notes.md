@@ -476,8 +476,7 @@ Mostly research-flavoured and label-gated, do once detection (C) is trustworthy 
     - [x] `datatest.ipynb`, **deleted** (dead exploratory nb).
     - [x] `make_deck_figures.ipynb` + `figures/`, **archived** → `archive/`.
     - [x] `images/`, **deleted** (sample crops; not the actual source used).
-    - [ ] `experiments/ab_tier2.py`, superseded by `ab_tier2_wide.py` + §8.8 landing; kept for repro,
-      revisit with the logs/figs after Stage 0.
+    - [x] `experiments/ab_tier2.py`, **deleted** (superseded by `ab_tier2_wide.py` + §8.8 landing).
 33. **Docs reorg.** *(This task, substantially done. PIPELINE_CONTEXT split from PIPELINE_HISTORY
     (committed); FUTURE_DIRECTIONS added; README file-structure section updated to the tidied layout;
     file-by-file keep/archive/delete tagging done (item 32 + the per-dir READMEs). Remaining: an
