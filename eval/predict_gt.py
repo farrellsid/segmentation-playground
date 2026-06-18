@@ -1,6 +1,14 @@
 """
 predict_gt.py, run the SAM2 pipeline on SEM-Dauer 1's EM.
 
+DISCONTINUED (kept for reference only). This was the points-only scaffold that validated the
+Stage-0 eval harness end to end and surfaced the registration problem. The real production
+pipeline now runs on SEM-Dauer 1 directly (Stage 0.2: `batch.py --preset eval` via the
+`pipeline.FrameStore` seam + `eval.gt_dataset`, scored by `eval.score_batch`), so this module
+is no longer the scored path and is not maintained. Its unfinished bleed levers (cross-neuron
+negatives, box seed, postprocess) are retired with it. The code below is left intact for
+historical reference.
+
 Goal: produce predictions for the cross-worm GT (SEM-Dauer 1, project 280) so
 the eval ruler can measure the *current* pipeline. Output feeds both
 scorers with no further glue:
