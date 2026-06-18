@@ -22,7 +22,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -161,7 +161,7 @@ def main() -> None:
 
     frames, per_neuron = score_region(gt, src, neurons=neurons, out_dir=args.out,
                                        progress=not args.quiet)
-    region_secs = time.perf_counter() - t0
+    _region_secs = time.perf_counter() - t0
 
     # --- labelmap metrics (VOI / ARAND / per-neuron ERL) ---
     labelmap_report = None

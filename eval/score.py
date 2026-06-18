@@ -122,7 +122,6 @@ def score_region(
       neurons_df, one row per neuron: micro (volume, count-summed) IoU/Dice/
                    precision/recall, plus the per-frame means and frame count.
     """
-    import sys
     import time as _time
 
     want = list(neurons) if neurons is not None else list(source.available_neurons())

@@ -35,10 +35,12 @@ Keep new tests for pure geometry or pure pandas torch-free, so they stay in this
 - Lint and check structure before a PR:
 
 ```bash
-ruff check .
-ruff format --check .
+ruff check .                                     # lint (CI runs this)
 py -3 -m pytest tests/test_import_direction.py   # enforces the dependency direction below
 ```
+
+The existing code is not auto-formatted with `ruff format`, so that is not a gate. If you reformat,
+keep it to the files you are already changing rather than reformatting the whole tree at once.
 
 ## Dependency direction
 

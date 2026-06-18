@@ -15,12 +15,10 @@ Run it directly:  python run_aval.py
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pandas as pd
 
 from sam2_utils import setup, alignment, diagnostics, config
-import pipeline
 from pipeline import PipelineConfig, ChainState, run_chain, save_state
 
 

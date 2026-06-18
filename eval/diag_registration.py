@@ -27,7 +27,6 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from scipy import ndimage
 
 from sam2_utils import config
 from sam2_utils.skeletons import normalize_name
@@ -64,7 +63,7 @@ def residual_analysis(gt: GroundTruth, sk: pd.DataFrame, reg: Registration) -> p
     mag = np.linalg.norm(res, axis=1)
     corr = corr.assign(rx=res[:, 0], ry=res[:, 1], rmag=mag)
 
-    print(f"\n=== residual after current model (global A + per-section translation) ===")
+    print("\n=== residual after current model (global A + per-section translation) ===")
     print(f"  correspondences: {len(corr)}  over {len(np.unique(z))} slices")
     print(f"  |residual| px:  mean {mag.mean():.1f}  median {np.median(mag):.1f}  "
           f"p90 {np.percentile(mag,90):.1f}  max {mag.max():.1f}")

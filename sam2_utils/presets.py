@@ -16,7 +16,6 @@ so this module stays import-light: no `pipeline` import; the driver constructs t
 """
 from __future__ import annotations
 
-from typing import Optional
 
 from . import config
 

@@ -22,7 +22,6 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
-from matplotlib.colors import to_rgb
 
 # Stable per-object palette (obj_id -> RGB float). Cycles for >10 objects.
 _PALETTE = plt.cm.tab10(np.linspace(0, 1, 10))[:, :3]

@@ -39,6 +39,35 @@ py-modules = ["pipeline"]
 where = ["."]
 include = ["sam2_utils*", "eval*"]
 
+[tool.ruff]
+line-length = 100
+# Notebooks are exploratory (implicit cross-cell state, which the linter cannot
+# follow); archive is parked. Neither is linted.
+extend-exclude = ["notebooks", "archive"]
+
+[tool.ruff.lint]
+# Default rules (pyflakes + a subset of pycodestyle). The compact one-statement
+# styles below are intentional in this codebase, so they are not flagged.
+ignore = [
+    "E701",  # multiple statements on one line (colon)
+    "E702",  # multiple statements on one line (semicolon)
+    "E741",  # ambiguous variable name (l, I, O) used in math code
+    "E731",  # lambda assignment
+    "E402",  # module import not at top (scripts do a sys.path bootstrap first)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__ re-exports look like unused imports; tests and experiments keep
+# fixtures and scratch imports that are not all referenced.
+"**/__init__.py" = ["F401"]
+"tests/*" = ["F401"]
+"experiments/*" = ["F401"]
+
+[tool.ruff.lint.pydocstyle]
+# The convention for new docstrings. The presence rules (D1xx) are not enabled
+# yet to avoid churn; convert docstrings to this style as you touch them.
+convention = "numpy"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Put the repo root on sys.path so `import pipeline` and `import eval` resolve

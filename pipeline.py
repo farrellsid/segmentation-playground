@@ -47,7 +47,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Iterator, Mapping, Optional
+from typing import Callable, Iterator, Optional
 
 import numpy as np
 import pandas as pd
@@ -1996,7 +1996,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
             cw, prompts_anchor = None, state.prompts
         image_hw_anchor = mask_anchor.shape[:2]
         if cfg.multimask_anchor:
-            print(f"    multimask auto-select on (3 candidates -> 1)")
+            print("    multimask auto-select on (3 candidates -> 1)")
         print(f"    mask {int(mask_anchor.sum())} px  |  score {state.image_score:.4f}"
               + (f"  | {'_pcrop' if use_chain_crop else '_crop'} "
                  f"{image_hw_anchor[1]}x{image_hw_anchor[0]}" if crop_active else ""))

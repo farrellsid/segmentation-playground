@@ -392,7 +392,6 @@ def on_mask_rate(
 
 def _main() -> None:
     import argparse
-    from sam2_utils import config
 
     ap = argparse.ArgumentParser(description="Fit skeleton->GT-mask section registration.")
     ap.add_argument("--skeleton-csv", type=Path,

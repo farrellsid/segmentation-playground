@@ -114,7 +114,7 @@ def collect(root: Path) -> pd.DataFrame:
 def report(df: pd.DataFrame) -> None:
     if df.empty:
         print("no rows collected"); return
-    print(f"\n=== target-worm registration drift check ===")
+    print("\n=== target-worm registration drift check ===")
     print(f"frames: {len(df)}  chains: {df.groupby(['neuron','chain']).ngroups}  "
           f"neurons: {df['neuron'].nunique()}  z: {df['z'].min()}..{df['z'].max()} "
           f"(fit at {Z_FIT})")
@@ -134,8 +134,8 @@ def report(df: pd.DataFrame) -> None:
 
     # bin by z-distance from the fit slice; per-bin COHERENT (cross-chain mean) offset
     df = df.assign(zbin=(df["zoff"] // 40 * 40).astype(int))
-    print(f"\n  zoff-bin   n   |mean off|  mean|off|  coherence   contain%   "
-          f"mean(offx,offy)")
+    print("\n  zoff-bin   n   |mean off|  mean|off|  coherence   contain%   "
+          "mean(offx,offy)")
     for zb, g in df.groupby("zbin"):
         mvec = np.array([g["offx"].mean(), g["offy"].mean()])
         mean_mag = float(np.hypot(g["offx"], g["offy"]).mean())

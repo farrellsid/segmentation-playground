@@ -25,7 +25,6 @@ from typing import Callable, Dict, Hashable, List, Optional, Sequence, Tuple
 import numpy as np
 from PIL import Image
 
-from sam2_utils import config
 from sam2_utils.alignment import CropWindow
 from sam2_utils.skeletons import normalize_name
 from . import metrics as M

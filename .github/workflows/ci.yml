@@ -1,0 +1,24 @@
+name: ci
+
+# Runs the CPU-only checks on every push and pull request. The test suite never
+# loads a SAM2 checkpoint or touches the GPU, so it runs on a standard runner.
+# torch is not installed here; pipeline imports it lazily, so collection works.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install (library + dev tools)
+        run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Tests
+        run: pytest

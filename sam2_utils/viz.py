@@ -209,7 +209,7 @@ def pick_landmark(image, target_row, zoom: float = 1000,
 
     print(f"{name} (node {node_id})")
     print(f"  CATMAID coords: ({cx:.1f}, {cy:.1f})")
-    print(f"  Click on the true location in the tif.\n")
+    print("  Click on the true location in the tif.\n")
 
     def _on_click(event, ax, fig):
         tx, ty = event.xdata, event.ydata
