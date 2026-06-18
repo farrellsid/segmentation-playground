@@ -1,7 +1,7 @@
 """Enforce the dependency direction: the library must not import the drivers.
 
-The core (pipeline.py and sam2_utils/) may import each other and third-party
-packages, but never the drivers (batch, gui, run_aval, pull_worm) or eval.
+The core (the pipeline/ package and sam2_utils/) may import each other and
+third-party packages, but never the drivers (batch, gui, run_aval, pull_worm) or eval.
 Drivers and eval import the library, not the reverse. See ADR 0001 and ADR 0011.
 
 This is a static AST check, so it needs no GPU and no optional deps. It replaces
@@ -12,7 +12,7 @@ import ast
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-LIBRARY = [ROOT / "pipeline.py"] + sorted((ROOT / "sam2_utils").glob("*.py"))
+LIBRARY = sorted((ROOT / "pipeline").glob("*.py")) + sorted((ROOT / "sam2_utils").glob("*.py"))
 FORBIDDEN = {"batch", "gui", "run_aval", "pull_worm", "eval"}
 
 
