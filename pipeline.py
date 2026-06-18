@@ -349,6 +349,14 @@ class PipelineConfig:
     # (it changes which anchor mask is chosen); flip on to compare. Reuses the gate's
     # contain radius + area_frac bounds, so it scores in the same space as the gate.
     multimask_anchor: bool = False
+    # Among the multimask candidates that contain the positive node, prefer the one
+    # that contains NO negative node (the nearest same-z neighbours already seeded as
+    # negatives in build_prompts). Adapts the 2025 lightweight-SAM2 paper's
+    # anchor-containment selection (their Hoechst nucleus centre, our skeleton node) to
+    # our bleed problem: a bleeding mask swallows a neighbour's node, so excluding
+    # negatives is the anti-bleed pick. Only consulted when multimask_anchor is on;
+    # default OFF so it can be measured against plain multimask selection.
+    multimask_exclude_neg: bool = False
 
     # paths (project-static paths like WORM_PATH stay in sam2_utils.config)
     output_root: Optional[Path] = None     # e.g. .../output_masks; per-chain subdir is derived
@@ -611,9 +619,18 @@ def _positive_point(prompts: Optional[Prompts]) -> Optional[np.ndarray]:
     return pos[0] if len(pos) else None
 
 
+def _negative_points(prompts: Optional[Prompts]) -> np.ndarray:
+    """The negative (neighbour) prompt points, (M, 2), or empty. Mask space."""
+    if prompts is None or prompts.points_sam is None:
+        return np.empty((0, 2), dtype=float)
+    pts = np.asarray(prompts.points_sam, dtype=float)
+    return pts[np.asarray(prompts.labels) == 0]
+
+
 def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional[Prompts],
                         image_hw: tuple[int, int], *, contain_radius_px: int,
-                        area_bounds: tuple[float, float]) -> tuple[int, np.ndarray, float]:
+                        area_bounds: tuple[float, float],
+                        exclude_neg: bool = False) -> tuple[int, np.ndarray, float]:
     """Pick the best of SAM2's multimask candidates for an anchor seed.
 
     Ranking is lexicographic and *graceful*, it always returns one candidate, so a
@@ -621,17 +638,22 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
     empty-mask flag downstream) rather than crashing. Priority order is
     node-containment / plausible-area / single-CC:
       1. contains the positive node      : domain anchor, the mask must sit on the neurite
-      2. plausible area (in area_bounds)  : reject runaway background grabs / empty masks
+      2. excludes negatives (exclude_neg) : OPTIONAL, when on, prefer a candidate that
+                                            contains none of the negative neighbour nodes,
+                                            the anti-bleed pick (a mask that swallows a
+                                            neighbour's node is bleeding into it)
+      3. plausible area (in area_bounds)  : reject runaway background grabs / empty masks
                                             *before* single-CC, since a runaway grab is
                                             usually one huge clean blob (lcc ~ 1.0) that
-                                            would otherwise win on step 3
-      3. single-CC health (largest_cc_frac) : one clean blob over fragmented membrane
-      4. SAM predicted IoU (scores)       : final tiebreak among otherwise-equal masks
+                                            would otherwise win on step 4
+      4. single-CC health (largest_cc_frac) : one clean blob over fragmented membrane
+      5. SAM predicted IoU (scores)       : final tiebreak among otherwise-equal masks
 
     Everything is judged in the space the masks live in (the caller passes matching
     `prompts`, `image_hw`, and `contain_radius_px`), so this is transform-free like
     score_anchor. The chosen mask still only sources the video-seed *box*; the
     positive seed point is unchanged, so a multimask pick never moves the seed point.
+    With `exclude_neg=False` the key is byte-identical to the original ranking.
     Returns (best_idx, mask_bool, score).
     """
     masks = np.asarray(masks).astype(bool)
@@ -640,6 +662,7 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
     frame_px = H * W
     min_af, max_af = area_bounds
     pos = _positive_point(prompts)
+    negs = _negative_points(prompts) if exclude_neg else np.empty((0, 2), dtype=float)
 
     best_idx, best_key = 0, None
     for i in range(masks.shape[0]):
@@ -648,7 +671,13 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
         contained = pos is not None and _point_in_mask(m, float(pos[0]), float(pos[1]), contain_radius_px)
         _, lcc = _largest_cc_frac(m)
         score = float(scores[i]) if i < scores.size else 0.0
-        key = (int(contained), int(min_af <= area_frac <= max_af), lcc, score)
+        area_ok = int(min_af <= area_frac <= max_af)
+        if exclude_neg:
+            no_neg = int(not any(
+                _point_in_mask(m, float(nx), float(ny), contain_radius_px) for nx, ny in negs))
+            key = (int(contained), no_neg, area_ok, lcc, score)
+        else:
+            key = (int(contained), area_ok, lcc, score)
         if best_key is None or key > best_key:
             best_idx, best_key = i, key
     return best_idx, masks[best_idx], (float(scores[best_idx]) if best_idx < scores.size else 0.0)
@@ -657,6 +686,7 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
 def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
                   multimask: bool = False, select_contain_radius_px: int = 0,
                   select_area_bounds: tuple[float, float] = (0.0, 1.0),
+                  select_exclude_neg: bool = False,
                   ) -> tuple[np.ndarray, float, np.ndarray]:
     """Run image-mode SAM2 on the anchor frame.
 
@@ -687,7 +717,8 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
         return masks[0].astype(bool), float(scores[0]), logits
     best, mask_b, score = _select_anchor_mask(
         masks, scores, prompts, masks.shape[1:],
-        contain_radius_px=select_contain_radius_px, area_bounds=select_area_bounds)
+        contain_radius_px=select_contain_radius_px, area_bounds=select_area_bounds,
+        exclude_neg=select_exclude_neg)
     return mask_b.astype(bool), score, logits[best:best + 1]
 
 
@@ -842,6 +873,7 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
                         cw: Optional["alignment.CropWindow"] = None,
                         multimask: bool = False, select_contain_radius_px: int = 0,
                         select_area_bounds: tuple[float, float] = (0.0, 1.0),
+                        select_exclude_neg: bool = False,
                         ) -> tuple[np.ndarray, float, "alignment.CropWindow", "Prompts"]:
     """Image-mode anchor prediction on a high-res crop (default path).
 
@@ -896,7 +928,7 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
     mask_crop, score, _logits = image_predict(
         image_predictor, crop_img, prompts_crop, multimask=multimask,
         select_contain_radius_px=select_contain_radius_px,
-        select_area_bounds=select_area_bounds)
+        select_area_bounds=select_area_bounds, select_exclude_neg=select_exclude_neg)
     return mask_crop, score, cw, prompts_crop
 
 
@@ -1836,7 +1868,7 @@ def load_state(path: str | Path) -> ChainState:
 
 
 # =============================================================================
-# Thin driver  (the ~20-line regression target)
+# Thin driver
 # =============================================================================
 
 def run_chain(state: ChainState, *, image_predictor, video_predictor,
@@ -1987,16 +2019,17 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
                 state.prompts, annotate_df, scale=cfg.scale,
                 crop_size_tif=cfg.crop_size_tif, crop_scale=eff_crop_scale, cw=cw_chain_l,
                 multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
-                select_area_bounds=area_bounds)
+                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg)
         else:
             mask_anchor, state.image_score, _logits = image_predict(
                 image_predictor, image_sam, state.prompts,
                 multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
-                select_area_bounds=area_bounds)
+                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg)
             cw, prompts_anchor = None, state.prompts
         image_hw_anchor = mask_anchor.shape[:2]
         if cfg.multimask_anchor:
-            print("    multimask auto-select on (3 candidates -> 1)")
+            print("    multimask auto-select on (3 candidates -> 1)"
+                  + (", excluding negatives" if cfg.multimask_exclude_neg else ""))
         print(f"    mask {int(mask_anchor.sum())} px  |  score {state.image_score:.4f}"
               + (f"  | {'_pcrop' if use_chain_crop else '_crop'} "
                  f"{image_hw_anchor[1]}x{image_hw_anchor[0]}" if crop_active else ""))

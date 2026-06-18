@@ -81,6 +81,13 @@ def _prompts_at(x, y):
     return Prompts(points_sam=np.array([[x, y]], dtype=float), labels=np.array([1]))
 
 
+def _prompts_pos_neg(pos_xy, *neg_xy):
+    """A positive point plus N negative (neighbour) points."""
+    pts = np.array([pos_xy, *neg_xy], dtype=float)
+    labels = np.array([1] + [0] * len(neg_xy), dtype=int)
+    return Prompts(points_sam=pts, labels=labels)
+
+
 def test_select_prefers_containment_over_iou():
     hw = (100, 100)
     # cand 0: high IoU but does NOT contain the node; cand 1: contains the node, lower IoU
@@ -148,6 +155,71 @@ def test_select_no_positive_point_ignores_containment():
     idx, _, _ = pipeline._select_anchor_mask(
         masks, scores, prompts, hw, contain_radius_px=3, area_bounds=(1e-5, 0.9))
     assert idx == 1
+
+
+# ---------------------------------------------------------------------------
+# _select_anchor_mask, the exclude_neg (anti-bleed) refinement
+# ---------------------------------------------------------------------------
+
+def test_exclude_neg_prefers_mask_without_negative_over_higher_iou():
+    hw = (100, 100)
+    # positive node at (50,50), a negative neighbour at (70,70).
+    # cand 0 contains BOTH the positive and the negative (a bleeding mask), higher IoU;
+    # cand 1 contains only the positive. With exclude_neg, cand 1 wins.
+    bleed = _mask(hw, [(45, 75, 45, 75)])        # covers (50,50) AND (70,70)
+    tight = _mask(hw, [(46, 55, 46, 55)])        # covers (50,50) only
+    masks = np.stack([bleed, tight])
+    scores = np.array([0.95, 0.50])
+    prompts = _prompts_pos_neg((50, 50), (70, 70))
+    idx, _, _ = pipeline._select_anchor_mask(
+        masks, scores, prompts, hw, contain_radius_px=3, area_bounds=(1e-5, 0.9),
+        exclude_neg=True)
+    assert idx == 1                              # excluding the negative beats raw IoU
+
+
+def test_exclude_neg_off_keeps_original_ranking():
+    hw = (100, 100)
+    # Same masks as above; with exclude_neg OFF the negative is ignored, so both contain
+    # the positive + are plausible + single-CC, and the higher-IoU bleeding mask wins.
+    bleed = _mask(hw, [(45, 75, 45, 75)])
+    tight = _mask(hw, [(46, 55, 46, 55)])
+    masks = np.stack([bleed, tight])
+    scores = np.array([0.95, 0.50])
+    prompts = _prompts_pos_neg((50, 50), (70, 70))
+    idx, _, _ = pipeline._select_anchor_mask(
+        masks, scores, prompts, hw, contain_radius_px=3, area_bounds=(1e-5, 0.9),
+        exclude_neg=False)
+    assert idx == 0                              # original behaviour: IoU tiebreak wins
+
+
+def test_exclude_neg_graceful_when_all_contain_a_negative():
+    hw = (100, 100)
+    # both candidates contain the positive AND the negative -> no_neg ties at 0; ranking
+    # falls through to area/CC/IoU, still returns a candidate.
+    a = _mask(hw, [(45, 75, 45, 75)])            # contains (50,50)+(70,70), higher IoU
+    b = _mask(hw, [(40, 80, 40, 80)])            # also contains both, lower IoU, bigger
+    masks = np.stack([a, b])
+    scores = np.array([0.8, 0.6])
+    prompts = _prompts_pos_neg((50, 50), (70, 70))
+    idx, mask_b, _ = pipeline._select_anchor_mask(
+        masks, scores, prompts, hw, contain_radius_px=3, area_bounds=(1e-5, 0.9),
+        exclude_neg=True)
+    assert idx == 0 and mask_b.dtype == bool     # graceful: IoU tiebreak, never crashes
+
+
+def test_exclude_neg_containment_still_dominates():
+    hw = (100, 100)
+    # cand 0 misses the positive entirely but contains no negative; cand 1 contains the
+    # positive AND a negative. Positive-containment outranks negative-exclusion, so cand 1.
+    miss = _mask(hw, [(5, 12, 5, 12)])           # no positive, no negative
+    onpos = _mask(hw, [(45, 75, 45, 75)])        # positive (50,50) + negative (70,70)
+    masks = np.stack([miss, onpos])
+    scores = np.array([0.9, 0.5])
+    prompts = _prompts_pos_neg((50, 50), (70, 70))
+    idx, _, _ = pipeline._select_anchor_mask(
+        masks, scores, prompts, hw, contain_radius_px=3, area_bounds=(1e-5, 0.9),
+        exclude_neg=True)
+    assert idx == 1                              # containing the positive wins over excluding a negative
 
 
 # ---------------------------------------------------------------------------

@@ -50,7 +50,11 @@ _PIPELINE = dict(model_size="large", scale=8, save_downscale=8,
 PRESETS = {
     "eval": {
         "dataset": "sem-dauer-1",
-        "pipeline": dict(_PIPELINE),
+        # multimask anchor selection ON (node-anchored pick of SAM2's 3 candidates) to fight
+        # the cross-worm bleed; off in the earlier baseline runs (out_gt_multichain). The
+        # anti-bleed refinement is a separate flag, "multimask_exclude_neg": True, flip it on
+        # once this (A) is measured against the baseline; see the ADR + _select_anchor_mask.
+        "pipeline": {**_PIPELINE, "multimask_anchor": True},
         "output_root": config.GT_PRED_DIR / "batch_masks",
         "frames_root": config.GT_PRED_DIR / "frames",
         "tier2_on_flagged": True, "tier2_all": False, "gif_mode": "off",

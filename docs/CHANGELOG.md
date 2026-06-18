@@ -936,6 +936,29 @@ fires end-to-end and writes a `_pcrop` chain (or falls back cleanly), not yet ru
 the next batch launch.
 
 
+### 8.9 Node-anchored multimask selection  ·  LANDED (code), measurement pending (June 2026)
+Adapts the 2025 lightweight-SAM2 paper (Bhat et al.): the correct mask is usually among SAM2's three
+candidates even when it is not the top-confidence one, so select it with an external anchor instead of
+trusting the score. Their anchor is a Hoechst nucleus centre; ours is the skeleton node.
+
+**What landed.** The selector `pipeline._select_anchor_mask` (already present, ranking `(contains the
+positive node, plausible area, single-CC, SAM IoU)`, gated by `multimask_anchor`) was off in every
+Stage-0 run. Turned it on for the `eval` preset. Added `multimask_exclude_neg` (default off): among
+candidates containing the positive node, prefer one containing none of the negative neighbour nodes,
+the anti-bleed pick (a mask that swallows a neighbour's node is bleeding). The two flags are separate
+so A (selection) and B (negative-exclusion) measure independently; with `multimask_exclude_neg` off the
+ranking is byte-identical to before. New pure helper `_negative_points`; the flag threads through
+`image_predict` and `anchor_crop_predict` (negatives are already remapped to `_crop` space). See
+[ADR 0012](adr/0012-node-anchored-multimask-selection.md).
+
+**Verification.** Torch-free unit tests in `tests/test_anchor_select.py` (4 new cases: exclude-neg beats
+higher IoU; exclude-neg off reproduces the old ranking; graceful when all candidates hold a negative;
+positive-containment still outranks negative-exclusion). **Live A/B pending (user-run GPU):** score the
+multichain set (AVAL/GLRDR/IL1L/URYVL) single-mask (the existing `out_gt_multichain` baseline), then A
+(`multimask_anchor`), then B (`+ multimask_exclude_neg`), comparing precision / VOI_merge / micro-IoU.
+The lever is justified only if the bleed metrics improve.
+
+
 ---
 
 <a id="old-9"></a>

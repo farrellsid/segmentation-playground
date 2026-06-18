@@ -30,8 +30,12 @@ single-chain run.
   `chain_crop_pad_tif`, `chain_crop_scale`, `chain_crop_max_px`, `chain_crop_min_tif`,
   `chain_crop_fallback`, `chain_crop_min_image_score`, `chain_crop_from_mask`. See
   [ADR 0009](../adr/0009-tier2-crop-fallback.md).
-- Multimask anchor (default off): `multimask_anchor`. Asks SAM2 for three candidate anchor masks and
-  auto-selects one.
+- Multimask anchor (default off): `multimask_anchor` asks SAM2 for its three candidate anchor masks and
+  auto-selects one by `(contains the positive node, plausible area, single connected component, SAM
+  IoU)`. `multimask_exclude_neg` (default off, only consulted when `multimask_anchor` is on) adds an
+  anti-bleed term: among candidates that contain the positive node, prefer one that contains none of
+  the negative neighbour nodes. The `eval` preset turns `multimask_anchor` on. See
+  [ADR 0012](../adr/0012-node-anchored-multimask-selection.md).
 - Prompts and seed: `k_max_neg`, `box_margin`, `box_margin_frac`, `seed_negatives`, plus the seed
   shape knobs. See [ADR 0008](../adr/0008-video-seed-box-vs-mask.md).
 - Anchor gate (observational): `gate_min_area_frac`, `gate_max_area_frac`, `gate_min_largest_cc_frac`.
