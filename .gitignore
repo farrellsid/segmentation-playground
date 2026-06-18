@@ -9,6 +9,12 @@ references/
 # Generated run logs from experiments/ are disposable (findings live in PIPELINE_HISTORY old §8).
 experiments/*.log
 
+# Generated eval results (per-run CSVs + measurement logs) — project-generated, not source.
+eval/out_gt*/
+
+# Vendored upstream SAM2 example notebooks (~24 MB) — reference only, not project code.
+examples/
+
 # data/ contents are not committed (CATMAID-derived + large GT). Track only the
 # groundtruth scaffold README. (`data/*` not `data/` so git descends to find the negation.)
 data/*

@@ -28,8 +28,18 @@ Storage (PIPELINE_CONTEXT §3e)
 
 Usage
 -----
-    python batch.py                 # runs main(): session setup, then run_batch
+Run configs are named **presets** in `sam2_utils/presets.py` (which worm, paths, model,
+tier-2/gif, default neurons); pick one with `--preset` and override any field with a flag:
+
+    python batch.py                              # = --preset original (target worm defaults)
+    py -3 batch.py --preset original --neurons AVAL AVAR --clean
+    py -3 batch.py --preset eval --neurons URYVL    # SEM-Dauer 1 cross-worm GT (Stage 0 eval)
+    py -3 batch.py --preset eval --neuron-limit 3   # first N neurons; --all = every neuron (guarded)
+    # then score a GT run:  py -3 -m eval.score_batch --preset eval
     # or import run_batch / build_triage_queue from a notebook for inspection.
+
+The GT path runs the SAME pipeline on a different worm via a `pipeline.FrameStore` (EM
+source) + registration-baked prompts — see eval/gt_dataset.py + eval/README.md.
 """
 from __future__ import annotations
 
@@ -59,36 +69,9 @@ CHAINS_PATH = config.CHAINS_PATH
 OUTPUT_ROOT = config.OUTPUT_ROOT
 FRAMES_ROOT = config.FRAMES_ROOT     # SAM2 JPEG frame folders go here
 
-# Simple Neurons list
-all_neurons = ['AIAR', 'RIS', 'GLRVR', 'PLNR', 'SAADL', 'AVBR', 'PVQL', 'URADR',
-            'AVBL', 'RIBL', 'SAAVR', 'RMED', 'PLNL', 'AVHL', 'AVM',
-            'SDQL', 'PVWL_or_R_3', 'RMGL', 'RMHL', 'SMDDL', 'AINL', 'PVPL', 'RMDL',
-            'RMFL', 'AVDR', 'URYDR', 'SMBVL', 'ALA', 'RICL', 'SMDVL', 'RIGL', 'SABD',
-            'ADAL', 'AIAL', 'AVAR','FLPR', 'URAVL', 'RMEL', 'URYVL', 'URBL', 'AIZL',
-            'AVJR', 'URBR', 'RIML', 'AIMR', 'ALNR', 'PVDL', 'SMBDL','SAAVL', 'ALMR',
-            'RIAL', 'VB1', 'SDQR','PVPR', 'SIADR', 'AIZR', 'AIYR', 'RIR','PVCL',
-            'PVR', 'SIBDL', 'RMDVR', 'RIAR','RID', 'SMDVR','AUAL', 'PVWL_or_R_1',
-            'RICR', 'AVFL', 'AIBR', 'BDUL', 'SIADL', 'AVFR', 'SMDDR', 'PVT',
-            'ALML', 'RMER', 'PVQR','RIPL', 'RMGR', 'AVHR', 'RIPR', 'RMHR', 'RMFR',
-            'PVWL_or_R_2', 'AIYL', 'BDUR', 'RIVR', 'AVKR', 'RMEV', 'RMDR', 'AIML',
-            'AVER', 'RIFR', 'SIBDR', 'RIMR', 'RMDDR', 'AVKL', 'RIBR', 'CANR',
-            'DVA', 'SIAVR', 'AVJL', 'RIFL', 'SAADR', 'AIBL', 'URAVR',
-            'AVEL', 'ADAR', 'AINR', 'SIBVL', 'RMDVL', 'SIAVL', 'AVL', 'AUAR',
-            'SMBVR', 'DVC', 'URADL', 'PVCR', 'URYVR', 'AVAL', 'RMDDL', 'SIBVR',
-            'PVDR', 'URYDL', 'ALNL', 'FLPL', 'AVDL', 'SABVL', 'RIH', 'RIGR', 'RIVL', 'SMBDR']
-
-key_neurons = ['AIYR', 'AIYL', 'AIAR', 'AIAL', 'AIZL', 'AIZR', 'AIBL', 'AIBR', 'URAVR', 'URAVL', 'URADL', 'URADR', 'RIH', 'RIPL', 'RIPR']
-
-
-# RUN KNOBS (edit per launch)z
-NEURONS: Optional[Sequence[str]] =  ["AVAL"] # e.g. ["AVAL", "AVAR"]; None = all objects
-
-CLEAN = True                             # True = wipe prior outputs and start fresh
-
-GIF_MODE = "all"                        # "off" | "flagged" | "all": per-chain overlay gifs via review
-
-TIER2_ON_FLAGGED = True                 # decision 1 (§8.5/§8.7): re-run a flagged _sam chain
-                                        # once with tier-2 crop. False = legacy single _sam pass.
+# Run configurations (which worm, paths, PipelineConfig knobs, tier-2/gif, default
+# neurons) live in sam2_utils/presets.py — `--preset eval|original`. Edit presets there.
+from sam2_utils import presets
 
 # Status vocabulary (matches ChainState.status / PIPELINE_CONTEXT §3b).
 PENDING, RUNNING, DONE, FLAGGED, FAILED = (
@@ -330,28 +313,36 @@ def _should_run(status: str, retry_failed: bool, force: bool) -> bool:
     return True   # pending / running / anything unrecognized
 
 
-def _should_tier2_rerun(status: str, cfg_chain_crop: bool, tier2_on_flagged: bool) -> bool:
+def _should_tier2_rerun(status: str, cfg_chain_crop: bool, tier2_on_flagged: bool,
+                        *, tier2_all: bool = False) -> bool:
     """Decision 1 (PIPELINE_CONTEXT §8.5 / §8.7): should a just-run chain get a second,
     tier-2 (per-chain crop) pass?
 
-    Yes iff:
-      - the knob is on (tier2_on_flagged), AND
-      - the first pass ran in _sam, NOT already tier-2 (`not cfg_chain_crop`) — a chain
-        whose config already enabled chain_crop got tier-2 on its only pass, AND
-      - QC flagged the chain (`status == FLAGGED`) — clean `done` chains stay _sam.
+    Requires the first pass to have run in _sam, NOT already tier-2 (`not cfg_chain_crop`)
+    — a chain whose config already enabled chain_crop got tier-2 on its only pass — and the
+    chain to have completed a _sam pass (`status in {done, flagged}`; failed/pending never
+    re-run). Then:
+      - ``tier2_all`` (default off): re-run EVERY completed chain — the "tier-2 everywhere"
+        test mode. Pairs with chain_crop_from_mask so each chain's crop is sized from its own
+        _sam mask bbox (clip-fixed), not the centerline. ~2x compute per chain.
+      - else ``tier2_on_flagged``: re-run only the QC-FLAGGED chains (the default auto
+        second-pass) — clean `done` chains stay _sam.
 
     Tier-2's own item-b fallback (chain_crop_fallback) reverts a chain with a poor crop
     anchor to the plain _sam path, so this second pass is regression-free (§8.5: improved
-    3, regressed 0). The win is landing flagged chains in _pcrop — higher-res propagation
-    for the genuinely-real drift, and a crisp manual-paint surface when the human opens the
-    chain in the GUI (§8.6) — and possibly clearing the flag outright.
+    3, regressed 0). The win is landing chains in _pcrop — higher-res propagation for real
+    drift, and a crisp manual-paint surface when the human opens the chain in the GUI (§8.6).
 
-    NB this fires only in the SAME invocation, right after the first pass produces
-    `flagged`. A chain already `flagged` on disk from a prior run is skipped by
-    `_should_run` (flagged ∈ COMPLETE_STATUSES), so it is never re-run twice; to upgrade a
-    pre-existing flagged backlog to tier-2, re-run those chains with `force=True`.
+    NB this fires only in the SAME invocation, right after the first pass. A chain already
+    `done`/`flagged` on disk from a prior run is skipped by `_should_run` (both ∈
+    COMPLETE_STATUSES), so it is never re-run twice; to upgrade a pre-existing backlog to
+    tier-2, re-run those chains with `force=True`.
     """
-    return bool(tier2_on_flagged) and (not cfg_chain_crop) and (status == FLAGGED)
+    if cfg_chain_crop or status not in (DONE, FLAGGED):
+        return False
+    if tier2_all:
+        return True
+    return bool(tier2_on_flagged) and (status == FLAGGED)
 
 
 # =============================================================================
@@ -366,8 +357,10 @@ class Session:
     """Built-once, reused-for-every-chain handles. Mirrors run_aval.py setup."""
     image_predictor: Any
     video_predictor: Any
-    annotate_df: pd.DataFrame      # has x_tif / y_tif columns (affine applied)
+    annotate_df: pd.DataFrame      # has x_tif / y_tif columns (transform applied)
     chains: Sequence[dict]
+    frame_store: Any = None        # pipeline.FrameStore; None -> target-worm tif stack.
+                                   # Set for a cross-worm run (e.g. SEM-Dauer 1 GT PNGs).
 
 
 def _run_chain_once(session: Session, cfg: PipelineConfig, neuron: str,
@@ -382,6 +375,7 @@ def _run_chain_once(session: Session, cfg: PipelineConfig, neuron: str,
         video_predictor=session.video_predictor,
         annotate_df=session.annotate_df,
         chain=chain,                 # a single chain dict; enumerate_chains already indexed it
+        frame_store=session.frame_store,   # None -> tif stack; GtFrameStore for SEM-Dauer 1
     )
 
 
@@ -394,6 +388,7 @@ def _run_one_chain(
     chain_dir: Path,
     *,
     tier2_on_flagged: bool = True,
+    tier2_all: bool = False,
 ) -> ChainState:
     """Run a single chain to completion and return its populated ChainState.
 
@@ -414,8 +409,10 @@ def _run_one_chain(
     for the precise trigger and the once-per-chain / backlog-upgrade semantics.
     """
     state = _run_chain_once(session, cfg, neuron, chain_idx, chain)
-    if _should_tier2_rerun(getattr(state, "status", ""), cfg.chain_crop, tier2_on_flagged):
-        print(f"[batch] tier-2 re-run (flagged in _sam) {neuron}/chain_{chain_idx:02d}")
+    if _should_tier2_rerun(getattr(state, "status", ""), cfg.chain_crop, tier2_on_flagged,
+                           tier2_all=tier2_all):
+        why = "all-chains mode" if tier2_all else "flagged in _sam"
+        print(f"[batch] tier-2 re-run ({why}) {neuron}/chain_{chain_idx:02d}")
         diagnostics.cleanup_vram()                       # reclaim before the second pass
         state = _run_chain_once(session, replace(cfg, chain_crop=True),
                                 neuron, chain_idx, chain)
@@ -550,6 +547,9 @@ def run_batch(
     tier2_on_flagged: bool = True,  # decision 1 (§8.5/§8.7): re-run a flagged _sam chain
                                     # once with tier-2 crop (regression-free via item-b fallback).
                                     # Set False to keep the legacy single-pass _sam behaviour.
+    tier2_all: bool = False,        # "tier-2 everywhere" test mode: re-run EVERY completed
+                                    # chain as tier-2 (pair with cfg.chain_crop_from_mask for
+                                    # the clip-fixed, mask-sized crop). ~2x compute per chain.
 ) -> pd.DataFrame:
     """Run every (selected) chain, recording status to the manifest as it goes.
 
@@ -593,7 +593,7 @@ def run_batch(
         try:
             diagnostics.reset_peak_vram()
             state = _run_one_chain(session, cfg, neuron, idx, chain, chain_dir,
-                                   tier2_on_flagged=tier2_on_flagged)
+                                   tier2_on_flagged=tier2_on_flagged, tier2_all=tier2_all)
             try:
                 _append_timing(output_root, neuron, idx, state, diagnostics.peak_vram_gb())
             except Exception as e:
@@ -658,21 +658,86 @@ def _build_session(cfg: PipelineConfig) -> Session:
     return Session(image_predictor, video_predictor, annotate_df, chains)
 
 
+def _build_gt_session(cfg: PipelineConfig,
+                      neurons: Optional[Sequence[str]] = None,
+                      neuron_limit: Optional[int] = None) -> Session:
+    """Session for a SEM-Dauer 1 (cross-worm GT) run — Stage 0.2.
+
+    Same predictors as the target worm, but the dataset seams come from
+    `eval.gt_dataset`: annotate_df with x_tif/y_tif from the per-section registration,
+    a configurable chain subset (`neurons` / `neuron_limit`), and a GtFrameStore
+    (per-slice PNG EM). Chain cell_names are normalized (strips brackets + trailing
+    !/? — also dodges the Windows mkdir-on-'?' bug)."""
+    from eval import gt_dataset
+    from sam2_utils.skeletons import normalize_name
+
+    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image")
+    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video")
+    diagnostics.snapshot("after model load")
+
+    annotate_df, chains, frame_store = gt_dataset.build_gt_session_inputs(
+        neurons, neuron_limit)
+    for c in chains:
+        c["cell_name"] = normalize_name(c["cell_name"])
+    print(f"[batch] SEM-Dauer 1: {len(chains)} chains over "
+          f"{len({c['cell_name'] for c in chains})} neurons; EM={frame_store.em_dir}")
+    return Session(image_predictor, video_predictor, annotate_df, chains, frame_store)
+
+
 def main() -> None:
-    cfg = PipelineConfig( # defaults; tune qc_* knobs here
-        model_size="large",
-        scale=8,
-        save_downscale=8,        # canonical: == scale, no resample, no 2x skeleton bug
-        k_max_neg=3,
-        neg_radius=150,          # accepted but unused in M1 (see build_prompts docstring)
-        box_margin=10,
-        output_root=OUTPUT_ROOT,
-        frames_root=FRAMES_ROOT,
-        )                     
-    output_root = Path(cfg.output_root)        # TODONE[M3]: confirmed attr names on PipelineConfig
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Headless batch runner. Pick a run config with --preset "
+                    f"({'/'.join(sorted(presets.PRESETS))}); any flag below overrides it. "
+                    "Presets live in sam2_utils/presets.py.")
+    ap.add_argument("--preset", choices=sorted(presets.PRESETS), default="original",
+                    help="run configuration: 'eval' = SEM-Dauer 1 GT, 'original' = target worm")
+    ap.add_argument("--neurons", nargs="*", default=None,
+                    help="explicit neuron allow-list (overrides the preset's default)")
+    ap.add_argument("--neuron-limit", type=int, default=None,
+                    help="run only the first N neurons (by sorted name) — a quick subset")
+    ap.add_argument("--all", action="store_true",
+                    help="GT: run EVERY neuron (~9766 chains). Required to opt in to a full run.")
+    ap.add_argument("--clean", action="store_true", help="wipe prior outputs first")
+    ap.add_argument("--output-root", type=Path, default=None, help="override the preset output root")
+    ap.add_argument("--frames-root", type=Path, default=None, help="override the preset frames root")
+    ap.add_argument("--model-size", default=None, help="override the preset model size")
+    ap.add_argument("--gif-mode", choices=["off", "flagged", "all"], default=None,
+                    help="override the preset gif mode")
+    ap.add_argument("--no-tier2", action="store_true",
+                    help="disable the tier-2 second pass entirely (overrides the preset)")
+    args = ap.parse_args()
+
+    p = presets.get_preset(args.preset)
+    pipe = dict(p["pipeline"])
+    if args.model_size:
+        pipe["model_size"] = args.model_size
+    cfg = PipelineConfig(**pipe,
+                         output_root=args.output_root or p["output_root"],
+                         frames_root=args.frames_root or p["frames_root"])
+    neurons = args.neurons if args.neurons else p["neurons"]
+    clean = args.clean or p["clean"]
+    gif_mode = args.gif_mode or p["gif_mode"]
+    tier2_flagged = False if args.no_tier2 else p["tier2_on_flagged"]
+    tier2_all = False if args.no_tier2 else p["tier2_all"]
+
+    if p["dataset"] == "sem-dauer-1":
+        # Guard the expensive full run: require an explicit scope (9766 chains × slow
+        # full-res PNG frame-prep is days of compute — don't do it by accident).
+        if not neurons and args.neuron_limit is None and not args.all:
+            ap.error("preset 'eval' (SEM-Dauer 1) needs an explicit scope: pass "
+                     "--neurons NAME ..., --neuron-limit N, or --all.")
+        session = _build_gt_session(cfg, neurons, args.neuron_limit)
+        # scope run_batch (clean + enumerate) to exactly the chains we loaded
+        resolved = sorted({c["cell_name"] for c in session.chains})
+        run_batch(session, cfg, Path(cfg.output_root), neurons=resolved, clean=clean,
+                  gif_mode=gif_mode, tier2_on_flagged=tier2_flagged, tier2_all=tier2_all)
+        return
+
+    # --- target worm ---
     session = _build_session(cfg)
-    run_batch(session, cfg, output_root, neurons=NEURONS, clean=CLEAN, gif_mode=GIF_MODE,
-              tier2_on_flagged=TIER2_ON_FLAGGED)
+    run_batch(session, cfg, Path(cfg.output_root), neurons=neurons, clean=clean,
+              gif_mode=gif_mode, tier2_on_flagged=tier2_flagged, tier2_all=tier2_all)
 
 
 if __name__ == "__main__":

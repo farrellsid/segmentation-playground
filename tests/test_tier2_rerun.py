@@ -65,6 +65,35 @@ def test_returns_plain_bool():
 
 
 # ---------------------------------------------------------------------------
+# tier2_all — "tier-2 everywhere" test mode (re-run every completed _sam chain)
+# ---------------------------------------------------------------------------
+
+def test_tier2_all_reruns_done_and_flagged():
+    # a clean _sam chain that wouldn't normally re-run DOES under tier2_all
+    assert batch._should_tier2_rerun(batch.DONE, cfg_chain_crop=False,
+                                     tier2_on_flagged=False, tier2_all=True) is True
+    assert batch._should_tier2_rerun(batch.FLAGGED, cfg_chain_crop=False,
+                                     tier2_on_flagged=False, tier2_all=True) is True
+
+
+def test_tier2_all_still_skips_incomplete_and_already_tier2():
+    # never re-run a chain that didn't finish a _sam pass, or one already tier-2
+    for status in (batch.FAILED, batch.PENDING, batch.RUNNING):
+        assert batch._should_tier2_rerun(status, cfg_chain_crop=False,
+                                         tier2_on_flagged=False, tier2_all=True) is False
+    assert batch._should_tier2_rerun(batch.DONE, cfg_chain_crop=True,
+                                     tier2_on_flagged=False, tier2_all=True) is False
+
+
+def test_tier2_all_default_off_preserves_flagged_only():
+    # with tier2_all unset, behaviour is exactly the flagged-only default
+    assert batch._should_tier2_rerun(batch.DONE, cfg_chain_crop=False,
+                                     tier2_on_flagged=True) is False
+    assert batch._should_tier2_rerun(batch.FLAGGED, cfg_chain_crop=False,
+                                     tier2_on_flagged=True) is True
+
+
+# ---------------------------------------------------------------------------
 # the config override the second pass uses
 # ---------------------------------------------------------------------------
 

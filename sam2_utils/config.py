@@ -36,6 +36,53 @@ OUTPUT_ROOT = Path(r"E:\ZhenLab\Data\output_masks\test2_single")
 #: Parent dir for the SAM2 JPEG frame cache + per-chain link views.
 FRAMES_ROOT = Path(r"E:\ZhenLab\Data")
 
+# -----------------------------------------------------------------------------
+# Cross-worm ground truth (eval/ Stage 0)  —  see eval/README.md, FUTURE_DIRECTIONS §4.1
+# -----------------------------------------------------------------------------
+# The June-2026 step-back GT: a *different* worm (SEM-Dauer 1), manually segmented
+# in VAST, with matching EM. (The target/production worm — CATMAID project 336,
+# WORM_PATH above — is the "sensory ablated dauer"; SEM-Dauer 1 is project 280.)
+# The VAST export is a 16-bit single-channel LABELMAP per z-slice — pixel value ==
+# segment number (`Nr`) in GT_METADATA, 0 == Background (see eval/groundtruth.py).
+# Masks + EM are downscaled GT_DOWNSCALE× from the full-res VAST stack the metadata
+# bboxes/anchors are quoted in. Machine-specific (like WORM_PATH / OUTPUT_ROOT
+# above); edit for your box.
+#
+# Now on the 2TB F: HDD (the original E: drive's cable failed). F: is stable, so
+# the old local-copy-to-repo strategy (GT_*_LOCAL below) is no longer needed —
+# point straight at F:. The F: contents are byte-identical to the old E: drop.
+#
+# Stage 0.3 (June 2026): the FULL-RESOLUTION GT is now exported (full_scale/ next to
+# one_fourth_scale/ — 851 slices, 9728×9216, == the metadata's full-res VAST coord
+# grid), so GT_DOWNSCALE is 1 and the paths point at full_scale. The full-res
+# registration.json is in place (A ≈ I): produced by scaling the ¼-scale fit ×4 via
+# `py -3 -m eval.scale_registration` (geometrically exact, instant vs a ~1.5 h
+# from-scratch `eval.registration` re-fit; ¼ fit kept as registration_quarter_scale.json).
+# The one_fourth_scale dirs remain on F: as a fallback.
+
+#: Root of the cross-worm GT drop (F: 2TB HDD).
+GT_ROOT = Path(r"F:\Zhen Lab\SEM DAUER 1")
+#: VAST per-slice segmentation labelmaps (*_s###.png, mode I;16, full res 9728×9216).
+GT_MASK_DIR = GT_ROOT / "Segmentations" / "full_scale"
+#: Matching full-res EM slices (*_s###.png).
+GT_EM_DIR = GT_ROOT / "RAW IMAGES" / "full_scale"
+#: VAST-Lite extended color/segment file — the Nr↔name↔bbox table.
+GT_METADATA = GT_ROOT / "VAST_segmentation_metadata.txt"
+#: Downscale of the exported masks/EM vs the full-res VAST coords used in the
+#: metadata bboxes/anchors. full_scale == full res → 1 (one_fourth_scale was 4).
+GT_DOWNSCALE = 1
+# (The flaky-E:-era local-copy constants GT_MASK_DIR_LOCAL / GT_METADATA_LOCAL were
+#  removed when the GT moved to the stable F: drive — from_config reads F: directly.)
+
+# -- Prediction-on-GT-worm (pred pipeline, eval/predict_gt.py) -----------------
+# Running SAM2 on SEM-Dauer 1's EM (seeded from the p280 skeletons via the fitted
+# registration) writes predicted masks onto the GT grid here. Two views are
+# emitted from one run (see eval/predict_gt.py): per-neuron binary masks for
+# eval.score.DirPredictionSource, and per-slice labelmaps for eval.run_erl --pred.
+#: Root for predicted output on SEM-Dauer 1. ``masks/<neuron>/<slice:03d>.png``
+#: (binary, for score.py) and ``labelmaps/*_s###.png`` (uint16, for run_erl pred).
+GT_PRED_DIR = DATA_DIR / "groundtruth" / "pred_p280"
+
 
 # =============================================================================
 # SAM2 model registry
@@ -68,7 +115,7 @@ SAM2_CHECKPOINTS = {
 }
 
 #: Default model size if not specified.
-DEFAULT_MODEL_SIZE = "small"
+DEFAULT_MODEL_SIZE = "large"
 
 
 # =============================================================================

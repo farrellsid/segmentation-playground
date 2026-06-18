@@ -314,8 +314,10 @@ class ReviewGUI:
         # world units (EM px) per mask px. Both EM axes are the mask scaled uniformly
         # (by `scale` for the full frame, by crop_scale for a tier-2 crop window), so
         # use the WIDTH ratio — correct for non-square crop windows, identical to before
-        # for the near-square full frame. ~8 / crop_scale hires, 1 else.
-        self._em_world = float(em.shape[1]) / float(W) if W else 1.0
+        # for the near-square full frame. ~8 / crop_scale hires, 1 else. NB em is
+        # (T, H, W, 3): the WIDTH axis is shape[2] (shape[1] is H — using it stretched
+        # the mask/skeleton/prompt layers by H/W on non-square tier-2 _pcrop windows).
+        self._em_world = float(em.shape[2]) / float(W) if W else 1.0
         s = self._em_world
         lscale = self._lscale = (1.0, s, s)                            # mask -> EM world
 

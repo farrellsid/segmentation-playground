@@ -58,12 +58,42 @@ start bug); error detection is the acknowledged weakest part of the system; and 
 run (the remaining M3 confidence check) is still outstanding.
 
 **Research step-back (June 2026).** Before committing M4.5 effort, the project took a deliberate step
-back. A **cross-worm ground-truth dataset** (a different worm, with matching EM and confirmed-segment
-markers) was obtained — unlocking real **evaluation** and **finetuning** for the first time, since
+back. A **cross-worm ground-truth dataset** (**SEM-Dauer 1**, a different worm from the target
+"sensory ablated dauer", with matching EM and confirmed-segment markers) was obtained — unlocking real
+**evaluation** and **finetuning** for the first time, since
 almost everything in the M4.5 backlog had been "label-gated" — and a broad SOTA survey was run. The
 resulting evidence-backed roadmap is in **[`FUTURE_DIRECTIONS.md`](./FUTURE_DIRECTIONS.md)**. Headline:
 fix the evaluation metric (ERL + split/merge VOI) *before* further accuracy tuning; then finetune SAM2
 on the new GT, and build a dense-segmentation + cross-z-linking hedge for the branch/merge failure.
+**Stage 0 status (June 2026):** the ruler is built (`eval/`); a degenerate dry run (`predict_gt.py`,
+small model) gave the first numbers and showed the skel→GT **coordinate transform is the keystone**
+(~50% of slices miss with displaced masks; self-consistency ERL = 0 on perfect GT). Stage 0 now
+finishes in four sub-steps: **0.1** ✅ registration upgraded to a **per-section affine** (residual
+19.6→4.7 px, on-mask 67.9→85.7%; right-worm provenance confirmed) — interactive GUI gut-check still
+open; **0.2** score the **real `batch.py`** on SEM-Dauer 1 via an argparse dataset override (supersedes
+`predict_gt.py`) ✅ **built + measured** (the real `batch.py` runs on SEM-Dauer 1 via a worm-agnostic
+`FrameStore` seam + `eval.gt_dataset`; configurable subset; scored by `eval.score_batch` +
+`eval.score_labelmap` for **region IoU + VOI/ARAND + per-neuron ERL**, with progress + timing +
+`measurement_log.jsonl`. 3-neuron smoke: small→large+tier-2 micro-IoU 0.022→0.024, VOI 0.875→0.847,
+ARAND ~0.16, ERL ~1%. Findings: large model alone barely helps (domain gap, not capacity); tier-2
+helped where it engaged — VA4 kept `_pcrop`, IoU ~doubled — but 2/3 fell back at the 0.70 crop-score
+floor (mis-calibrated cross-worm); merge/bleed-dominated. A floor, not the gate — next: multi-chain
+neuron + lowered tier-2 floor + Stage-1 accuracy levers);
+**0.3** ✅ full-res GT export done (`full_scale/`, 9728×9216, `GT_DOWNSCALE=1`) +
+full-res `registration.json` done (¼ fit ×4 via `eval.scale_registration`, A≈I, on-mask 91.7%);
+**0.4** ✅ ERL merge
+tolerance (`--merge-tol-frac/-count`). See FUTURE_DIRECTIONS §5 Stage 0.
+
+Note on why two registrations differ: SEM-Dauer 1 needs a *per-section* affine because its VAST masks/EM
+are a **section-by-section realignment** (`SEM_dauer_1_vast_realignment_export`) of a stack the p280
+skeleton was traced *before* — a cross-realignment mismatch. The sensory-ablated-dauer (project 336)
+pipeline uses a **single global affine** (fit at one z) because its skeleton and raw EM share one
+alignment with no such per-section realignment. The two situations are structurally different, so
+SEM-Dauer 1's per-section need does **not** imply the target worm's single-z affine is wrong —
+**verified** (June 2026, `experiments/diag_target_registration.py`): across the 4 output neurons
+(1603 frames, z 1367–1628), the cross-chain-coherent node↔mask-centroid offset stays ~flat with z
+(corr −0.08) and is just 2 px at the far end (335 sections from the z=1293 fit point), i.e. the global
+affine is z-stable — the few-px per-frame scatter is propagation/thinness, not registration drift.
 
 ---
 
@@ -103,7 +133,12 @@ forward-then-reverse wrapper over it, so AVAL still reproduces pixel-for-pixel.
 
 ### 3d. Thin drivers (all call the same library)
 Headless **batch** (primary), the **notebook** (exploration/debug), the **napari GUI** (review &
-correction of the triage queue).
+correction of the triage queue), and the **GT eval** (`eval.score_batch`, Stage 0). Run configs are
+named **presets** in `sam2_utils/presets.py` — `batch.py --preset eval|original [--neurons …]` (and
+`score_batch --preset eval`) bundle the worm/dataset, paths, model, tier-2/gif, and default neurons so a
+run is one short command; any flag overrides. The `eval` preset retargets the *same* `run_chain` at
+SEM-Dauer 1 via a `pipeline.FrameStore` seam (EM source) + registration-baked prompts — no per-chain
+code changes; the default `original` preset is the target worm and stays byte-identical.
 
 ### 3e. Storage layout (filesystem, indexed)
 ```
@@ -348,6 +383,60 @@ Mostly research-flavoured and label-gated — do once detection (C) is trustwort
     → re-run with frac); the GUI "re-propagate a corrected `_sam` chain as tier-2" path (deferred but
     **live** — becomes primary if the tier-2 fallback rate turns out high); tier-3 per-frame tracked
     crop (speculative). *(old §7, old §8.7)*
+    - **Crop sizing from the mask, not the skeleton — LANDED default-off (June 2026, A/B-pending).**
+      The tier-2 window was sized from the skeleton-node bbox, which traces the *centerline*, so a
+      cell whose membrane bulges past the nodes + `chain_crop_pad_tif` gets **clipped** at the window
+      edge (measured: AIAL/chain_00 clips 24/113 frames, ≤166 `_pcrop` px against an edge). With
+      `radius` dead there's no per-node extent to pad by. New knob `chain_crop_from_mask` (default
+      **off**): when on, `chain_crop_window` grows the window to the **union of the skeleton bbox and
+      the bbox of the chain's already-saved `_sam` masks** (`pipeline.mask_union_box_px`, over the
+      **non-queued** frames so a drifted/merged flagged mask can't inflate the box; falls back to all
+      frames if every frame is queued, and to skeleton-only if no usable `_sam` mask exists / the prior
+      masks are themselves `_pcrop`). A strict **superset** of the skeleton window — can only grow to
+      contain the cell, never clip worse; `chain_crop_max_px` still caps it (trading resolution for
+      coverage, the §4 accuracy call). Natural home is the auto second-pass (`tier2_on_flagged`), where
+      the first `_sam` pass already wrote the bbox source. A/B harness: `experiments/ab_crop_from_mask.py`
+      (headline metric = border-clip frame count); tests `tests/test_chain_crop_from_mask.py`. **Decide
+      default-on after the A/B confirms clip→~0 without regressing the queue.**
+      - **Test run (June 2026, AIAL/AIZL, "tier-2 everywhere" mode — `batch.TIER2_ALL`+`chain_crop_from_mask`):**
+        works and the masks are very good. Clip **improved 24/113 → 9/113** on AIAL/chain_00. Several
+        short chains (AIAL 3/4/6/9) **fell back to `_sam`** — their tier-2 *crop anchor* was poor on the
+        crop pass, so the item-b safety reverted them. **Correction to an earlier overstatement:** this is
+        NOT "they don't benefit from tier-2" — higher resolution would likely help their *masks* (the tif
+        has the pixels); they simply never *received* tier-2, so the benefit is **untested** (the fallback
+        short-circuited it). And it's not (only) over-zoom: for chain_03/04 the recorded `image_score`
+        (0.71/0.81) is the **`_sam` recovery** pass, and those `_sam` anchors are *good* — so the *crop*
+        anchor was the poor one, i.e. **higher-res EM made SAM2's anchor prediction worse** (the natural-
+        image domain gap, FUTURE_DIRECTIONS §2), not better. The fallback is deliberately conservative
+        (`chain_crop_min_image_score=0.7`); lowering it trades safety for coverage on borderline chains.
+        For 1–3-frame chains there's also little propagation drift to fix (per-frame mask res still helps
+        the mesh), so forcing tier-2 there is low reward anyway.
+      - **Fallback observability — FIXED (June 2026).** The `_sam` recovery pass overwrote
+        `state.image_score`/`anchor_score`, so the final `state.json` showed the *healthy recovery* and
+        the *failing crop-pass* reason was lost (only in the run log) — which is what made the diagnosis
+        above hard. `run_chain` now captures the crop-pass verdict before recovery into three new
+        `ChainState` fields: **`fellback_reason`** ("empty-mask"/"gate(...)"/"score<0.7"),
+        **`crop_image_score`**, **`crop_anchor_score`** (serialized; None unless `fell_back_to_sam`). These
+        are also clean P(error) features (M4.5). Tests in `tests/test_chain_crop_from_mask.py`.
+      - **OPEN — residual first/last-frame clip is first-pass-quality-bound (LOG, don't band-aid).**
+        The residual 9 clipped frames on AIAL/chain_00 are all at the **start** (fi=0–8), touching
+        Top+Right (fi=0: T=60, R=46 `_pcrop` px) — exactly the "starting cell cut at top-right" symptom.
+        Root cause: the crop is sized from the **coarse scale-8 first-pass mask**, which **under-covers**
+        the thin/entering cell at the sensitive first/last frames; the higher-res tier-2 re-propagation
+        then recovers *more* cell there than the first-pass mask (which set the window) knew about, so it
+        spills past the crop+pad. The queued frame was fi=87 (not the start), so the non-queued exclusion
+        is **not** the cause; and the window is **not** at the image boundary (room to grow), so it's not
+        an out-of-bounds-of-original-image case. This is the same "crop fidelity is bounded by first-pass
+        mask fidelity" limit the lab flagged (mask collapse/explosion at chain ends). Candidate fixes for
+        a later pass (owner has ideas): a larger / %-based leeway pad on the mask-derived crop (cheapest,
+        but trades resolution + over-zoom risk → A/B); size the crop from a *higher-res* extent (tier-1
+        crop mask, or a one-frame hi-res re-predict at the ends) instead of the scale-8 mask; or extend
+        the window extra-generously at the first/last frames specifically.
+    - **GUI tier-2 layer-scale bug — FIXED (June 2026).** `gui.py` scaled the mask/skeleton/prompt
+      layers by `em.shape[1]/W` (height/width) instead of `em.shape[2]/W` (width/width), so on a
+      **non-square** `_pcrop` window the overlay stretched by H/W — nodes off the neurite and the mask
+      visibly misaligned (square windows were unaffected, which made it look intermittent). On-disk
+      masks were always correct; display-only. One-token fix at `gui.py` `open_chain`.
 24. **EM-finetuned SAM / micro_sam.** The model swap, revisited only if measured failure rates
     justify it; plus the build-vs-adopt eval of micro_sam's napari plugin. **[R6]** *(old §7
     "micro_sam", old §9.3)*

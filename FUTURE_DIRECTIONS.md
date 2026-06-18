@@ -127,6 +127,24 @@ expect lower absolute numbers.
 
 ### 4.1 Fix the ruler first — ERL + split/merge VOI (Problem 2 · R2)
 
+> **Status (June 2026): the ruler is built** (`eval/`). All three connectomics metrics below are
+> implemented and wired into the GT scorer (`eval.score_batch` + `eval.score_labelmap`): per-neuron
+> **ERL** + split/merge (`eval.erl`), and **VOI_split/VOI_merge + ARAND** via `eval.metrics.voi_arand`,
+> which defaults to **scikit-image's reference implementations** — the same `adapted_rand_error` /
+> `variation_of_information` (with `ignore_labels=(0,)`, `voi=split+merge`) that the CAD/FGNet papers
+> use (pure-numpy fallback when skimage is absent). See the Stage 0.2 results in §5.
+>
+> **Applicability caveat (June 2026 — important).** VOI/ARAND are built for **dense, whole-volume**
+> instance segmentation (CAD/FGNet score a fully-agglomerated labelmap). Our pipeline is **sparse,
+> per-neuron prompted propagation**, so for the current setup they are **secondary**, not the headline:
+> (a) restricting to the scored neurons' GT-foreground makes VOI_merge **blind to bleed into *unscored*
+> neighbours** (the costliest real merge — it reads as background/false-positive area, not a merge);
+> (b) the composite gives each neuron one id, so VOI_split/merge largely **restate region recall/
+> precision**; (c) the numbers are **not comparable** to CAD/FGNet's dense benchmarks (similar values
+> are coincidence of the easier sparse setting). **The appropriate primary ruler for the sparse pipeline
+> is per-neuron region IoU/precision/recall + ERL** (skeleton-based, 3D, per-neuron — naturally fits a
+> subset). VOI/ARAND become genuinely apt only with a **dense** labelmap (the §4.3 refinement / R5 path).
+
 This is the prerequisite for trusting everything else. Adopt the connectomics-standard metrics:
 
 - **Expected Run Length (ERL)** — expected error-free traced length from a random point in a random
@@ -189,6 +207,30 @@ The single-arm failure is the field's universal failure mode; there are four com
   2024, arXiv 2405.15700; github.com/weigertlab/trackastra). *Caveat:* these model divisions, **not**
   arbitrary merges; genuine merge topology still needs agglomeration or a human.
 
+- **Post-propagation refinement of the composited map (session idea, June 2026; slots here + §M5).**
+  Once propagation + the per-neuron composite produce a (sparsely-)dense labelmap, refine it with
+  connectomics-style techniques. **Key distinction:** our post-propagation errors are **overlaps +
+  bleed**, not an over-segmentation — so the right primitive is **arbitration / region competition**,
+  NOT agglomeration *per se* (agglomeration merges an over-segmentation; it does not resolve overlaps —
+  watershed output has none). Three tiers of ambition:
+  1. **Overlap arbitration (cheap, ~now).** Replace the composite's `first-writer-wins` with a
+     principled owner for each contested pixel — nearest skeleton, or higher `pred_iou`. This *is* the
+     open M5 chain-merge-conflict question (§8 item 29: union vs voting), so it pays off at aggregation
+     anyway.
+  2. **Seeded watershed / region competition (mid).** Skeletons (or masks) as seeds competing for
+     contested/gap pixels over the EM membrane gradient — resolves overlaps, snaps edges to membranes,
+     fills small gaps. The connectomics-flavoured version of "refine the dense map".
+  3. **Hybrid — dense oversegmentation + agglomerate-to-anchors (big; == R5).** Run a dense affinity →
+     watershed oversegmentation, then use the propagated masks as **anchors** and agglomerate fragments
+     onto whichever anchor they belong to. SAM2 supplies *semantic identity*, the oversegmentation
+     supplies *membrane-accurate fragments*, the assignment fixes **bleed and overlap together**. This
+     is the R5 dense+agglomeration hedge, expressed as a SAM2-anchored pipeline.
+
+  **Bottleneck (honest):** everything past tier 1 needs a good **membrane/affinity signal** — too coarse
+  at scale-8; at full res it likely means a *trained* affinity predictor (LSD/FGNet-style), which
+  re-introduces the domain-gap/training cost SAM2-propagation was chosen to avoid. A classical
+  EM-gradient watershed may suffice for tiers 1–2; tier 3 realistically implies an affinity model.
+
 ### 4.4 Thin structures + resolution — topology loss, skeleton crops, refinement (Problem 4 · R7)
 
 - **clDice (soft centerline-Dice) topology-preserving loss** — proven to preserve connectivity up to
@@ -249,9 +291,69 @@ Two threads, now that I have GT:
 Ordered so each stage's output feeds the next, and so the ruler (Stage 0) exists before any tuning.
 Thresholds are advance/pivot gates, in the §4 ruler spirit.
 
-- **Stage 0 — Instrument (now).** ERL + VOI_split/VOI_merge on the confirmed cross-worm segments;
-  set the merge:split cost ratio; benchmark the *current* pipeline. *Advance when:* I can produce a
-  per-neuron ERL and split/merge breakdown. *(§4.1)*
+- **Stage 0 — Instrument & benchmark the current pipeline (now).** ERL + VOI_split/VOI_merge on the
+  confirmed cross-worm segments; set the merge:split cost ratio; benchmark the *current* pipeline.
+  *Advance when:* I can produce a per-neuron ERL and split/merge breakdown **from the real pipeline,
+  through a verified registration**. *(§4.1)*
+
+  The ruler is built (region + VOI + ERL; `eval/`). A first degenerate run — `eval/predict_gt.py`,
+  small model, points-only seed — produced the first numbers and, more usefully, exposed *how* Stage 0
+  has to finish: (a) the measurement is gated on the **skel→GT coordinate transform**, which both
+  places prompts and samples node labels, so a loose transform poisons every number (the dry run:
+  ~50% of slices zero-overlap with correctly-sized-but-*displaced* masks; self-consistency ERL = 0
+  *with the perfect GT as input* because 47% of nodes sample off their own segment); and (b)
+  `predict_gt.py` is a **scaffold, not the benchmark** — a partial reimplementation with v1 shortcuts
+  (points-only seed, no postprocess, union-across-chains) that bled badly; the honest number must come
+  from the real `batch.py`. So Stage 0 completes in four sub-steps:
+
+  - **0.1 — Verify the coordinate transform (keystone, first).** *Model upgrade landed.* The
+    `eval/diag_registration.py` structural check showed the residual was **structured**, not noise (a
+    per-section affine cut the median centroid residual 19.6 px → 5.1 px), so `registration.py` was
+    upgraded from *global linear + per-section translation* to a **per-section affine** (full 2×3 per
+    slice, robust fit, z-interpolated/smoothed). Re-fit result: median residual 19.6 → **4.7 px**,
+    on-mask **67.9% → 85.7%**. Provenance (right worm = project 280) confirmed four ways, so the earlier
+    ~50% miss was an under-powered alignment *model*, not a bad import. *Remaining:* the interactive GUI
+    overlay (human gut-check) and confirming self-consistency ERL recovers from the earlier ~0 µm. Done
+    at 4× scale — the affine *model* transfers to the full-res re-fit (0.3), only the constants change.
+  - **0.2 — Eval the real batch pipeline against GT — ✅ BUILT, first numbers in (June 2026).** The
+    production `run_chain`/`batch.py` now runs on SEM-Dauer 1 (not the `predict_gt` reimplementation)
+    via a worm-agnostic **`pipeline.FrameStore` seam** (default `TifFrameStore` keeps the target worm
+    byte-identical; `eval.gt_dataset.GtFrameStore` reads the per-slice PNG EM) plus a skel→image
+    transform baked into `annotate_df.x_tif/y_tif` from the **per-section registration**. Driver:
+    `batch.py --preset eval` with a configurable subset (`--neurons` / `--neuron-limit N` /
+    `--all`, guarded against an accidental 9766-chain run). Scored by `eval.score_batch`
+    (`BatchPredictionSource` unions chains + upscales `_sam`→GT grid), which logs live progress,
+    `eval_timing.csv`, and a `measurement_log.jsonl` provenance record (what/against-what/when/metrics/
+    results/timing). **Labelmap metrics wired** (`eval.score_labelmap`): composite per-slice `_sam`
+    labelmaps (neuron→id, first-writer-wins; tier-2 `_pcrop` placed via `crop_window`) → **VOI_split/merge
+    + ARAND** (over GT-foreground) and **per-neuron ERL** (registration node-sampling ÷save_downscale to
+    `_sam`, with neighborhood sampling). Supersedes `predict_gt.py` as the scored path.
+
+    **Results (3-neuron smoke PVPR/VA4/AS3 — a FLOOR, not the final gate):** small single-pass `_sam` →
+    micro-IoU 0.022, VOI 0.875, ARAND 0.162; **large + tier-2-default** → micro-IoU 0.024, VOI 0.847,
+    ARAND 0.161, ERL ~1%. (1) **Large model alone barely helps** (slightly hurts the `_sam` neurons) —
+    the cross-worm **domain gap dominates, not capacity**; (2) **tier-2 helped where it engaged** — VA4
+    *kept* tier-2 (`_pcrop`) and ~doubled IoU (0.012→0.022, precision up) — but **2/3 chains fell back**
+    at the `chain_crop_min_image_score=0.70` floor (crop anchors ≈0.69; a target-worm default,
+    mis-calibrated for cross-worm → lower to ~0.6); (3) **merge/bleed-dominated** (VOI_merge ≫ split;
+    precision ~2.5%). ⚠️ VOI/ARAND ≈ FGNet's Table-4 range is **coincidence** — ours is over 3 *sparse*
+    neurons' GT-foreground (far easier than FGNet's dense volume); region IoU (0.024) + ERL (~1%) are the
+    honest read. **Next:** a multi-chain neuron (per-chain fallback + aggregation) + a lowered tier-2 floor.
+  - **0.3 — Full-res GT export (parallel, manual) — ✅ DONE (June 2026).** The VAST masks + EM are
+    re-exported at native resolution: `full_scale/` (9728×9216, 851 slices) sits next to
+    `one_fourth_scale/` on F:, verified == the metadata's full-res VAST coord grid. `config` now points
+    at it (`GT_DOWNSCALE = 1`). This unblocks faithful batch eval (tier-2 skeleton crops need full res)
+    and required a full-res registration (A ≈ I, not 0.25·I) — **done** by scaling the ¼ fit ×4
+    (`py -3 -m eval.scale_registration`; geometrically identical to a from-scratch full-res re-fit but
+    instant vs ~1.5 h of HDD decodes — validated mean A ≈ I, on-mask 91.7% spot check). `registration.json`
+    is now full-res; the ¼ fit is kept as `registration_quarter_scale.json`.
+  - **0.4 — ERL merge tolerance (metric robustness).** Stop ERL zeroing a whole neuron for a single
+    stray node (a tolerance / majority rule). Without it the skeleton metric stays at 0 even for
+    near-perfect segmentations under any registration noise.
+
+  *Loose ends:* the empty-name `--neuron-limit` selection bug and `predict_gt`'s bleed levers are now
+  low priority (the scored path is `batch.py`, which has real seeding/postprocess); fix only if
+  `predict_gt` is kept as the points-only baseline.
 - **Stage 1 — Free wins on the existing SAM2 path (1–2 wk).** Drop in SAM2Long; center-outward
   propagation; forward/backward consistency check (replaces several hand-tuned QC thresholds);
   re-seed at skeleton nodes + skeleton-following crops. *Advance when:* ERL up and merge rate down vs
@@ -314,7 +416,7 @@ Thresholds are advance/pivot gates, in the §4 ruler spirit.
 **SAM2 / Segment Anything for EM & microscopy**
 - FGNet (SAM2 → 3D EM neurons, dual affinity) — arXiv 2511.13063 (AAAI 2026).
 - micro_sam — Nature Methods 2024, s41592-024-02580-4; github.com/computational-cell-analytics/micro-sam (+ peft-sam).
-- Lightweight SAM2 microscopy finetuning (Colab) — bioRxiv 2025.11.08.687405.
+- **Lightweight SAM2 microscopy finetuning (Colab) — bioRxiv 2025.11.08.687405.**
 - SAM2LoRA — arXiv 2510.10288. SAM-EM (full SAM2 finetune, particles) — arXiv 2501.03153.
 - SAM2 3D medical / propagation — arXiv 2408.02635; SegmentWithSAM arXiv 2408.15224; SLM-SAM 2 arXiv 2505.01854; center-outward study arXiv 2507.23272.
 

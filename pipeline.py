@@ -105,26 +105,28 @@ def _read_tif_window(tif_path, sl) -> np.ndarray:
         return cv2.imread(str(tif_path))[sl]          # safe full-read fallback (pre-c behaviour)
 
 
-def _ensure_cached_frames(subset_tifs, cache_dir: Path, scale: int) -> None:
-    """Decode+downscale any tifs not yet in the shared cache.
+def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
+    """Decode+downscale any source frames not yet in the shared cache.
 
-    One JPEG per file_z, written once ever at this `scale`, named ``z{file_z}.jpg``
-    and reused by every chain whose z-range overlaps it. This is where the prep
-    cost actually lives (a ~9k x 9k imread + resize); overlapping chains now pay it
-    once across the whole dataset instead of once per chain.
+    `subset` is a list of ``(key, src_path)`` from a FrameStore — one JPEG per `key`,
+    written once ever at this `scale`, named ``z{key}.jpg`` and reused by every chain
+    whose z-range overlaps it. This is where the prep cost actually lives (a ~9k x 9k
+    imread + resize); overlapping chains now pay it once across the whole dataset
+    instead of once per chain. (`key` == file_z for the tif store, == slice z for the
+    GT png store; the cache name scheme is unchanged for the target worm.)
     """
     import cv2
     from tqdm import tqdm
 
     cache_dir.mkdir(parents=True, exist_ok=True)
-    missing = [p for p in subset_tifs
-               if not (cache_dir / f"z{_parse_file_z(p)}.jpg").exists()]
+    missing = [(k, p) for (k, p) in subset
+               if not (cache_dir / f"z{k}.jpg").exists()]
     if not missing:
         return
-    for tif_path in tqdm(missing, desc="caching JPEG frames", unit="frame"):
-        img = cv2.imread(str(tif_path))          # BGR, fine for grayscale EM
+    for key, src_path in tqdm(missing, desc="caching JPEG frames", unit="frame"):
+        img = cv2.imread(str(src_path))          # BGR, fine for grayscale EM (tif or png)
         img = _downscale_image(img, scale)       # match image-mode coord space
-        cv2.imwrite(str(cache_dir / f"z{_parse_file_z(tif_path)}.jpg"), img)
+        cv2.imwrite(str(cache_dir / f"z{key}.jpg"), img)
 
 
 def _link_frame(src: Path, dst: Path) -> None:
@@ -143,6 +145,66 @@ def _link_frame(src: Path, dst: Path) -> None:
         except OSError:
             import shutil
             shutil.copy2(src, dst)               # last resort
+
+
+# =============================================================================
+# Frame source — the ONE worm-coupled seam (PIPELINE_CONTEXT §3a / FUTURE_DIRECTIONS Stage 0.2)
+# =============================================================================
+# run_chain's phase functions are otherwise worm-agnostic (they consume annotate_df's
+# x_tif/y_tif + a logical z), but the EM frames are read straight from the target worm's
+# tif stack by file_z. A FrameStore abstracts "logical z -> source EM file + an integer
+# cache/order key", so the same pipeline can run on a different worm (e.g. SEM-Dauer 1's
+# per-slice PNG export) by passing a different store to run_chain. The default
+# (TifFrameStore) reproduces the original target-worm behavior byte-for-byte.
+
+class FrameStore:
+    """Maps a *logical z* (catmaid_z on the target worm; VAST slice z on SEM-Dauer 1)
+    to its source EM file, and assigns each frame a stable integer ``key`` used for the
+    shared JPEG cache name and the frame ordering. Subclass to retarget the pipeline's
+    EM source without touching run_chain or any phase function."""
+
+    def key_of_z(self, z: int) -> int:
+        raise NotImplementedError
+
+    def z_of_key(self, key: int) -> int:
+        raise NotImplementedError
+
+    def file_for_z(self, z: int) -> Path:
+        """The single source file for logical z (the anchor-frame load)."""
+        raise NotImplementedError
+
+    def files_in_z_range(self, z0: int, z1: int) -> "list[tuple[int, Path]]":
+        """``[(key, path), ...]`` for every frame with logical z in [z0, z1], sorted by key."""
+        raise NotImplementedError
+
+
+class TifFrameStore(FrameStore):
+    """Target worm: a ``.tif`` stack under ``worm_path`` named ``..z{file_z}.tif``.
+    key == file_z, logical z == catmaid_z (related by config.FILE_Z_OFFSET via alignment).
+    Reproduces the original glob/parse/z-map exactly — the M1 reproduction path."""
+
+    def __init__(self, worm_path: Optional[Path] = None):
+        self.worm_path = Path(worm_path) if worm_path is not None else config.WORM_PATH
+
+    def key_of_z(self, z: int) -> int:
+        return alignment.catmaid_z_to_file_z(int(z))
+
+    def z_of_key(self, key: int) -> int:
+        return alignment.file_z_to_catmaid_z(int(key))
+
+    def file_for_z(self, z: int) -> Path:
+        k = self.key_of_z(z)
+        matches = [f for f in self.worm_path.glob("*.tif") if _parse_file_z(f) == k]
+        if len(matches) != 1:
+            raise AssertionError(
+                f"Expected 1 tif for file_z={k} (z={z}), got {len(matches)}: {matches}")
+        return matches[0]
+
+    def files_in_z_range(self, z0: int, z1: int) -> "list[tuple[int, Path]]":
+        k0, k1 = self.key_of_z(z0), self.key_of_z(z1)
+        lo, hi = (k0, k1) if k0 <= k1 else (k1, k0)
+        out = [(_parse_file_z(f), f) for f in self.worm_path.glob("*.tif")]
+        return sorted([(k, f) for (k, f) in out if lo <= k <= hi], key=lambda kf: kf[0])
 
 
 # =============================================================================
@@ -238,6 +300,25 @@ class PipelineConfig:
     # track. 1024 _tif px -> ~512 px input at crop_scale 2, still ~4x the neurite
     # resolution of the scale-8 full frame.
     chain_crop_min_tif: int = 1024
+
+    # Tier-2 crop sizing from the _sam mask, not the skeleton (M4.5, default OFF —
+    # A/B gate). The skeleton-bbox window (chain_crop_window/_chain_skeleton_box_tif)
+    # is sized to the centerline NODES; a cell whose membrane bulges past the nodes +
+    # chain_crop_pad_tif gets CLIPPED at the window edge (measured: AIAL/chain_00 clips
+    # 24/113 frames). With radius dead (placeholder), there's no per-node extent to pad
+    # by. When this is on AND chain_crop is on, the window is grown to the UNION of the
+    # skeleton bbox and the bbox of the chain's already-saved _sam masks (the
+    # "generate normally -> bbox -> crop" idea): a strict SUPERSET of the skeleton
+    # window, so it can only grow to contain the segmented cell, never clip worse. The
+    # mask bbox is taken over the NON-queued frames only (the flagged frames are the
+    # least-trustworthy masks — drift/merge would inflate the box toward the error);
+    # if every frame is queued it falls back to all frames, and if no usable _sam mask
+    # exists (or the prior masks are themselves _pcrop) it falls back to the skeleton
+    # bbox. chain_crop_max_px still caps the result (bumps crop_scale coarser), trading
+    # resolution for not clipping — the §4 accuracy-over-everything call. The natural
+    # home is the auto second-pass (batch.tier2_on_flagged), where the _sam masks the
+    # first pass just wrote are exactly the bbox source.
+    chain_crop_from_mask: bool = False
 
     # Tier-2 SAFETY (M4.5 item b). When the per-chain crop yields a POOR anchor, do
     # not propagate a bad crop (or flag the chain); re-run the image phase + the whole
@@ -363,6 +444,17 @@ class ChainState:
     # Recorded for the A/B (how often the fallback fires) and as a P(error) feature.
     fell_back_to_sam: bool = False
 
+    # tier-2 fallback DIAGNOSTICS (captured from the CROP pass before the _sam recovery
+    # pass overwrites image_score/anchor_score — otherwise the failing crop-pass values
+    # are lost and the final state.json only shows the healthy _sam recovery, making it
+    # impossible to tell WHY a chain fell back). None unless fell_back_to_sam is True.
+    #   fellback_reason   : which trigger fired — "empty-mask" / "gate(...)" / "score<0.7"
+    #   crop_image_score  : the crop-pass anchor image_score (the over-zoom tell, §7)
+    #   crop_anchor_score : the crop-pass anchor gate verdict (score_anchor dict)
+    fellback_reason: Optional[str] = None
+    crop_image_score: Optional[float] = None
+    crop_anchor_score: Optional[dict] = None
+
     # qc summary + triage (filled in milestone 2)
     qc_summary: Optional[dict] = None          # flag counts, worst frames, etc.
     triage_frames: list[int] = field(default_factory=list)
@@ -403,27 +495,23 @@ def select_anchor(chain: dict, annotate_df: pd.DataFrame) -> tuple[int, int]:
     return midnode, anchor_catmaid_z
 
 
-def load_frame_sam(catmaid_z: int, *, scale: int) -> tuple[np.ndarray, tuple[int, int]]:
-    """Find the tif for `catmaid_z`, read it, downscale by `scale`.
+def load_frame_sam(catmaid_z: int, *, scale: int,
+                   frame_store: Optional[FrameStore] = None
+                   ) -> tuple[np.ndarray, tuple[int, int]]:
+    """Find the EM frame for logical `catmaid_z`, read it, downscale by `scale`.
 
     Returns (image_sam RGB uint8, full_hw) -> full_hw is the pre-downscale (H, W),
     kept only so later steps can map back to full-res if ever needed.
 
-    Lift from: parse_file_z + tif glob + cv2.imread + downscale_image.
+    `frame_store` selects the EM source; the default (TifFrameStore) is the original
+    tif-stack path. Lift from: parse_file_z + tif glob + cv2.imread + downscale_image.
     """
     import cv2
 
-    target_file_z = alignment.catmaid_z_to_file_z(catmaid_z)
-    tif_files = sorted(config.WORM_PATH.glob("*.tif"))
-    matches = [f for f in tif_files if _parse_file_z(f) == target_file_z]
-    if len(matches) != 1:
-        raise AssertionError(
-            f"Expected 1 tif for file_z={target_file_z} "
-            f"(CATMAID_z={catmaid_z}), got {len(matches)}: {matches}"
-        )
-    tif_path = matches[0]
+    fs = frame_store or TifFrameStore()
+    src_path = fs.file_for_z(catmaid_z)
 
-    image_full = cv2.cvtColor(cv2.imread(str(tif_path)), cv2.COLOR_BGR2RGB)
+    image_full = cv2.cvtColor(cv2.imread(str(src_path)), cv2.COLOR_BGR2RGB)
     H_full, W_full = image_full.shape[:2]
     image_sam = _downscale_image(image_full, scale)
     return image_sam, (H_full, W_full)
@@ -816,7 +904,8 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
 def prepare_video_frames(chain: dict, annotate_df: pd.DataFrame, *, scale: int,
                          frames_root: Optional[Path],
                          anchor_catmaid_z: int,
-                         neuron: str, chain_idx: int
+                         neuron: str, chain_idx: int,
+                         frame_store: Optional[FrameStore] = None
                          ) -> tuple[str, dict[int, int], int, int]:
     """Give SAM2 the 0-indexed downscaled JPEG sequence it needs -> with reuse.
 
@@ -855,19 +944,15 @@ def prepare_video_frames(chain: dict, annotate_df: pd.DataFrame, *, scale: int,
     ]
     start_z, end_z = min(chain_z), max(chain_z)
 
-    start_file_z = alignment.catmaid_z_to_file_z(start_z)
-    end_file_z = alignment.catmaid_z_to_file_z(end_z)
-    target_file_z = alignment.catmaid_z_to_file_z(anchor_catmaid_z)
-
-    all_tifs = sorted(config.WORM_PATH.glob("*.tif"), key=_parse_file_z)
-    subset_tifs = [f for f in all_tifs
-                   if start_file_z <= _parse_file_z(f) <= end_file_z]
+    fs = frame_store or TifFrameStore()
+    anchor_key = fs.key_of_z(anchor_catmaid_z)
+    subset = fs.files_in_z_range(start_z, end_z)     # [(key, src_path), ...] sorted by key
 
     frames_root = Path(frames_root)
 
-    # 1. shared decode cache (write-once, keyed by file_z + scale)
+    # 1. shared decode cache (write-once, keyed by frame key + scale)
     cache_dir = frames_root / f"frames_cache_s{scale}"
-    _ensure_cached_frames(subset_tifs, cache_dir, scale)
+    _ensure_cached_frames(subset, cache_dir, scale)
 
     # 2. per-chain 0-indexed link view (namespaced; rebuilt fresh each call)
     view_dir = frames_root / "chain_views" / f"{neuron}_chain{chain_idx:02d}_s{scale}"
@@ -876,23 +961,21 @@ def prepare_video_frames(chain: dict, annotate_df: pd.DataFrame, *, scale: int,
     view_dir.mkdir(parents=True)
 
     anchor_frame_idx: Optional[int] = None
-    for i, tif_path in enumerate(subset_tifs):
-        if _parse_file_z(tif_path) == target_file_z:
+    for i, (key, _src) in enumerate(subset):
+        if key == anchor_key:
             anchor_frame_idx = i                 # anchor, in 0-based video index
-        _link_frame(cache_dir / f"z{_parse_file_z(tif_path)}.jpg",
-                    view_dir / f"{i:05d}.jpg")
+        _link_frame(cache_dir / f"z{key}.jpg", view_dir / f"{i:05d}.jpg")
 
     if anchor_frame_idx is None:
         raise AssertionError(
-            f"anchor file_z={target_file_z} not in [{start_file_z}, {end_file_z}]"
+            f"anchor key={anchor_key} not in z-range [{start_z}, {end_z}]"
         )
 
-    frame_to_z = {i: alignment.file_z_to_catmaid_z(_parse_file_z(tif))
-                  for i, tif in enumerate(subset_tifs)}
+    frame_to_z = {i: fs.z_of_key(key) for i, (key, _src) in enumerate(subset)}
 
     # init_state needs a STRING path, not a Path, or it raises
     # "Only MP4 video and JPEG folder are supported".
-    return str(view_dir), frame_to_z, anchor_frame_idx, len(subset_tifs)
+    return str(view_dir), frame_to_z, anchor_frame_idx, len(subset)
 
 
 def _chain_skeleton_box_tif(chain: dict, annotate_df: pd.DataFrame) -> tuple[float, float, float, float]:
@@ -904,8 +987,117 @@ def _chain_skeleton_box_tif(chain: dict, annotate_df: pd.DataFrame) -> tuple[flo
     return float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
 
 
+def _prior_queued_z(qc_csv_path: Path) -> set[int]:
+    """The CATMAID-z of the queued (least-trustworthy) frames from a prior qc.csv,
+    or empty if absent. Used by chain_crop_from_mask to exclude flagged frames when
+    sizing the crop from the _sam masks (a drifted/merged frame would inflate the box
+    toward the error). Prefers the `queue` column (intervene-gated), falls back to
+    `flag`."""
+    qc_csv_path = Path(qc_csv_path)
+    if not qc_csv_path.exists():
+        return set()
+    try:
+        df = pd.read_csv(qc_csv_path)
+    except Exception:
+        return set()
+    col = next((c for c in ("queue", "flag") if c in df.columns), None)
+    if col is None or "z" not in df.columns:
+        return set()
+    return {int(z) for z in df.loc[df[col].astype(bool), "z"]}
+
+
+def mask_union_box_px(masks_dir: Path, *, exclude_z: Optional[set[int]] = None
+                      ) -> Optional[tuple[float, float, float, float]]:
+    """Union foreground bbox (x0, y0, x1, y1) over a chain's saved mask PNGs, in MASK
+    px (the space the PNGs are stored in — _sam for a normal run). Returns None if no
+    usable foreground. ``exclude_z`` drops those CATMAID-z (the queued frames); if the
+    exclusion would empty the set, it retries over ALL frames so a fully-queued chain
+    still yields a box. Reuses qc's single mask-reading definition (_iter_mask_paths /
+    _load_binary), so "how a mask is read" stays one place (§4)."""
+    from sam2_utils import qc   # lazy: keeps pipeline import free of qc's heavy deps
+    masks_dir = Path(masks_dir)
+
+    def _union(skip: Optional[set[int]]):
+        x0 = y0 = np.inf
+        x1 = y1 = -np.inf
+        found = False
+        for z, path in qc._iter_mask_paths(masks_dir):
+            if skip and int(z) in skip:
+                continue
+            m = qc._load_binary(path)                # bool, mask space
+            ys, xs = np.where(m)
+            if not xs.size:
+                continue
+            found = True
+            x0, x1 = min(x0, xs.min()), max(x1, xs.max())
+            y0, y1 = min(y0, ys.min()), max(y1, ys.max())
+        return (float(x0), float(y0), float(x1), float(y1)) if found else None
+
+    box = _union(exclude_z)
+    if box is None and exclude_z:
+        box = _union(None)                            # every frame was queued -> use all
+    return box
+
+
+def chain_masks_in_sam(chain_dir: Path, *, verbose: bool = False
+                       ) -> dict[int, tuple[np.ndarray, int, int]]:
+    """[M5 aggregation prep] Read a finished chain's saved masks back onto the canonical
+    _sam grid WITH their placement in the full _sam frame, so a per-neuron z-union can
+    paste every chain — legacy _sam AND tier-2 _pcrop — onto one common grid.
+
+    Returns ``{catmaid_z: (mask_sam: bool ndarray, x0_sam: int, y0_sam: int)}``:
+      * legacy _sam chain (state.json ``crop_window`` is null): the saved mask IS already
+        _sam and full-frame, so the entry is ``(mask, 0, 0)``.
+      * tier-2 _pcrop chain: the _pcrop mask is downscaled crop_scale -> sam_scale and its
+        top-left offset is ``origin_tif / sam_scale``, so it drops into the full _sam frame
+        at ``frame[y0:y0+h, x0:x0+w] |= mask_sam``.
+
+    THIS is the single home for the _pcrop -> _sam remap downstream merge needs (§5:
+    crop_window is persisted to state.json precisely so aggregation can rebuild the crop
+    space — the mask PNG + filename alone do NOT encode their space). The aggregator must
+    consume it; globbing ``masks/*.png`` without it would mis-place every tier-2 chain.
+
+    Resolution note: a tier-2 mask carries MORE spatial detail than _sam; here it is
+    *downsampled* to the shared _sam grid for the union. Keep the _pcrop original on disk
+    if a higher-res mesh is wanted later (the §5 anisotropy / Blender path). Mask reading
+    reuses qc's _iter_mask_paths / _load_binary so "how a mask is read" stays one place.
+    """
+    from sam2_utils import qc   # lazy: keeps pipeline import free of qc's heavy deps
+    import cv2
+
+    chain_dir = Path(chain_dir)
+    sp = chain_dir / "state.json"
+    state = json.loads(sp.read_text()) if sp.exists() else {}
+    cwd = state.get("crop_window")
+    cw = alignment.CropWindow.from_dict(cwd) if cwd else None
+
+    out: dict[int, tuple[np.ndarray, int, int]] = {}
+    for z, path in qc._iter_mask_paths(chain_dir / "masks"):
+        m = qc._load_binary(path)                          # bool, mask space (_sam or _pcrop)
+        if cw is None:
+            out[int(z)] = (m, 0, 0)                         # legacy _sam: full-frame, no offset
+            continue
+        # _pcrop -> _sam: the window's _sam footprint is size_tif / sam_scale, and a
+        # _pcrop pixel (crop_scale tif px) is coarser than... no: crop_scale (2) is FINER
+        # than sam_scale (8), so this downscales by sam_scale/crop_scale (e.g. 4x).
+        w_sam = max(1, int(round(cw.size_tif[0] / cw.sam_scale)))
+        h_sam = max(1, int(round(cw.size_tif[1] / cw.sam_scale)))
+        m_sam = cv2.resize(m.astype(np.uint8), (w_sam, h_sam),
+                           interpolation=cv2.INTER_NEAREST).astype(bool)
+        x0 = int(round(cw.origin_tif[0] / cw.sam_scale))
+        y0 = int(round(cw.origin_tif[1] / cw.sam_scale))
+        out[int(z)] = (m_sam, x0, y0)
+
+    if verbose:
+        space = "_pcrop (tier-2)" if cw is not None else "_sam (legacy)"
+        print(f"[aggregate] {chain_dir.name}: {len(out)} masks, space={space}")
+    return out
+
+
 def chain_crop_window(chain: dict, annotate_df: pd.DataFrame, *, cfg: "PipelineConfig",
-                      image_hw_tif: tuple[int, int]) -> "alignment.CropWindow":
+                      image_hw_tif: tuple[int, int],
+                      extra_box_tif: Optional[tuple[float, float, float, float]] = None,
+                      ) -> "alignment.CropWindow":
     """Tier-2 per-chain CropWindow: the chain's whole-skeleton xy-bbox in _tif,
     padded by cfg.chain_crop_pad_tif, at an adaptive crop_scale.
 
@@ -913,8 +1105,16 @@ def chain_crop_window(chain: dict, annotate_df: pd.DataFrame, *, cfg: "PipelineC
     extent's longest edge would exceed cfg.chain_crop_max_px at that scale, so the
     SAM2 input stays bounded for a chain that wanders far across the section. The
     realized window is clipped to the frame (alignment.CropWindow.around_box).
+
+    ``extra_box_tif`` (xyxy, _tif) is UNIONED with the skeleton bbox before padding —
+    the chain_crop_from_mask path passes the _sam mask's bbox here so the window grows
+    to contain the segmented cell, not just the centerline (a strict superset of the
+    skeleton-only window). None reproduces the skeleton-only sizing exactly.
     """
     box_tif = _chain_skeleton_box_tif(chain, annotate_df)
+    if extra_box_tif is not None:
+        box_tif = (min(box_tif[0], extra_box_tif[0]), min(box_tif[1], extra_box_tif[1]),
+                   max(box_tif[2], extra_box_tif[2]), max(box_tif[3], extra_box_tif[3]))
     H_tif, W_tif = int(image_hw_tif[0]), int(image_hw_tif[1])
     pad = int(cfg.chain_crop_pad_tif)
     min_tif = int(cfg.chain_crop_min_tif)
@@ -938,7 +1138,8 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
                               cw: "alignment.CropWindow", *,
                               frames_root: Optional[Path],
                               anchor_catmaid_z: int,
-                              neuron: str, chain_idx: int
+                              neuron: str, chain_idx: int,
+                              frame_store: Optional[FrameStore] = None
                               ) -> tuple[str, dict[int, int], int, int]:
     """Tier-2 video frames: the chain's frames cropped to `cw` and saved as a
     0-indexed JPEG view in `_pcrop` space.
@@ -967,13 +1168,10 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
         for n in chain["nodes"]
     ]
     start_z, end_z = min(chain_z), max(chain_z)
-    start_file_z = alignment.catmaid_z_to_file_z(start_z)
-    end_file_z = alignment.catmaid_z_to_file_z(end_z)
-    target_file_z = alignment.catmaid_z_to_file_z(anchor_catmaid_z)
 
-    all_tifs = sorted(config.WORM_PATH.glob("*.tif"), key=_parse_file_z)
-    subset_tifs = [f for f in all_tifs
-                   if start_file_z <= _parse_file_z(f) <= end_file_z]
+    fs = frame_store or TifFrameStore()
+    anchor_key = fs.key_of_z(anchor_catmaid_z)
+    subset = fs.files_in_z_range(start_z, end_z)     # [(key, src_path), ...] sorted by key
 
     frames_root = Path(frames_root)
     view_dir = (frames_root / "chain_views"
@@ -985,20 +1183,19 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     sl = cw.slice_tif()
     frame_to_z: dict[int, int] = {}
     anchor_frame_idx: Optional[int] = None
-    for i, tif_path in enumerate(tqdm(subset_tifs, desc="caching _pcrop frames", unit="frame")):
-        crop = _read_tif_window(tif_path, sl)       # windowed read (item c); == cv2.imread(tif)[sl]
+    for i, (key, src_path) in enumerate(tqdm(subset, desc="caching _pcrop frames", unit="frame")):
+        crop = _read_tif_window(src_path, sl)       # windowed read (item c); == cv2.imread(src)[sl]
         crop = _downscale_image(crop, cw.crop_scale)
         cv2.imwrite(str(view_dir / f"{i:05d}.jpg"), crop)
-        fz = _parse_file_z(tif_path)
-        frame_to_z[i] = alignment.file_z_to_catmaid_z(fz)
-        if fz == target_file_z:
+        frame_to_z[i] = fs.z_of_key(key)
+        if key == anchor_key:
             anchor_frame_idx = i
 
     if anchor_frame_idx is None:
         raise AssertionError(
-            f"anchor file_z={target_file_z} not in [{start_file_z}, {end_file_z}]"
+            f"anchor key={anchor_key} not in z-range [{start_z}, {end_z}]"
         )
-    return str(view_dir), frame_to_z, anchor_frame_idx, len(subset_tifs)
+    return str(view_dir), frame_to_z, anchor_frame_idx, len(subset)
 
 
 @dataclass
@@ -1586,6 +1783,10 @@ def state_to_dict(state: ChainState) -> dict:
         "n_frames": state.n_frames,
         "crop_window": state.crop_window,
         "fell_back_to_sam": bool(state.fell_back_to_sam),
+        "fellback_reason": state.fellback_reason,
+        "crop_image_score": (None if state.crop_image_score is None
+                             else float(state.crop_image_score)),
+        "crop_anchor_score": state.crop_anchor_score,
         "qc_summary": state.qc_summary,
         "triage_frames": list(state.triage_frames),
         "obj_id": state.obj_id,
@@ -1612,6 +1813,9 @@ def state_from_dict(d: dict) -> ChainState:
         n_frames=d.get("n_frames"),
         crop_window=d.get("crop_window"),
         fell_back_to_sam=bool(d.get("fell_back_to_sam", False)),
+        fellback_reason=d.get("fellback_reason"),
+        crop_image_score=d.get("crop_image_score"),
+        crop_anchor_score=d.get("crop_anchor_score"),
         qc_summary=d.get("qc_summary"),
         triage_frames=list(d.get("triage_frames", [])),
         obj_id=d.get("obj_id", 1),
@@ -1640,7 +1844,8 @@ def load_state(path: str | Path) -> ChainState:
 
 def run_chain(state: ChainState, *, image_predictor, video_predictor,
               annotate_df: pd.DataFrame, chain: dict,
-              on_video_phase: Optional[Callable[[], None]] = None) -> ChainState:
+              on_video_phase: Optional[Callable[[], None]] = None,
+              frame_store: Optional[FrameStore] = None) -> ChainState:
     """Run one chain end-to-end by composing the phases above.
 
     No new behavior vs. the notebook -> this just makes the call order explicit and
@@ -1654,8 +1859,15 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     VRAM is reclaimed between phases (the notebook does this; skipping it leaks
     VRAM). Keeping it a callback lets pipeline.py stay free of a torch/diagnostics
     import -> the library doesn't decide *how* to clean up, the driver does.
+
+    `frame_store` selects the EM source (PIPELINE_CONTEXT §3a seam): None = the target
+    worm's tif stack (TifFrameStore, the M1 path); pass a different store (e.g. the GT
+    per-slice PNG store) to run the same pipeline on another worm. The skeleton->image
+    transform is *not* threaded here — it's baked into annotate_df's x_tif/y_tif by the
+    caller (catmaid_to_tif for the target worm; the per-section registration for GT).
     """
     cfg = state.config
+    fs = frame_store or TifFrameStore()
     state.status = "running"
 
     tag = f"{state.neuron} chain {state.chain_idx:02d}"
@@ -1701,20 +1913,47 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         _step(2, "load anchor frame")
         state.crop_window = None
         if use_chain_crop:
-            image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1)   # _tif
+            image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1, frame_store=fs)   # _tif
             image_sam = None
-            cw_chain_l = chain_crop_window(chain, annotate_df, cfg=cfg, image_hw_tif=full_hw)
+            # chain_crop_from_mask: grow the window to contain the already-saved _sam
+            # mask, not just the skeleton centerline (fixes the cell-edge clip). Only
+            # when the prior masks are _sam — a prior tier-2 (state.json has a
+            # crop_window) stores _pcrop masks whose bbox is the wrong space, so decline.
+            extra_box_tif = None
+            if cfg.chain_crop_from_mask:
+                chain_dir = Path(cfg.output_root) / state.neuron / f"chain_{state.chain_idx:02d}"
+                sp = chain_dir / "state.json"
+                prior = load_state(sp) if sp.exists() else None
+                if prior is not None and getattr(prior, "crop_window", None):
+                    print("    [chain_crop_from_mask] prior masks are _pcrop (tier-2); "
+                          "sizing from skeleton bbox")
+                else:
+                    queued_z = _prior_queued_z(chain_dir / "qc.csv")
+                    box_px = (mask_union_box_px((chain_dir / "masks"), exclude_z=queued_z)
+                              if (chain_dir / "masks").exists() else None)
+                    if box_px is None:
+                        print("    [chain_crop_from_mask] no usable _sam mask; "
+                              "sizing from skeleton bbox")
+                    else:
+                        x0, y0, x1, y1 = box_px       # _sam px -> _tif (+1 far corner = pixel extent)
+                        extra_box_tif = (x0 * cfg.scale, y0 * cfg.scale,
+                                         (x1 + 1) * cfg.scale, (y1 + 1) * cfg.scale)
+                        print(f"    [chain_crop_from_mask] _sam mask bbox -> _tif "
+                              f"{tuple(int(v) for v in extra_box_tif)} "
+                              f"(union w/ skeleton, excl {len(queued_z)} queued frame(s))")
+            cw_chain_l = chain_crop_window(chain, annotate_df, cfg=cfg, image_hw_tif=full_hw,
+                                           extra_box_tif=extra_box_tif)
             state.crop_window = cw_chain_l.to_dict()
             print(f"    full-res {full_hw[1]}x{full_hw[0]} -> _pcrop window "
                   f"{cw_chain_l.size_tif[0]}x{cw_chain_l.size_tif[1]}px @ crop_scale "
                   f"{cw_chain_l.crop_scale} -> {cw_chain_l.crop_hw[1]}x{cw_chain_l.crop_hw[0]} input")
         elif cfg.crop_anchor:
-            image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1)   # _tif
+            image_full, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=1, frame_store=fs)   # _tif
             image_sam = None
             print(f"    full-res frame {full_hw[1]}x{full_hw[0]} -> {cfg.crop_size_tif}px "
                   f"_tif crop @ crop_scale {cfg.crop_scale}")
         else:
-            image_sam, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=cfg.scale)
+            image_sam, full_hw = load_frame_sam(state.anchor_catmaid_z, scale=cfg.scale, frame_store=fs)
             image_full = None
             print(f"    _sam frame {image_sam.shape[1]}x{image_sam.shape[0]} "
                   f"(full {full_hw[1]}x{full_hw[0]}, scale {cfg.scale})")
@@ -1835,6 +2074,12 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         print(f"    [tier-2 fallback] poor _pcrop anchor [{', '.join(reasons)}] "
               f"-> re-running this chain in the plain _sam path")
         state.fell_back_to_sam = True
+        # capture the CROP-pass diagnostics BEFORE the _sam recovery pass below overwrites
+        # state.image_score / state.anchor_score — else the failing reason is lost (only the
+        # run log had it), and the final state.json shows the healthy _sam recovery instead.
+        state.fellback_reason = ", ".join(reasons)
+        state.crop_image_score = state.image_score
+        state.crop_anchor_score = _anchor_score_to_dict(anchor)
         cw_chain, anchor, box_present, mask_anchor_seed = _anchor_phase(use_chain_crop=False)
 
     # Effective space for the rest of the run: tier-2 only if we didn't fall back.
@@ -1867,13 +2112,13 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
          state.anchor_frame_idx, state.n_frames) = prepare_chain_crop_frames(
             chain, annotate_df, cw_chain, frames_root=cfg.frames_root,
             anchor_catmaid_z=state.anchor_catmaid_z,
-            neuron=state.neuron, chain_idx=state.chain_idx)
+            neuron=state.neuron, chain_idx=state.chain_idx, frame_store=fs)
     else:
         (state.frames_dir, state.frame_to_z,
          state.anchor_frame_idx, state.n_frames) = prepare_video_frames(
             chain, annotate_df, scale=cfg.scale, frames_root=cfg.frames_root,
             anchor_catmaid_z=state.anchor_catmaid_z,
-            neuron=state.neuron, chain_idx=state.chain_idx)
+            neuron=state.neuron, chain_idx=state.chain_idx, frame_store=fs)
     print(f"    {state.n_frames} frames  (anchor frame_idx={state.anchor_frame_idx})")
 
     # 7. propagate (seed per the ablation spec; defaults = box+positive = M1 seed)

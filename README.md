@@ -43,6 +43,7 @@ segmentation-playground/
 ├── sam2_utils/                         # importable helper package (stable utilities)
 │   ├── __init__.py
 │   ├── config.py                       # paths (data + output), SAM2 checkpoint registry, CATMAID settings, affine constants
+│   ├── presets.py                      # named run configs (eval / original) for batch.py + eval.score_batch
 │   ├── setup.py                        # device selection, checkpoint download, predictor construction
 │   ├── catmaid.py                      # CATMAID REST client + fetch_all_annotations()
 │   ├── alignment.py                    # THE coordinate-transform home (affine, tif<->sam, z maps, nm->px, CropWindow)
@@ -84,7 +85,12 @@ segmentation-playground/
 ├── archive/                            # off-critical-path material (see archive/README.md)
 │   ├── make_deck_figures.ipynb                  # deck/report figure generation
 │   └── figures/                                 # the deck/report figure outputs
-├── eval/                               # NEXT PHASE scaffold: Stage 0 eval harness (ERL+VOI) — stub only
+├── eval/                               # Stage 0 eval harness (region/VOI/ARAND/ERL metrics + GT scoring)
+│   ├── groundtruth.py metrics.py erl.py score.py   # GT read + metrics + region scoring
+│   ├── registration.py scale_registration.py       # skel→GT per-section affine (+ ¼→full ×4 scaler)
+│   ├── gt_dataset.py                               # Stage 0.2: run the real pipeline on SEM-Dauer 1
+│   ├── score_batch.py                              # score a GT batch run (+ timing/provenance logs)
+│   └── predict_gt.py diag_registration.py          # points-only baseline; registration diagnostic
 ├── finetune/                           # NEXT PHASE scaffold: Stage 2 SAM2 finetuning — stub only
 │   └── finetune.py                              # placeholder
 │
@@ -127,6 +133,8 @@ The napari review GUI (milestone 4) is now in: `gui.py` is a fourth thin driver 
 ## What each module does
 
 **`config.py`** - central constants. `WORM_PATH` (raw `.tif` stack), the data/output paths (`DATA_DIR`, `CSV_PATH`, `CHAINS_PATH`, `ROOTS_PATH`, `OUTPUT_ROOT`, `FRAMES_ROOT` - the one home the drivers import), the SAM2 checkpoint registry (tiny/small/base_plus/large), CATMAID URL and project ID, `STACK_RESOLUTION_NM`, `FILE_Z_OFFSET`, and the pre-fit affine (`M_AFFINE`, `T_AFFINE`) that maps CATMAID stack-pixel coordinates to tif-pixel coordinates. (Note: the *runtime* pipeline knobs - scale, QC thresholds, crop, etc. - live on `PipelineConfig` in `pipeline.py`, not here.)
+
+**`presets.py`** - named run configurations consumed by `batch.py --preset` and `eval.score_batch --preset`. Each preset bundles the dataset/worm, output + frames roots, `PipelineConfig` knobs, tier-2/gif settings, and a default neuron set, so a run is `--preset eval --neurons URYVL` instead of a long flag string; any CLI flag overrides the preset. Ships `original` (target worm) and `eval` (SEM-Dauer 1 GT). The target worm's neuron lists (`ALL_NEURONS`/`KEY_NEURONS`) live here too.
 
 **`setup.py`** - one-time session setup. `build_predictor(size, kind)` picks the device (CUDA > MPS > CPU), enters bfloat16 autocast on CUDA, downloads the checkpoint if missing, and returns `(predictor, device)` for `kind="image"` or `kind="video"`. `setup_device()`, `ensure_checkpoint()`, and `check_sam2_available()` are the lower-level pieces. torch is imported lazily, so importing the package doesn't require it.
 
@@ -229,13 +237,30 @@ review.to_gif(chain_dir, chain_dir / "aval.gif")
 
 ### Run the whole dataset (headless batch)
 
-Edit the knobs at the top of `batch.py` (`NEURONS` allow-list or `None` for all, `CLEAN`, `GIF_MODE`; the path roots come from `config`), then:
+Run knobs (which worm, paths, model, tier-2, default neurons) live in named **presets** in
+`sam2_utils/presets.py`; pick one with `--preset` and override any field with a flag:
 
 ```bash
-python batch.py
+python batch.py                                  # = --preset original (target worm defaults)
+py -3 batch.py --preset original --neurons AVAL AVAR --clean
 ```
 
 It builds the predictors once, runs every selected chain through `run_chain`, and writes `output/_manifest.csv`, `_triage.csv`, and `_timing.csv`. Re-running resumes where it left off. `clean=True` wipes prior outputs first (scope-aware: full reset when `neurons=None`, else just the named neurons).
+
+**Presets.** Which worm, paths, model, tier-2, and default neurons all live in named **presets**
+(`sam2_utils/presets.py`) — so a run is `--preset <name> [--neurons …]`, not a long command. Any flag
+overrides the preset. Two ship today: `original` (target worm, CATMAID 336) and `eval` (SEM-Dauer 1 GT).
+`python batch.py` above is `--preset original`.
+
+**Run on the cross-worm GT (SEM-Dauer 1, Stage 0 eval).** The same pipeline runs on a different worm via a `pipeline.FrameStore` (EM source) + registration-baked prompts — no per-chain code changes. Pick the `eval` preset + a subset (a full run is guarded):
+
+```bash
+py -3 batch.py --preset eval --neurons URYVL          # explicit neuron(s)
+py -3 batch.py --preset eval --neuron-limit 3         # first N neurons
+py -3 -m eval.score_batch --preset eval               # root + out auto-resolved from the preset
+```
+
+This scores predicted masks against the manually-verified GT — **region IoU/Dice/precision/recall + VOI_split/merge + ARAND + per-neuron ERL** — and logs results + timing + provenance to the preset's out dir (`eval_neurons.csv`, `eval_timing.csv`, `measurement_log.jsonl`). See [`eval/README.md`](eval/README.md) for the metric suite and the Stage-0 numbers.
 
 ### Review & correct flagged chains (the M4 napari GUI)
 
