@@ -71,7 +71,10 @@ def postprocess_mask(mask_sam: np.ndarray, *, open_px: int = 1, close_px: int = 
     from scipy import ndimage
     from skimage.measure import label as cc_label
 
-    m = np.asarray(mask_sam).astype(bool)
+    m = np.asarray(mask_sam)
+    if m.ndim == 3:                       # SAM2 yields (1, H, W); squeeze the channel axis,
+        m = m[0]                          # else binary_opening on the singleton axis empties it
+    m = m.astype(bool)
     if not m.any():
         return m
     if open_px > 0:
