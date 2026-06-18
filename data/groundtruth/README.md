@@ -1,4 +1,7 @@
-# data/groundtruth/, cross-worm ground truth (landing spot, git-ignored)
+# data/groundtruth
+
+**Status: git-ignored data landing spot.** The cross-worm ground-truth dataset lands here; only this
+README is tracked.
 
 **This directory is the landing spot for the cross-worm ground-truth dataset.** The data itself is
 **not committed**, `data/` is git-ignored; only this README is tracked (via a `.gitignore`

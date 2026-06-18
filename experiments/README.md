@@ -1,4 +1,8 @@
-# experiments/, A/B harnesses & sweeps (kept for repro)
+# experiments
+
+**Status: kept for reproducibility.** One-off A/B harnesses and sweeps. Not imported by the library
+or any driver. `ab_tier2.py` is superseded by `ab_tier2_wide.py` and is a deletion candidate;
+captured `*.log` files and `ab_figs/` are disposable.
 
 One-off measurement scripts from the M4.5 A/B round. **None of these are part of the durable
 library or any driver**, nothing in `pipeline.py` / `batch.py` / `gui.py` / `run_aval.py` imports

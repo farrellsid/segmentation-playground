@@ -1,4 +1,7 @@
-# finetune/, Stage 2 SAM2 finetuning (scaffold, not yet implemented)
+# finetune
+
+**Status: scaffold, not yet implemented.** A home for future SAM2 finetuning. See the
+[roadmap](../docs/explanation/roadmap.md).
 
 **This is an empty home for the Stage 2 work. No finetuning code lives here yet**, only the
 `finetune.py` placeholder stub carried over from the old `finetuning/` dir.

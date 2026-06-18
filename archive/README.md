@@ -1,4 +1,6 @@
-# archive/, superseded / parked material (kept, not on the critical path)
+# archive
+
+**Status: keep for reference.** Superseded or parked material, off the critical path.
 
 Material kept for reference but not part of the live pipeline.
 

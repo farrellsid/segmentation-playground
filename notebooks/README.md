@@ -1,4 +1,7 @@
-# notebooks/, reference notebooks
+# notebooks
+
+**Status: reference and exploration.** Not the source of truth for how the pipeline runs;
+`pipeline.py` is.
 
 Exploration / reference notebooks, kept live (not archived). They are *not* the source of truth for
 *how* the pipeline runs, `pipeline.py` is, but they remain the reference for *what* each phase does
