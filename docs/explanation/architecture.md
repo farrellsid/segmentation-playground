@@ -21,10 +21,12 @@ only what QC flags.
 
 The code is a pure library with thin drivers on top, not a notebook turned into one big script.
 
-`pipeline.py` is the library. It holds the phase functions, a serializable per-chain `ChainState`, a
-single `PipelineConfig` of knobs, and `run_chain`, which runs one chain through every phase and
-writes its artifacts. It builds no predictors and does no I/O setup of its own. Running
-`python pipeline.py` does nothing by design.
+The `pipeline/` package is the library core. It is split by concern into submodules (`config`,
+`state`, `frames`, `masks`, `predict`, `crop`, `propagate`, `qc`, `orchestrator`); `pipeline/__init__.py`
+re-exports the full surface so consumers still `import pipeline`. It holds the phase functions, a
+serializable per-chain `ChainState`, a single `PipelineConfig` of knobs, and `run_chain`, which runs one
+chain through every phase and writes its artifacts. It builds no predictors and does no I/O setup of
+its own.
 
 The drivers call the library. `run_aval.py` runs a single chain. `batch.py` builds the predictors
 once and runs every chain headless, recording status to a manifest. `gui.py` opens flagged chains in
@@ -43,7 +45,7 @@ flowchart TB
     end
 
     subgraph core [Library]
-        pipeline["pipeline.py<br/>(phase functions, PipelineConfig,<br/>ChainState, run_chain, PropagationSession)"]
+        pipeline["pipeline/ package<br/>(config, state, frames, masks, predict,<br/>crop, propagate, qc, orchestrator)"]
         utils["sam2_utils/<br/>(config, setup, alignment, qc,<br/>review, review_queue, labels, ...)"]
     end
 
@@ -73,7 +75,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph phases [Phase functions in pipeline.py]
+    subgraph phases [Phase functions across pipeline/ submodules]
         anchor["select_anchor"]
         prompts["build_prompts"]
         predict["image_predict /<br/>anchor_crop_predict"]
@@ -133,7 +135,7 @@ Dependencies point inward, toward the stable library, and the graph has no cycle
 run_aval.py / batch.py / gui.py / eval/   (volatile edges)
                   |
                   v
-            pipeline.py                    (stable core)
+            pipeline/                      (stable core, split by concern)
                   |
                   v
             sam2_utils/                    (stable utilities)

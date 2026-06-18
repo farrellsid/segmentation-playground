@@ -958,6 +958,18 @@ multichain set (AVAL/GLRDR/IL1L/URYVL) single-mask (the existing `out_gt_multich
 (`multimask_anchor`), then B (`+ multimask_exclude_neg`), comparing precision / VOI_merge / micro-IoU.
 The lever is justified only if the bleed metrics improve.
 
+### 8.10 Pipeline core split into a package  ·  LANDED (June 2026)
+The library core had grown to a ~2,200-line `pipeline.py` holding eight concerns at once. Split it into
+a `pipeline/` package by concern (`config`, `state`, `frames`, `masks`, `predict`, `crop`, `propagate`,
+`qc`, `orchestrator`), with `pipeline/__init__.py` re-exporting the full public surface so every caller
+and test still imports `pipeline` unchanged. Pure structural move, no logic changed. Done in two steps:
+`git mv pipeline.py pipeline/__init__.py` (history preserved), then one extraction commit. Submodules
+use relative sibling imports leaf-first (no cycles); lazy `torch` stays inside functions;
+`pipeline.config` (run knobs) is kept distinct from `sam2_utils.config` (static constants). Only the
+import-direction test changed (its file glob now scans `pipeline/*.py`). Verified: 135 tests + ruff +
+import-direction green; a single-chain `run_aval` smoke confirms `run_chain` behaviour end to end.
+See [ADR 0013](adr/0013-pipeline-package-split.md).
+
 
 ---
 

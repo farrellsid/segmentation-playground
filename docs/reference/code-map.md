@@ -8,8 +8,9 @@ as few files as possible.
 
 | Goal | Edit | Notes |
 |------|------|-------|
-| A segmentation phase (anchor select, prompt build, image predict, propagate, postprocess, save) | `pipeline.py` | The phase functions live here. They take plain arrays and a config, do no I/O setup. |
-| A run/tuning knob (scale, crop, QC thresholds, seed shape) | `PipelineConfig` in `pipeline.py` | One dataclass holds every tunable. Defaults reproduce the original single-chain run. |
+| A segmentation phase | the matching `pipeline/` submodule | The core is a package split by concern: `predict.py` (anchor select, prompt build, image predict, multimask select, box, anchor gate, tier-1 crop), `propagate.py` (video propagation), `crop.py` (tier-2 windows + frame prep), `frames.py` (FrameStore + EM loading), `masks.py` (save + postprocess), `qc.py` (per-chain QC), `orchestrator.py` (`run_chain`). Phase functions take plain arrays and a config, do no I/O setup. |
+| A run/tuning knob (scale, crop, QC thresholds, seed shape) | `PipelineConfig` in `pipeline/config.py` | One dataclass holds every tunable. Defaults reproduce the original single-chain run. (Distinct from `sam2_utils/config.py`, which holds static paths/constants.) |
+| The per-chain state object or its serialization | `pipeline/state.py` | `ChainState`, `Prompts`, `AnchorScore`, and the `state_to_dict`/`from_dict` + `save_state`/`load_state` round-trip. |
 | The default knobs for a named run (which worm, model, paths, tier-2) | `sam2_utils/presets.py` | `--preset original` (target worm) and `--preset eval` (cross-worm GT). Any CLI flag overrides. |
 | A filesystem path, model checkpoint, affine constant, or CATMAID setting | `sam2_utils/config.py` | Central constants. Import-light: no torch or cv2 at module load. |
 | Any coordinate transform (`_tif` / `_sam` / `_crop` / `_pcrop` / `_cm`, z maps, nm to px, crop windows) | `sam2_utils/alignment.py` | The single home for space conversions. Do not write `/ scale` inline anywhere else. |
