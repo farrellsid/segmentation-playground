@@ -311,9 +311,11 @@ Thresholds are advance/pivot gates, in the §4 ruler spirit.
     upgraded from *global linear + per-section translation* to a **per-section affine** (full 2×3 per
     slice, robust fit, z-interpolated/smoothed). Re-fit result: median residual 19.6 → **4.7 px**,
     on-mask **67.9% → 85.7%**. Provenance (right worm = project 280) confirmed four ways, so the earlier
-    ~50% miss was an under-powered alignment *model*, not a bad import. *Remaining:* the interactive GUI
-    overlay (human gut-check) and confirming self-consistency ERL recovers from the earlier ~0 µm. Done
-    at 4× scale, the affine *model* transfers to the full-res re-fit (0.3), only the constants change.
+    ~50% miss was an under-powered alignment *model*, not a bad import. The interactive human gut-check
+    is now in place too: `eval/registration_overlay.py` is a napari viewer of the full-res VAST EM with
+    raw + registered node layers (scrub z, click-to-read coordinates for a CATMAID project-280
+    cross-check). Done at 4× scale, the affine *model* transfers to the full-res re-fit (0.3), only the
+    constants change.
   - **0.2, Eval the real batch pipeline against GT, ✅ BUILT, first numbers in (June 2026).** The
     production `run_chain`/`batch.py` now runs on SEM-Dauer 1 (not the `predict_gt` reimplementation)
     via a worm-agnostic **`pipeline.FrameStore` seam** (default `TifFrameStore` keeps the target worm
@@ -348,16 +350,41 @@ Thresholds are advance/pivot gates, in the §4 ruler spirit.
   - **0.4, ERL merge tolerance (metric robustness).** Stop ERL zeroing a whole neuron for a single
     stray node (a tolerance / majority rule). Without it the skeleton metric stays at 0 even for
     near-perfect segmentations under any registration noise.
+  - **0.5, Edge residual in the per-section affine (HIGH PRIORITY refinement).** The 0.1 human
+    gut-check (`eval/registration_overlay.py`) confirmed the affine is near-perfect at frame center but
+    drifts by tens of px at the edges (consistent with the fit's p90 ~17 px). An affine fits tangent to
+    the true warp at the correspondence centroid and deviates with radius; the likely cause is the
+    elastic per-section realignment (`*_realignment_export_*`), which no affine fully matches. It misses
+    small/thin cells and is the same off-segment-node fraction capping the ERL ceiling (~11.6 vs 76.3
+    µm). Gate the fix on a diagnostic: extend `diag_registration` to measure residual-vs-radius and
+    trial-fit a per-section quadratic / thin-plate spline, with edge residual + rim correspondence
+    density, to tell a too-simple model from edge data-starvation (interpolating models extrapolate
+    badly past the correspondence hull). Then choose the model.
 
-  *Loose ends:* the empty-name `--neuron-limit` selection bug and `predict_gt`'s bleed levers are now
-  low priority (the scored path is `batch.py`, which has real seeding/postprocess); fix only if
-  `predict_gt` is kept as the points-only baseline.
+  *Loose ends:* `predict_gt.py` is **discontinued** (the scored path is `batch.py`, which has real
+  seeding/postprocess); its empty-name `--neuron-limit` bug and bleed levers retire with it.
 - **Stage 1, Free wins on the existing SAM2 path (1-2 wk).** Drop in SAM2Long; center-outward
   propagation; forward/backward consistency check (replaces several hand-tuned QC thresholds);
-  re-seed at skeleton nodes + skeleton-following crops. *Advance when:* ERL up and merge rate down vs
-  Stage 0. *(§4.3, §4.5, §4.2)*
-- **Stage 2, Finetune SAM2 (2-4 wk).** Decoder-first + optional encoder-LoRA on confirmed voxels,
-  composite + soft-clDice loss. *Advance when:* finetuned beats stock SAM2 on held-out confirmed
+  re-seed at skeleton nodes + skeleton-following crops; **node-anchored multimask selection** (pick
+  SAM2's candidate that contains the positive node and, with `multimask_exclude_neg`, excludes the
+  neighbour negatives; on for the `eval` preset, adapts the 2025 lightweight-SAM2 paper's
+  anchor-containment idea, see [ADR 0012](../adr/0012-node-anchored-multimask-selection.md)). *Advance
+  when:* ERL up and merge rate down vs Stage 0. *(§4.3, §4.5, §4.2)*
+- **Stage 1b, Parameter optimization (planned, the 2025 lightweight-SAM2 paper's second idea).** Jointly
+  tune the pipeline's inference knobs against the eval ruler instead of hand-setting them. Search space
+  is *our* prompted-pipeline knobs (the multimask flags, `gate_*` bounds, `k_max_neg`, seed mode,
+  `postproc_*`, `chain_crop_min_image_score`, `scale`/`save_downscale`), not the paper's: their notebook
+  optimizes the `SAM2AutomaticMaskGenerator` (`points_per_side`, `box_nms_thresh`, `crop_n_layers`...),
+  a SAM2 mode this pipeline does not use, so it is a methodology to reuse (Bayesian search like
+  `skopt.gp_minimize` on Jaccard/Dice), not a notebook to port. Objective: per-neuron region IoU + ERL
+  from `eval.score_batch`. *Cost to plan around:* each config is a full GT run + score (~19 min/full-res
+  run today), so a search needs a fast subset or a cheaper proxy. *Advance when:* the tuned config beats
+  the hand-set defaults on the held-out eval set.
+- **Stage 2, Finetune SAM2 (2-4 wk; always the plan).** Decoder-first + optional encoder-LoRA on
+  confirmed voxels, composite + soft-clDice loss. The 2025 lightweight-SAM2 paper is the concrete
+  low-cost recipe to start from: freeze the image + prompt encoders, fine-tune only the mask decoder
+  (Dice + BCE, AdamW, cosine annealing), which they show lifts domain accuracy from small datasets
+  without added architecture. *Advance when:* finetuned beats stock SAM2 on held-out confirmed
   segments. *Pivot if not:* inspect the domain gap, lean on Stage 3. *(§4.7, §4.4)*
 - **Stage 3, Fix branching structurally (3-6 wk).** Parallel per-slice over-segmentation
   (affinities/LSD or FGNet-style) → watershed → agglomeration → link across z (Seg2Link/Trackastra),

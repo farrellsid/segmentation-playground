@@ -21,10 +21,11 @@ SEM-Dauer 1 via a worm-agnostic frame seam, see **Running the real pipeline on G
 | [`gt_dataset.py`](./gt_dataset.py) | **Stage 0.2 adapter**: `GtFrameStore` (per-slice PNG EM → `pipeline.FrameStore`), `build_gt_annotate_df` (x_tif/y_tif baked from the per-section registration), `load_gt_chains` (subset by `neurons`/`neuron_limit`), `build_gt_session_inputs`. |
 | [`score_batch.py`](./score_batch.py) | Score a `batch.py` GT run: `BatchPredictionSource` unions a neuron's per-chain `_sam` masks per slice and upscales to the GT grid; CLI emits live progress, `eval_timing.csv`, and `measurement_log.jsonl`. |
 | [`scale_registration.py`](./scale_registration.py) | Stage 0.3: derive the full-res `registration.json` by scaling the ¼ fit ×4 (instant, geometrically exact vs a ~1.5 h from-scratch re-fit). |
+| [`registration_overlay.py`](./registration_overlay.py) | Stage 0.1 human gut-check: a napari overlay of the full-res VAST EM with two point layers (raw CATMAID coords + registered coords) scrubbable per z, plus click-to-read coordinates. Pure helpers (`build_overlay_table`, `nodes_on_slice`, `nearest_node`) are torch-free and tested. |
 
 Tests: `tests/test_eval_metrics.py` (incl. ARAND vs skimage), `tests/test_eval_groundtruth.py`, `tests/test_eval_erl.py` (`py -3 -m pytest tests/test_eval*.py`; 37 pass).
 
-### Running the real pipeline on GT (Stage 0.2)
+### Running the real pipeline on GT (Ground Truth SEM-Dauer 1) (Stage 0.2)
 
 `batch.py` is worm-agnostic except the EM source (a `pipeline.FrameStore`) and the skel→image
 transform (baked into `annotate_df.x_tif/y_tif`). For SEM-Dauer 1 both come from `eval.gt_dataset`;
@@ -127,8 +128,9 @@ for the full sub-step plan (0.1-0.4). The short version:
 1. **Verify the coordinate transform first (keystone).** The skel→GT registration both *places prompts*
    and *samples node labels*, so a loose transform poisons every number. The dry run showed it: ~50% of
    slices zero-overlap with correctly-sized-but-*displaced* masks, and self-consistency ERL = 0 *with the
-   perfect GT as input* (47% of nodes sample off their own segment). Overlay the registered skeleton
-   nodes on the GT EM in the GUI and confirm they track the right neurites before trusting any score.
+   perfect GT as input* (47% of nodes sample off their own segment). The `registration_overlay`
+   napari tool (below) overlays the registered nodes on the GT EM so a human can confirm they track
+   the right neurites before trusting any score.
 2. **Score the real `batch.py`, not a reimplementation.** The honest Stage-0 benchmark is the production
    pipeline (large model, box seed, postprocess, QC) pointed at SEM-Dauer 1 via an argparse dataset
    override, **this supersedes `predict_gt.py` as the scored path.** Its output feeds the scorers below.
@@ -141,24 +143,10 @@ for the full sub-step plan (0.1-0.4). The short version:
    (5-neuron spot check). `registration.json` is now full-res; the ¼ fit is kept as
    `registration_quarter_scale.json`.
 
-`predict_gt.py` stays as a **scaffold / points-only baseline** (it validated this harness end-to-end and
-surfaced the registration problem). It runs SAM2 on SEM-Dauer 1's EM (`config.GT_EM_DIR`, F: drive),
-seeding each p280 chain's nodes mapped into the GT grid via `registration.json`, reusing
-`pipeline.propagate` (the frame-agnostic core; `pipeline.run_chain` is too target-worm-coupled to
-reuse). Either prediction source writes the same layout the scorers consume:
-
-```
-GT_PRED_DIR/masks/<neuron>/<slice:03d>.png   -> eval.score.DirPredictionSource
-GT_PRED_DIR/labelmaps/pred_s###.png          -> eval.run_erl --mode pred
-```
-
-Run the scaffold (free the GPU first; `--clean` on every re-run, mask writes UNION onto existing files):
-
-```
-py -3 -m eval.predict_gt --neuron-limit 3 --clean        # points-only baseline; defaults to the SMALL model
-py -3 -m eval.run_erl --mode pred --label-dir data/groundtruth/pred_p280/labelmaps
-# + eval.score.score_region(gt, DirPredictionSource("data/groundtruth/pred_p280/masks"))
-```
+`predict_gt.py` is **discontinued** (kept for reference only). It was the points-only scaffold that
+validated this harness end-to-end and surfaced the registration problem; the real `batch.py` on GT
+(Stage 0.2, above) superseded it as the scored path, so it is no longer maintained and its unfinished
+bleed levers retire with it.
 
 **Registration** (`registration.py`): fits skel→GT-mask as a **per-section affine**, a full 2×3
 (rotation/scale/shear + translation) per z-slice, fit per slice with one round of outlier rejection,
@@ -181,15 +169,40 @@ consumers, the affine is stored as a per-z `affines` array; old translation-only
 **Provenance** (the cross-worm import is genuinely project 280) is corroborated four ways, clean ¼·I
 linear part, z-smooth per-section offsets, 97% neuron-name overlap, exact `[0,850]` z-range.
 
+**Known residual (high-priority refinement, see 0.5 in Still open).** The 0.1 human gut-check confirmed
+the affine is near-perfect at frame center but its residual grows toward the edges (tens of px at the
+rim, consistent with the p90 ~17 px above). An affine maps lines to lines, so it fits tangent to the
+true warp at the correspondence centroid and deviates with radius; the likely cause is the elastic
+per-section realignment (the EM is `*_realignment_export_*`), which no affine fully matches. Tens of px
+is small at full res but misses thin/small cells, and it is the same off-segment-node fraction that caps
+the ERL ceiling.
+
 **Advance gate (Stage 0 → Stage 1):** a per-neuron ERL + split/merge breakdown, now qualified as *from
 the real `batch.py`, through a verified registration*.
 
+### Verifying the registration (Stage 0.1 gut-check, [`registration_overlay.py`](./registration_overlay.py))
+
+The quantitative checks (on-mask rate, centroid residual, self-consistency ERL) all say the
+per-section affine is good; this tool is the human eyeball. It opens a napari viewer of the full-res
+VAST EM, scrubbable per z, with two point layers: **raw** CATMAID coords (cyan) and **registered**
+coords (magenta). The registration's linear part is ≈ identity at full res (same scale/orientation)
+but applies a per-section translation of order ~100-250 px, so the cyan nodes sit that far off the
+neurite and the magenta nodes should land on it; the check is that the magenta nodes track the
+neurites. Clicking the EM prints the clicked coordinate and the nearest node's name plus its raw
+CATMAID (x, y, z), the numbers to paste into the CATMAID project-280 web client to confirm the same
+neurite by hand (CATMAID is not queried by the tool).
+
+```
+py -3 -m eval.registration_overlay --start-z 400      # --point-size, --no-vnodes, --show-gt-mask
+```
+
 ## Still open (Stage 0 sub-steps, see FUTURE_DIRECTIONS §5)
 
-- **0.1 Transform, model upgraded ✅ (per-section affine; on-mask 67.9% → 85.7%).** The
+- **0.1 Transform ✅ done (per-section affine; on-mask 67.9% → 85.7%, then 91.7% at full res).** The
   `diag_registration` structural check showed the residual was a per-section affine the old model
-  missed; `registration.py` now fits that (see the Registration section above). Remaining 0.1 work:
-  the *interactive* GUI overlay (scrub z, eyeball nodes on EM) for a human gut-check. **Self-consistency
+  missed; `registration.py` now fits that (see the Registration section above), and the
+  `registration_overlay` napari tool provides the interactive human gut-check (scrub z, eyeball nodes
+  on EM, click-to-read coordinates for a CATMAID cross-check). **Self-consistency
   ERL recovered** (`run_erl --mode self`): node-on-segment 53→**85%**; strict still ≈0 (one stray node
   zeroes a neuron), but **affine + `--merge-tol-frac 0.1` → ERL 11.6 µm = 15% of the 76.3 µm ceiling,
   merges 280→5**, so 0.1 and 0.4 must combine. *Caveat for 0.2:* 15% of nodes still land off-segment
@@ -205,8 +218,14 @@ the real `batch.py`, through a verified registration*.
   crops; **full-res registration** ✅ done via `eval.scale_registration` (¼ fit ×4 → A ≈ I, on-mask
   91.7% spot check; `registration.json` is now full-res, ¼ kept as `registration_quarter_scale.json`).
 - **0.4 ERL merge tolerance** so the metric isn't zeroed by a single stray node.
-- *Low priority:* `predict_gt` empty-name `--neuron-limit` bug + v1 bleed levers (points-only seed;
-  image-mode anchor / cross-neuron negatives / box seed), only if the baseline is kept.
+- **0.5 (HIGH PRIORITY) Edge residual in the per-section affine.** The 0.1 gut-check
+  (`registration_overlay`) showed the affine is near-perfect at center but off by tens of px at the
+  frame edges, enough to miss small/thin cells and likely the same off-segment nodes capping the ERL
+  ceiling (~11.6 vs 76.3 µm). Gate the fix on a diagnostic first (verify, don't vibe): extend
+  `diag_registration` to plot residual-vs-radius and trial-fit a per-section quadratic / thin-plate
+  spline, reporting the *edge* residual and the correspondence density at the rim. That separates a
+  too-simple model (higher-order helps) from edge data-starvation (interpolating models extrapolate
+  badly past the correspondence hull and can make the edges worse). Only then pick the model.
 
 > Caveat (FUTURE_DIRECTIONS §3, §7): the cross-worm GT measures **generalization**, not
 > in-distribution accuracy, treat it as a domain-adaptation benchmark and spot-check on the target
