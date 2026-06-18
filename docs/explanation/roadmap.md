@@ -1,7 +1,7 @@
 # Future directions — a research-informed roadmap
 
-The forward-looking companion to [`PIPELINE_CONTEXT.md`](./PIPELINE_CONTEXT.md) (the lean
-current-state reference) and [`PIPELINE_HISTORY.md`](./PIPELINE_HISTORY.md) (the build log).
+The forward-looking companion to [`design-notes.md`](design-notes.md) (the lean
+current-state reference) and [`CHANGELOG.md`](../CHANGELOG.md) (the build log).
 This file is the expansion of PIPELINE_CONTEXT **§9 (research directions)**: it records the
 *reasoning and the sources* behind each proposed direction, so the lean doc can stay lean. Nothing
 here is committed yet — it's a proposal, written after a deliberate step back.

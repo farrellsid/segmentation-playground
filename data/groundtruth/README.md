@@ -4,7 +4,7 @@
 **not committed** — `data/` is git-ignored; only this README is tracked (via a `.gitignore`
 exception) so the scaffold is visible.
 
-Per [`../../FUTURE_DIRECTIONS.md`](../../FUTURE_DIRECTIONS.md) §3, the June 2026 step-back obtained
+Per [`../../docs/explanation/roadmap.md`](../../docs/explanation/roadmap.md) §3, the June 2026 step-back obtained
 ground-truth segmentation for **a different worm** — a separate EM stack with a somewhat different
 look, *with the matching EM images and explicit markers for which segments are manually confirmed*.
 This is the pivotal unlock that turns the previously "label-gated" M4.5 backlog into real

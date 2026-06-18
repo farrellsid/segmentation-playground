@@ -1,20 +1,24 @@
-# Pipeline history & decisions archive
+# Changelog and history archive
 
-Companion to **PIPELINE_CONTEXT.md**. This file holds the *append-only history* that
-PIPELINE_CONTEXT.md used to carry inline: the milestone-by-milestone build narrative,
-the full resolution stories for issues now closed, the complete design-decision log
-(including the verbose "now landed" annotations and **what was rejected and why**), the
-full M4.5 A/B results log, and the original raw field notes from first GUI use.
+The append-only build log: the milestone-by-milestone narrative, the resolution stories for closed
+issues, the full design-decision log (including what was rejected and why), the A/B results, and the
+original field notes from first GUI use. This is version-scoped history, so it still uses the
+project's old milestone and section vocabulary on purpose.
 
-**Why it's split out.** PIPELINE_CONTEXT.md is the lean, current-state reference a reader
+For the current architecture see [explanation/architecture.md](explanation/architecture.md). For the
+load-bearing decisions distilled into one-page records, see [the ADRs](adr/README.md). For the
+detailed design rationale and the active backlog, see
+[explanation/design-notes.md](explanation/design-notes.md).
+
+**Why it's split out.** design-notes.md is the lean, current-state reference a reader
 (or model) loads to understand the design and the live backlog. This archive is the deep
 record — read it when you need the *why* behind a past decision, source material for a
 report/paper, or the exact numbers from an A/B. Nothing here was deleted; it was moved
-here verbatim from PIPELINE_CONTEXT.md (June 2026 reorg).
+here verbatim from design-notes.md (June 2026 reorg).
 
 **Section anchors are preserved.** The original §-numbers are kept (old §2, §5, §7, §8, §9)
 so existing cross-references from code comments, the README, and other notes still resolve —
-they now point here for the historical material. The live PIPELINE_CONTEXT.md keeps §1, §3,
+they now point here for the historical material. The live design-notes.md keeps §1, §3,
 §4, §6 and a trimmed §5 (the gotchas catalogue), and adds a reorganized backlog.
 
 ---
@@ -31,7 +35,7 @@ they now point here for the historical material. The live PIPELINE_CONTEXT.md ke
 <a id="old-2"></a>
 ## old §2 — Milestone-by-milestone build narrative
 
-> Moved from PIPELINE_CONTEXT.md §2 "Where we are now". This is the running build log
+> Moved from design-notes.md §2 "Where we are now". This is the running build log
 > from M1 through the M4 review-testing pass. The live doc now carries a short current-state
 > summary instead; this is the full narrative.
 
@@ -203,7 +207,7 @@ See §8.7 for the build sketch.
 <a id="old-5"></a>
 ## old §5 — Known issues: full resolution stories
 
-> Moved from PIPELINE_CONTEXT.md §5 "Known issues to resolve in the refactor". The live doc
+> Moved from design-notes.md §5 "Known issues to resolve in the refactor". The live doc
 > now carries a trimmed "Invariants & gotchas" version of §5 (the catalogue your tooling
 > points at); this is the full text including the detailed how-it-was-fixed narratives for
 > issues now closed.
@@ -291,7 +295,7 @@ containment), plus a composite flag/intervene rule. Auto-detection is mostly
 <a id="old-7"></a>
 ## old §7 — Design decisions: full log (landed + rejected, with rationale)
 
-> Moved from PIPELINE_CONTEXT.md §7 "Open decisions (not blocking)". The live doc now carries
+> Moved from design-notes.md §7 "Open decisions (not blocking)". The live doc now carries
 > a crisp **§7 Design decisions & knob rationale** (decision + current default + one-line why,
 > for the topics the README cites). This is the full original log, including the verbose
 > "Update June 2026 — landed…" annotations and the rejected alternatives. Read this for the
@@ -759,7 +763,7 @@ containment), plus a composite flag/intervene rule. Auto-detection is mostly
 <a id="old-8"></a>
 ## old §8 — M4.5 A/B results & decisions log
 
-> Moved verbatim from PIPELINE_CONTEXT.md §8. This is the canonical record of the M4.5
+> Moved verbatim from design-notes.md §8. This is the canonical record of the M4.5
 > measurement round — what was tried, the numbers, what was decided, and what was rejected
 > and why. Kept intact because it is the primary source material for write-ups/reports.
 
@@ -952,7 +956,7 @@ the next batch launch.
 <a id="old-9"></a>
 ## old §9 — Raw field notes from first GUI use (pre-reorg, verbatim)
 
-> Moved verbatim from PIPELINE_CONTEXT.md §9 "Backlog from first real GUI use". These are the
+> Moved verbatim from design-notes.md §9 "Backlog from first real GUI use". These are the
 > original, deliberately-unpolished field notes. The live doc reorganizes their *content* into
 > a themed, re-ordered backlog (live §8) and a research-directions list (live §9) — but the
 > originals are preserved here exactly as written, in case the reorg dropped nuance.
@@ -1085,7 +1089,7 @@ same reorganization it calls for.)
   Adds a manual lever for hard frames — e.g. seeding the B arm at a merge (see branching/merging
   bullet) or re-bounding a drifted frame. Note the §8.3 finding that box+positive is the best *AUTO*
   seed, but this is a *human* override, a different regime (like the GUI's painted-mask seed).
-- **Revisit the user guide — minimize buttons.** [GUI_GUIDE.md](./GUI_GUIDE.md) and the panel need a
+- **Revisit the user guide — minimize buttons.** [review-flagged-chains.md](how-to/review-flagged-chains.md) and the panel need a
   pass: fewer buttons, clearer flow. This is the §6 M4 *split marking/intervention GUI* idea
   (sweep-ok/bad mode vs fix-flagged mode) surfacing again from real use — the panel has accreted too
   many controls. Pairs with the §9.4 doc reorg.
@@ -1155,7 +1159,7 @@ the real library.
   `run_aval.py`, `tests/`) from scratch/experiments (`ab_*.py` + `*.log`, `sweep_dilation.py`,
   `calibration.py`/`.ipynb`, exploratory notebooks, `somethin.txt`). Candidate: an `experiments/` or
   `scratch/` dir and an `archive/` for superseded notebooks. Decide what's reference vs deletable.
-- **Docs reorg.** [README.md](./README.md) and this file (PIPELINE_CONTEXT.md) need a real
+- **Docs reorg.** [README.md](../README.md) and this file (design-notes.md) need a real
   restructure, not another append: PIPELINE_CONTEXT has redundant status across §2 / §6 / §8, the
   decisions log interleaves landed + pending + rejected, and §9 is a flat dump. Consider: a crisp
   current-state summary at the top, a separate decisions/changelog, and a clean backlog — so a reader

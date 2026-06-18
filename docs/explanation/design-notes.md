@@ -1,14 +1,14 @@
-# Semi-automatic SAM2 segmentation pipeline — context & architecture
+# Design notes and backlog (detailed)
 
-North-star doc for the `segmentation-playground` codebase: a notebook evolved into a
-semi-automatic, human-in-the-loop EM segmentation tool. This is the **lean working
-reference** — current state, durable design, live decisions, and the backlog.
+This is the original long-form design reference. The lean, current-state version now lives in
+[architecture.md](architecture.md), and the load-bearing decisions are written up as one-page
+records in [the ADRs](../adr/README.md). This file is kept for two things a newcomer may still want:
+the detailed rationale behind specific knobs and defaults, and the active backlog of open work (the
+numbered items in the backlog section below). For the build history, see
+[../CHANGELOG.md](../CHANGELOG.md).
 
-> **History lives in [`PIPELINE_HISTORY.md`](./PIPELINE_HISTORY.md).** The milestone-by-milestone
-> build narrative, the full resolution stories for closed issues, the complete design-decision
-> log (with rejected alternatives), the M4.5 A/B results, and the original raw GUI field notes
-> were moved there in the June 2026 reorg — preserved verbatim, with old §-anchors intact.
-> This doc keeps only what you need to work *now*; reach for the history when you want the *why*.
+The text below predates the documentation reorganization, so it still uses the project's old
+milestone and section vocabulary.
 
 ---
 
@@ -62,7 +62,7 @@ back. A **cross-worm ground-truth dataset** (**SEM-Dauer 1**, a different worm f
 "sensory ablated dauer", with matching EM and confirmed-segment markers) was obtained — unlocking real
 **evaluation** and **finetuning** for the first time, since
 almost everything in the M4.5 backlog had been "label-gated" — and a broad SOTA survey was run. The
-resulting evidence-backed roadmap is in **[`FUTURE_DIRECTIONS.md`](./FUTURE_DIRECTIONS.md)**. Headline:
+resulting evidence-backed roadmap is in **[`roadmap.md`](roadmap.md)**. Headline:
 fix the evaluation metric (ERL + split/merge VOI) *before* further accuracy tuning; then finetune SAM2
 on the new GT, and build a dense-segmentation + cross-z-linking hedge for the branch/merge failure.
 **Stage 0 status (June 2026):** the ruler is built (`eval/`); a degenerate dry run (`predict_gt.py`,
@@ -187,7 +187,7 @@ frames_root/                  # SAM2 JPEG frames — separate tree from output/
 ## 5. Invariants & gotchas (coordinate / filename / mask-space)
 
 The durable facts to respect. (Full resolution stories for the issues that *created* these rules
-are in [`PIPELINE_HISTORY.md` old §5](./PIPELINE_HISTORY.md#old-5).)
+are in [`CHANGELOG.md` old §5](../CHANGELOG.md#old-5).)
 
 **Coordinate spaces** (all conversions go through `alignment.py`):
 - `_tif` full-res stack px · `_sam` = `_tif / scale` (SCALE=8; the video-propagation input space
@@ -241,8 +241,8 @@ its inputs; M4.5 *trains on labels*, so the label-collecting GUI (M4) must come 
 
 Crisp summary of the choices behind the current `PipelineConfig` defaults — the topics the README
 cites. Full measurements, the verbose "now landed" annotations, and **rejected alternatives** are in
-[`PIPELINE_HISTORY.md` old §7](./PIPELINE_HISTORY.md#old-7) and the A/B log
-[old §8](./PIPELINE_HISTORY.md#old-8).
+[`CHANGELOG.md` old §7](../CHANGELOG.md#old-7) and the A/B log
+[old §8](../CHANGELOG.md#old-8).
 
 - **Anchor crop (tier-1) — default ON.** Run image mode on a high-res crop around the node
   (`crop_anchor`, `crop_size_tif=1200`, `crop_scale=2`), map the box `_crop→_sam` for the video
@@ -288,7 +288,7 @@ cites. Full measurements, the verbose "now landed" annotations, and **rejected a
 The active work, reorganized from the old §7-open / §9 field notes into themes and a recommended
 tackle-order. Items tagged **[R#]** are research-method candidates collected in §9 — flagged for a
 literature/deep-research pass before building. Source pointers (old §-refs) point into
-[`PIPELINE_HISTORY.md`](./PIPELINE_HISTORY.md) for the original wording.
+[`CHANGELOG.md`](../CHANGELOG.md) for the original wording.
 
 **Recommended order (big picture).** We're at M4 with a working-but-buggy GUI and an
 acknowledged-weak detector. The dependency chain is: a *trustworthy* GUI → *unbiased* labels → a
@@ -493,7 +493,7 @@ advanced visual-computing method might do better than the current hand-rolled ap
 (*don't ship on vibes — ground in outside research*).
 
 > **Researched (June 2026).** These have now had a literature/deep-research pass. The SOTA findings,
-> the sources, and a staged proposal live in **[`FUTURE_DIRECTIONS.md`](./FUTURE_DIRECTIONS.md)** — the
+> the sources, and a staged proposal live in **[`roadmap.md`](roadmap.md)** — the
 > forward-looking companion to this file. This section stays as the compact index; the new file is the
 > expansion, framed around the project's own difficulties. R-numbers map to FUTURE_DIRECTIONS §4 as:
 > **R1→§4.2 · R2→§4.1 · R3→§4.5/§4.2 · R4→§4.3 · R5→§4.7 · R6→§4.7 · R7→§4.4/§4.6 · R8→§4.8.** The FFN
@@ -548,5 +548,5 @@ advanced visual-computing method might do better than the current hand-rolled ap
 ---
 
 *Update this doc as decisions land — it's the shared big-picture reference. Move closed history
-into [`PIPELINE_HISTORY.md`](./PIPELINE_HISTORY.md) rather than letting this file grow append-only
+into [`CHANGELOG.md`](../CHANGELOG.md) rather than letting this file grow append-only
 again.*

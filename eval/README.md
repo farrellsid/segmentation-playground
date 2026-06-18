@@ -1,7 +1,7 @@
 # eval/ — Stage 0 evaluation harness
 
 The evaluation harness is the gate everything else waits on: per
-[`../FUTURE_DIRECTIONS.md`](../FUTURE_DIRECTIONS.md) §5 **Stage 0** and §4.1, we must *fix the ruler
+[`../roadmap.md`](../docs/explanation/roadmap.md) §5 **Stage 0** and §4.1, we must *fix the ruler
 before any further accuracy tuning*. Flag-rate (what every A/B to date leaned on) is being
 deprecated as an A/B metric.
 
@@ -122,7 +122,7 @@ frames, per_neuron = score_region(gt, DirPredictionSource(pred_root), out_dir="e
 The ruler is in place (region + VOI + ERL); the remaining Stage-0 work is running the *current*
 pipeline through it and getting a **trustworthy** number. A first degenerate run with
 `eval/predict_gt.py` (small model, points-only seed) produced the first numbers and exposed two things
-that reshape how Stage 0 finishes — see [`../FUTURE_DIRECTIONS.md`](../FUTURE_DIRECTIONS.md) §5 Stage 0
+that reshape how Stage 0 finishes — see [`../roadmap.md`](../docs/explanation/roadmap.md) §5 Stage 0
 for the full sub-step plan (0.1–0.4). The short version:
 
 1. **Verify the coordinate transform first (keystone).** The skel→GT registration both *places prompts*
@@ -213,5 +213,5 @@ the real `batch.py`, through a verified registration*.
 > in-distribution accuracy — treat it as a domain-adaptation benchmark and spot-check on the target
 > worm.
 
-See [`../FUTURE_DIRECTIONS.md`](../FUTURE_DIRECTIONS.md) §4.1 and §5 Stage 0 for the full reasoning
+See [`../roadmap.md`](../docs/explanation/roadmap.md) §4.1 and §5 Stage 0 for the full reasoning
 and sources.

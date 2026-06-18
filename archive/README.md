@@ -9,4 +9,4 @@ Material kept for reference but not part of the live pipeline.
 
 > The shelved `calibration.py` / `calibration.ipynb` were **deleted** in the June 2026 reorg (lab
 > decision) — the manual gold-set labeling approach they sketched is superseded; the design intent is
-> recorded in [`../PIPELINE_HISTORY.md`](../PIPELINE_HISTORY.md) (old §6/§7 "GUI as label engine").
+> recorded in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md) (old §6/§7 "GUI as label engine").

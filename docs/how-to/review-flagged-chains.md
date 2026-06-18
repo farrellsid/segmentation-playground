@@ -206,7 +206,7 @@ Known limits (deferred):
 - **The model isn't trained yet** — this milestone *collects* labels; training the
   learned QC detector on them is M4.5.
 
-Planned changes from review-testing feedback (tracked in `PIPELINE_CONTEXT.md` §7):
+Planned changes from review-testing feedback (tracked in `design-notes.md` §7):
 
 - **Marking/intervention split (the too-many-buttons fix).** A two-mode flow: a
   *marking* mode that loads a chain and lets you sweep every frame ok/bad, and a
@@ -219,4 +219,4 @@ Planned changes from review-testing feedback (tracked in `PIPELINE_CONTEXT.md` �
   change + re-run; see §7. Recommended values are noted there.)*
 - **Higher-res masks (tier-2 crop).** See above — M4.5.
 
-See `PIPELINE_CONTEXT.md` §6/§7 for the full roadmap and rationale.
+See `design-notes.md` §6/§7 for the full roadmap and rationale.
