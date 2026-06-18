@@ -1,12 +1,12 @@
 """
-metrics.py — region-overlap + split/merge metrics.
+metrics.py, region-overlap + split/merge metrics.
 
 The region half of the eval ruler: per-object
 overlap (IoU / Dice / precision / recall) and **Variation of Information split into
 VOI_split + VOI_merge**, computed straight off the GT labelmaps, no skeletons
 required. ERL (the skeleton-based half) lives in `erl`; it joins these on (neuron, slice).
 
-Pure numpy, torch-free, no IO — every function takes arrays and returns plain
+Pure numpy, torch-free, no IO, every function takes arrays and returns plain
 Python floats/dicts, so it unit-tests on synthetic masks with known answers.
 
 Conventions
@@ -15,9 +15,9 @@ Conventions
   is defined as perfect agreement (iou = dice = precision = recall = 1.0); a
   denominator of zero in any other case yields ``nan`` (documented per metric).
 - VOI follows the connectomics split (Nunez-Iglesias / gala):
-    VOI_split = H(SEG | GT)  — over-segmentation: one GT object cut across many
+    VOI_split = H(SEG | GT), over-segmentation: one GT object cut across many
                                predicted labels.
-    VOI_merge = H(GT | SEG)  — under-segmentation: one predicted label spanning
+    VOI_merge = H(GT | SEG), under-segmentation: one predicted label spanning
                                many GT objects (the costly error; weight it higher).
     VOI       = VOI_split + VOI_merge.
   Lower is better; 0 = identical partitions. Reported in bits (``base=2``).
@@ -163,7 +163,7 @@ def variation_of_information(
 
 
 # =============================================================================
-# Adapted Rand (SNEMI3D / Arganda-Carreras et al. 2015) — split / merge
+# Adapted Rand (SNEMI3D / Arganda-Carreras et al. 2015), split / merge
 # =============================================================================
 
 def adapted_rand(
@@ -178,7 +178,7 @@ def adapted_rand(
     *pairs of pixels grouped into the same segment* via the contingency matrix.
     Convention matches ``skimage.metrics.adapted_rand_error`` (Arganda-Carreras 2015):
     the Rand index counts agreeing *pairs of distinct pixels*, so we use pair counts
-    ``Σ c(c-1)`` (NOT ``Σ c²`` — that would include self-pairs and disagree with the
+    ``Σ c(c-1)`` (NOT ``Σ c²``, that would include self-pairs and disagree with the
     SNEMI3D reference). With contingency counts ``c[i,j]`` (seg label i, gt label j):
     ``sum_p2 = Σ c_ij(c_ij-1)``, ``sum_seg2 = Σ a_i(a_i-1)`` over seg sizes ``a_i``,
     ``sum_gt2 = Σ b_j(b_j-1)`` over gt sizes ``b_j``,
@@ -241,18 +241,17 @@ def voi_arand(
     ignore_labels: Sequence[int] = (),
     prefer_skimage: bool = True,
 ) -> Dict[str, float]:
-    """Unified VOI + ARAND, defaulting to **scikit-image's reference implementations** —
-    the connectomics-standard methodology used by the CAD/FGNet papers
+    """Unified VOI + ARAND, defaulting to **scikit-image's reference implementations**, the connectomics-standard methodology used by the CAD/FGNet papers
     (`skimage.metrics.variation_of_information` + `adapted_rand_error`, with
     `voi = voi_split + voi_merge`). Falls back to the pure-numpy `variation_of_information`
     + `adapted_rand` in this module when skimage is unavailable (so it still runs on a
     torch/skimage-free box; the two agree on ARE and on VOI orientation, see tests).
 
     Args mirror the other metrics here: ``seg`` = prediction, ``gt`` = ground truth.
-    skimage is called as the papers do — ``f(gt, seg)`` (im_true=gt, im_test=seg) — so
+    skimage is called as the papers do, ``f(gt, seg)`` (im_true=gt, im_test=seg), so
     ``voi_split = H(seg|gt)`` (over-seg), ``voi_merge = H(gt|seg)`` (under-seg). Pass
     ``ignore_labels=(0,)`` to drop GT background, or pre-restrict the inputs to the scored
-    region (equivalent — that's what `score_labelmap` does, hence the ``()`` default).
+    region (equivalent, that's what `score_labelmap` does, hence the ``()`` default).
     """
     seg = np.asarray(seg)
     gt = np.asarray(gt)

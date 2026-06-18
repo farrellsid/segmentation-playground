@@ -1,4 +1,4 @@
-"""Unit tests for eval.erl — skeleton-based Expected Run Length.
+"""Unit tests for eval.erl, skeleton-based Expected Run Length.
 
 Pure, on synthetic skeletons with hand-computed answers (like test_eval_metrics).
 ERL = Σ run_len² / total_length, with merge labels contributing zero. Run:

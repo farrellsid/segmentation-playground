@@ -537,7 +537,7 @@ class ReviewGUI:
         self.ctx.image_predictor.reset_predictor()
         self._set_frame_mask(frame_idx, mask)                  # into the mask layer + segments
         print(f"[gui] re-predicted frame {frame_idx}: {int(mask.sum())} px, score {score:.3f} "
-              f"— tweak by painting if needed, then 'resume propagation' to re-track")
+              f", tweak by painting if needed, then 'resume propagation' to re-track")
         self._zoom_to_mask(frame_idx)
         self._refresh_info()
 
@@ -596,7 +596,7 @@ class ReviewGUI:
         self._save_and_qc(sess.frame_conf, sess.pred_iou)
         self.queue.set_status(self.neuron, self.chain_idx, review_queue.CORRECTED,
                               reviewer=self.reviewer)
-        print("[gui] resume complete — masks + qc.csv + state.json updated, chain marked corrected")
+        print("[gui] resume complete, masks + qc.csv + state.json updated, chain marked corrected")
         self._refresh_info()
 
     def approve_chain(self, *_) -> None:
@@ -689,7 +689,7 @@ class ReviewGUI:
         self.queue.refresh()
         pend = self.queue.pending(include_in_review=True)   # keep unfinished chains visible
         if not pend:
-            print("[gui] queue empty — every flagged chain has been dispositioned "
+            print("[gui] queue empty, every flagged chain has been dispositioned "
                   "(approved/rejected/corrected)")
             return
         cur = (self.neuron, self.chain_idx)
@@ -898,12 +898,12 @@ class ReviewGUI:
 
         panel = Container(widgets=[
             self._reviewer_edit,
-            Label(value="— queue (chains) —"), self._picker, open_btn, prev_q, next_q, refresh,
-            Label(value="— frames (this chain) —"), prevf, nextf,
-            Label(value="— prompts —"), self._prompt_mode, reset_btn,
-            Label(value="— view —"), self._size_spin, self._zoom_chk, zoom_btn,
-            Label(value="— correct —"), rerun, resume,
-            Label(value="— label / disposition —"), self._err_mode,
+            Label(value=", queue (chains), "), self._picker, open_btn, prev_q, next_q, refresh,
+            Label(value=", frames (this chain), "), prevf, nextf,
+            Label(value=", prompts, "), self._prompt_mode, reset_btn,
+            Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
+            Label(value=", correct, "), rerun, resume,
+            Label(value=", label / disposition, "), self._err_mode,
             mark_wrong, mark_ok, approve, reject,
             self._info,
         ], labels=True)
@@ -1050,7 +1050,7 @@ def main() -> None:
     ap.add_argument("--point-size", type=float, default=4.0, help="prompt/skeleton point diameter (_sam px)")
     ap.add_argument("--no-auto-zoom", action="store_true", help="don't zoom to the mask on open/jump")
     ap.add_argument("--hires-em", action="store_true",
-                    help="full-res EM background (lazy; mask stays scale-8 — see gui.py header)")
+                    help="full-res EM background (lazy; mask stays scale-8, see gui.py header)")
     args = ap.parse_args()
     launch(Path(args.output_root) if args.output_root else None,
            neuron=args.neuron, chain_idx=args.chain, reviewer=args.reviewer,

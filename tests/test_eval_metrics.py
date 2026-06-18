@@ -1,4 +1,4 @@
-"""Unit tests for eval.metrics — region overlap + split/merge VOI.
+"""Unit tests for eval.metrics, region overlap + split/merge VOI.
 
 Pure numpy on synthetic arrays with hand-checkable answers, like
 test_alignment / test_labels. Run either way:
@@ -146,11 +146,11 @@ def test_arand_ignore_gt_background():
 
 def test_arand_matches_skimage():
     # Cross-check against skimage's reference implementation. The ARE (the headline
-    # error) must match EXACTLY — it's the symmetric, unambiguous number. We label
+    # error) must match EXACTLY, it's the symmetric, unambiguous number. We label
     # precision by the prediction's groupings (precision = correct / pred pairs, the
     # standard TP/(TP+FP) sense); skimage labels precision against the *truth*
     # marginals, so our precision/recall are skimage's recall/precision (the swap is
-    # cosmetic — ARE is identical and our merge/split tests above pin the semantics).
+    # cosmetic, ARE is identical and our merge/split tests above pin the semantics).
     import pytest
     skm = pytest.importorskip("skimage.metrics")
     rng = np.random.default_rng(0)

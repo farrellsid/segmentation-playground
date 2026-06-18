@@ -1,4 +1,4 @@
-"""diag_registration.py — structural + visual check of the skel→GT registration.
+"""diag_registration.py, structural + visual check of the skel→GT registration.
 
 `registration.py` reports the headline on-mask rate; this answers the *next* question:
 **is the leftover residual structured or irreducible?** That decides the fix:
@@ -12,7 +12,7 @@
   sampling for ERL, or full-res which shrinks both in px).
 
 Also writes overlay montages (EM + GT segment + registered skeleton nodes) so the transform can be
-eyeballed across many (neuron, z) without the GUI — the fast first cut before wiring gui.py.
+eyeballed across many (neuron, z) without the GUI, the fast first cut before wiring gui.py.
 
 Run:  py -3 -u -m eval.diag_registration            # uses config GT + skeletons_p280
 Outputs console stats + PNGs under data/groundtruth/reg_diag/.
@@ -37,7 +37,7 @@ from .registration import Registration, _collect_correspondences
 
 def _per_slice_affine_resid(S, G, z):
     """For each slice with >=4 correspondences, fit S->G full affine on THAT slice alone and
-    return its residual magnitudes — the 'best a per-section affine could do' lower bound."""
+    return its residual magnitudes, the 'best a per-section affine could do' lower bound."""
     out = []
     for zz in np.unique(z):
         m = z == zz

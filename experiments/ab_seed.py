@@ -1,5 +1,5 @@
 """
-ab_seed.py — comprehensive video-SEED ablation. Which anchor-frame conditioning
+ab_seed.py, comprehensive video-SEED ablation. Which anchor-frame conditioning
 gives the best propagation? "More prompts != better", so we sweep the seed space and
 rank by the review queue it produces.
 

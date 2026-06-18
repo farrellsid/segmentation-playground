@@ -1,10 +1,10 @@
 """
-run_erl.py — compute per-neuron ERL on the cross-worm GT, end to end.
+run_erl.py, compute per-neuron ERL on the cross-worm GT, end to end.
 
 This wires the four pieces together (skeletons + registration + GT labelmaps +
 the ERL metric) into a per-neuron ERL and a split/merge breakdown. Two modes:
 
-* ``--mode self`` (default) — **GT self-consistency check.** The "prediction" is
+* ``--mode self`` (default), **GT self-consistency check.** The "prediction" is
   the GT labelmap itself: sample it at each skeleton node *through the fitted
   registration*, map the sampled segment ``Nr`` to its GT neuron label, and run
   ERL. If the registration is good, each node lands on its own neuron's segment,
@@ -12,7 +12,7 @@ the ERL metric) into a per-neuron ERL and a split/merge breakdown. Two modes:
   This validates the whole chain before any model prediction exists: the gap
   from the ceiling is exactly registration / GT-coverage error, expressed in µm.
 
-* ``--mode pred`` — score a real prediction. Same node sampling, but the sampled
+* ``--mode pred``, score a real prediction. Same node sampling, but the sampled
   pixel value is used as the predicted object id directly (no Nr→neuron mapping),
   because predicted objects carry no neuron identity. Point ``--label-dir`` at a
   directory of per-slice predicted labelmaps on the GT grid (same ``s###`` naming
@@ -44,7 +44,7 @@ from .registration import Registration
 class _DirLabelmaps:
     """Per-slice predicted labelmaps in a directory: ``*_s###.png`` (uint16).
 
-    The pred-mode label source for :func:`sample_node_labels` — same slice-index
+    The pred-mode label source for :func:`sample_node_labels`, same slice-index
     naming as the GT export, pixel value == predicted object id, 0 == background.
     This is the contract :mod:`eval.predict_gt` writes to (``labelmaps/``).
     """
@@ -118,9 +118,9 @@ def run(
     sampled = sample_node_labels(skel, label_slice_fn, transform=reg.transform)
 
     # build node_label:
-    #   self  — map sampled GT Nr -> GT neuron label, so a neuron split into
+    #   self, map sampled GT Nr -> GT neuron label, so a neuron split into
     #           several GT fragments still reads as one object along its skeleton.
-    #   pred  — use the predicted object id directly (predictions carry no neuron
+    #   pred, use the predicted object id directly (predictions carry no neuron
     #           identity; a merge is one predicted id spanning >1 skeleton neuron).
     nr2lab = _nr_to_label(gt)
     node_label: Dict[str, Hashable] = {}

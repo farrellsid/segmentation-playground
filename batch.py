@@ -694,7 +694,7 @@ def main() -> None:
     ap.add_argument("--neurons", nargs="*", default=None,
                     help="explicit neuron allow-list (overrides the preset's default)")
     ap.add_argument("--neuron-limit", type=int, default=None,
-                    help="run only the first N neurons (by sorted name) — a quick subset")
+                    help="run only the first N neurons (by sorted name), a quick subset")
     ap.add_argument("--all", action="store_true",
                     help="GT: run EVERY neuron (~9766 chains). Required to opt in to a full run.")
     ap.add_argument("--clean", action="store_true", help="wipe prior outputs first")

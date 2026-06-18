@@ -1,5 +1,5 @@
 """
-sweep_dilation.py — threshold-sensitivity sweep over qc_skeleton_dilation_px.
+sweep_dilation.py, threshold-sensitivity sweep over qc_skeleton_dilation_px.
 
 Read-only post-hoc analysis over a FINISHED batch run (batch.py output_root).
 It does NOT re-segment and it does NOT touch _manifest.csv (avoiding the
@@ -41,8 +41,8 @@ for collected labels.
 
 Outputs (written under output_root, prefixed to sort beside _manifest.csv)
 --------------------------------------------------------------------------
-  _dilation_sweep.csv           one row per dilation — the sensitivity curve
-  _dilation_sweep_by_chain.csv  one row per (chain, dilation) — which chains flip
+  _dilation_sweep.csv           one row per dilation, the sensitivity curve
+  _dilation_sweep_by_chain.csv  one row per (chain, dilation), which chains flip
 
 Usage
 -----
@@ -151,7 +151,7 @@ def _sweep_one_chain(chain_dir: Path, nodes: Sequence,
     baseline_ok = True
 
     for z, p in qc._iter_mask_paths(masks_dir):
-        if z not in fc_other:        # masks vs qc.csv drift — shouldn't happen
+        if z not in fc_other:        # masks vs qc.csv drift, shouldn't happen
             continue
         n_frames += 1
         m = qc._load_binary(p)
@@ -210,7 +210,7 @@ def run_sweep(output_root: Path | str, csv_path: Path | str, chains_path: Path |
     output_root = Path(output_root)
     manifest_path = output_root / "_manifest.csv"
     if not manifest_path.exists():
-        raise FileNotFoundError(f"no _manifest.csv under {output_root} — run batch.py first")
+        raise FileNotFoundError(f"no _manifest.csv under {output_root}, run batch.py first")
 
     annotate_df = _load_annotate(Path(csv_path))
     with open(chains_path) as f:
@@ -230,7 +230,7 @@ def run_sweep(output_root: Path | str, csv_path: Path | str, chains_path: Path |
         neuron, idx = str(row["neuron"]), int(row["chain_idx"])
         nodes = nodes_index.get((neuron, idx))
         if nodes is None:
-            print(f"[sweep] WARN no chains.json entry for {neuron}/chain_{idx:02d} — skipped")
+            print(f"[sweep] WARN no chains.json entry for {neuron}/chain_{idx:02d}, skipped")
             continue
         chain_dir = output_root / neuron / f"chain_{idx:02d}"
         res = _sweep_one_chain(chain_dir, nodes, annotate_df, grid)
@@ -287,7 +287,7 @@ def run_sweep(output_root: Path | str, csv_path: Path | str, chains_path: Path |
 def _print_summary(agg_df: pd.DataFrame, n_chains: int, tot_frames: int,
                    no_artifacts: int, baseline_failures: list, output_root: Path) -> None:
     print(f"\n[sweep] scored {n_chains} chains / {tot_frames} frames "
-          f"({no_artifacts} completed chains had no masks/qc.csv — skipped)")
+          f"({no_artifacts} completed chains had no masks/qc.csv, skipped)")
 
     # 1. baseline self-consistency (the load-bearing marker)
     if baseline_failures:

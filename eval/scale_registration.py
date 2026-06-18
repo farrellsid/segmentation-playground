@@ -1,4 +1,4 @@
-"""scale_registration.py — derive the full-res registration from the ¼-scale fit by ×4.
+"""scale_registration.py, derive the full-res registration from the ¼-scale fit by ×4.
 
 Switching the GT to full_scale (GT_DOWNSCALE 4→1) invalidates the
 ¼-scale registration.json (linear part ≈ 0.25·I). A from-scratch full-res re-fit is
@@ -61,7 +61,7 @@ def main() -> None:
     if not args.no_validate:
         gt = GroundTruth.from_config()
         print(f"[scale] validating on {args.validate_neurons} neurons against full_scale GT "
-              f"(downscale={gt.downscale}) — reads full-res slices, slow...")
+              f"(downscale={gt.downscale}), reads full-res slices, slow...")
         rate, n = on_mask_rate(gt, args.skeleton_csv, scaled,
                                neuron_limit=args.validate_neurons)
         print(f"[scale] on-mask: {rate:.1%} (n={n})  "

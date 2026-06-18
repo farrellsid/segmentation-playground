@@ -1,5 +1,5 @@
 """
-ab_fallback.py — A/B harness for the tier-2 SAFETY fallback:
+ab_fallback.py, A/B harness for the tier-2 SAFETY fallback:
 image_score/anchor-gated fall-back from the per-chain crop (_pcrop) to the plain
 _sam path when the crop anchor is poor.
 

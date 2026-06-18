@@ -64,7 +64,7 @@ def test_returns_plain_bool():
 
 
 # ---------------------------------------------------------------------------
-# tier2_all — "tier-2 everywhere" test mode (re-run every completed _sam chain)
+# tier2_all, "tier-2 everywhere" test mode (re-run every completed _sam chain)
 # ---------------------------------------------------------------------------
 
 def test_tier2_all_reruns_done_and_flagged():

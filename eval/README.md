@@ -1,4 +1,4 @@
-# eval/ — Stage 0 evaluation harness
+# eval/, Stage 0 evaluation harness
 
 The evaluation harness is the gate everything else waits on: per
 [`../roadmap.md`](../docs/explanation/roadmap.md) §5 **Stage 0** and §4.1, we must *fix the ruler
@@ -10,7 +10,7 @@ deprecated as an A/B metric.
 **Stage 0.2 landed: the REAL pipeline now scores against GT** (not the `predict_gt` reimplementation).
 Region-overlap + VOI + **ARAND** metrics implemented; ERL metric core implemented. The cross-worm
 skeletons are pulled (`data/groundtruth/skeletons_p280/`) and the production `batch.py` runs on
-SEM-Dauer 1 via a worm-agnostic frame seam — see **Running the real pipeline on GT** below.
+SEM-Dauer 1 via a worm-agnostic frame seam, see **Running the real pipeline on GT** below.
 
 | module | what it does |
 |--------|--------------|
@@ -29,7 +29,7 @@ Tests: `tests/test_eval_metrics.py` (incl. ARAND vs skimage), `tests/test_eval_g
 `batch.py` is worm-agnostic except the EM source (a `pipeline.FrameStore`) and the skel→image
 transform (baked into `annotate_df.x_tif/y_tif`). For SEM-Dauer 1 both come from `eval.gt_dataset`;
 the default `TifFrameStore` keeps the target-worm path byte-identical. Run a configurable subset
-(the full ~9766-chain run is guarded — you must pass a scope):
+(the full ~9766-chain run is guarded, you must pass a scope):
 
 ```
 py -3 batch.py --preset eval --neurons URYVL          # explicit neuron(s)
@@ -50,64 +50,63 @@ VOI/ARAND/ERL + metric backend), `eval_frames.csv` (per-slice), `eval_timing.csv
 ### Labelmap metrics: VOI / ARAND / ERL ([`score_labelmap.py`](./score_labelmap.py))
 
 > **Which metric is primary?** For the current **sparse, per-neuron** pipeline the appropriate ruler is
-> **per-neuron region IoU/precision/recall + ERL** (ERL is skeleton-based, 3D, per-neuron — it fits a
+> **per-neuron region IoU/precision/recall + ERL** (ERL is skeleton-based, 3D, per-neuron, it fits a
 > subset naturally). **VOI/ARAND are secondary here**: they're built for *dense, whole-volume*
 > segmentation (CAD/FGNet), so on our scored-neuron subset VOI_merge is **blind to bleed into unscored
 > neighbours**, VOI_split/merge largely restate recall/precision, and the values are **not comparable**
 > to CAD/FGNet's dense numbers. They become genuinely apt only with a dense labelmap (FUTURE_DIRECTIONS
 > §4.3 refinement / R5). Kept because they're cheap and right for that future path.
 
-Region IoU treats each neuron independently. The connectomics metrics need a *labelmap* — all
+Region IoU treats each neuron independently. The connectomics metrics need a *labelmap*, all
 neurons composited into one per-slice integer map (neuron→id, **first-writer-wins**), built **in
 memory at the `_sam` grid** (a full-res uint16 labelmap is ~378 MB/slice). `score_batch` runs these
 alongside region (skip with `--no-labelmap`):
-- **VOI_split / VOI_merge** and **ARAND** — `eval.metrics.voi_arand`, which defaults to
+- **VOI_split / VOI_merge** and **ARAND**, `eval.metrics.voi_arand`, which defaults to
   **scikit-image's reference implementations** (`variation_of_information` + `adapted_rand_error`,
-  `voi = split+merge`) — the **CAD/FGNet connectomics methodology**, so the numbers are directly
+  `voi = split+merge`), the **CAD/FGNet connectomics methodology**, so the numbers are directly
   comparable. Restricting to GT-foreground == skimage's `ignore_labels=(0,)`. Falls back to this
   module's pure-numpy VOI/ARAND when skimage is absent (verified to match: identical VOI and ARE).
-- **per-neuron ERL** + split/merge — skeleton-node sampling through the registration (node coords
+- **per-neuron ERL** + split/merge, skeleton-node sampling through the registration (node coords
   scaled by 1/`save_downscale` to index the `_sam` map), with **neighborhood sampling**
   (`node_sample_radius`, default 2 → dominant non-bg in a 5×5 `_sam` window; the FUTURE_DIRECTIONS §5
-  lever — single-pixel sampling of a ~3 px `_sam` neurite is too brittle).
+  lever, single-pixel sampling of a ~3 px `_sam` neurite is too brittle).
 - **Tier-2 aware:** `_pcrop` masks are placed onto the `_sam` frame via each chain's `crop_window`
-  (`chain_sam_mask`) before compositing/scoring — both here *and* in the region `BatchPredictionSource`
+  (`chain_sam_mask`) before compositing/scoring, both here *and* in the region `BatchPredictionSource`
   (a raw resize of a crop would stretch it across the whole frame; this was a bug, now fixed + tested).
 
-### Stage-0 numbers (June 2026 — 3-neuron smoke, PVPR/VA4/AS3; a FLOOR, NOT the final gate)
+### Stage-0 numbers (June 2026, 3-neuron smoke, PVPR/VA4/AS3; a FLOOR, NOT the final gate)
 
 | run | micro-IoU | VOI (split+merge) | ARAND (ARE) | ERL |
 |-----|-----------|-------------------|-------------|-----|
 | small model, single-pass `_sam` | 0.022 | 0.875 (0.29+0.59) | 0.162 | ~0% |
 | **large model + tier-2 default** | **0.024** | **0.847 (0.22+0.63)** | **0.161** | ~1% (0.22/37 µm) |
 
-Per-neuron (small→large): VA4 **0.012→0.022** (it *kept* tier-2 — `_pcrop` — IoU ~doubled, precision up),
+Per-neuron (small→large): VA4 **0.012→0.022** (it *kept* tier-2, `_pcrop`, IoU ~doubled, precision up),
 AS3 0.095→0.084, PVPR 0.004→0.002 (both *fell back* to `_sam`). Findings:
-- **Large model alone barely helps** (slightly hurts the `_sam` neurons) — the cross-worm **domain gap
+- **Large model alone barely helps** (slightly hurts the `_sam` neurons), the cross-worm **domain gap
   dominates, not capacity**. **Tier-2 helped where it engaged** (VA4), motivating a lower fallback floor.
 - **Tier-2 fell back on 2/3** chains: crop-anchor `image_score` ≈ 0.69, just under the
-  `chain_crop_min_image_score = 0.70` floor (a target-worm default; mis-calibrated for cross-worm —
-  lower to ~0.6 to let tier-2 engage). Fallback is **per-chain**; these are single-chain neurons so it
+  `chain_crop_min_image_score = 0.70` floor (a target-worm default; mis-calibrated for cross-worm, lower to ~0.6 to let tier-2 engage). Fallback is **per-chain**; these are single-chain neurons so it
   reads as whole-neuron.
 - **Merge/bleed-dominated** (VOI_merge 0.63 ≫ split 0.22; ARAND merge_err 0.26 ≫ split_err 0.03),
-  precision ~2.5% — reproduces the `predict_gt` v1 bleed finding.
+  precision ~2.5%, reproduces the `predict_gt` v1 bleed finding.
 - ⚠️ **Don't compare VOI/ARAND to FGNet directly.** FGNet (Table 4, AC3/AC4 *dense* mouse cortex) gets
   VOI 0.797 / ARAND 0.069 over a full volume; our VOI 0.847 is over **3 sparse neurons' GT-foreground**
-  (far easier — few objects to confuse), so the similar number is *not* comparable quality. Region IoU
+  (far easier, few objects to confuse), so the similar number is *not* comparable quality. Region IoU
   (0.024) and ERL (~1%) are the honest read. *(Caveats: cross-worm = generalization; scale-8 thin
-  neurites; no finetuning — all per FUTURE_DIRECTIONS §2/§7.)*
+  neurites; no finetuning, all per FUTURE_DIRECTIONS §2/§7.)*
 
 ### The GT data, concretely
 
 The VAST export (paths in `sam2_utils.config.GT_*`) is a **16-bit single-channel labelmap** per
 z-slice (`*.vsseg_export_s###.png`, PIL mode `I;16`): **pixel value == segment number `Nr`**, `0` ==
-Background — not an RGB color image. So the GT mask for segment `Nr` on slice `s` is just
+Background, not an RGB color image. So the GT mask for segment `Nr` on slice `s` is just
 `label_slice(s) == Nr`. As of Stage 0.3 the export is **full-resolution** (`full_scale/`, 9728×9216
 == the full-res VAST coords the metadata bboxes are quoted in, so `GT_DOWNSCALE == 1`); **z is 1:1**
 (export slice index == metadata z). The `one_fourth_scale/` (2432×2304, 4×) export remains on F: as a
 fallback. Per the lab, **every segment present in the metadata is manually confirmed**, so there is no
 separate confirmed flag to filter on. 851 slices, 451 segments. *(The full_scale switch required a
-full-res `registration.json` — done by scaling the ¼ fit ×4, `eval.scale_registration`; see
+full-res `registration.json`, done by scaling the ¼ fit ×4, `eval.scale_registration`; see
 Registration below.)*
 
 ```python
@@ -122,8 +121,8 @@ frames, per_neuron = score_region(gt, DirPredictionSource(pred_root), out_dir="e
 The ruler is in place (region + VOI + ERL); the remaining Stage-0 work is running the *current*
 pipeline through it and getting a **trustworthy** number. A first degenerate run with
 `eval/predict_gt.py` (small model, points-only seed) produced the first numbers and exposed two things
-that reshape how Stage 0 finishes — see [`../roadmap.md`](../docs/explanation/roadmap.md) §5 Stage 0
-for the full sub-step plan (0.1–0.4). The short version:
+that reshape how Stage 0 finishes, see [`../roadmap.md`](../docs/explanation/roadmap.md) §5 Stage 0
+for the full sub-step plan (0.1-0.4). The short version:
 
 1. **Verify the coordinate transform first (keystone).** The skel→GT registration both *places prompts*
    and *samples node labels*, so a loose transform poisons every number. The dry run showed it: ~50% of
@@ -132,11 +131,11 @@ for the full sub-step plan (0.1–0.4). The short version:
    nodes on the GT EM in the GUI and confirm they track the right neurites before trusting any score.
 2. **Score the real `batch.py`, not a reimplementation.** The honest Stage-0 benchmark is the production
    pipeline (large model, box seed, postprocess, QC) pointed at SEM-Dauer 1 via an argparse dataset
-   override — **this supersedes `predict_gt.py` as the scored path.** Its output feeds the scorers below.
-3. **Full-res GT (parallel, manual) — ✅ EXPORTED + registration re-scaled (Stage 0.3, June 2026).**
+   override, **this supersedes `predict_gt.py` as the scored path.** Its output feeds the scorers below.
+3. **Full-res GT (parallel, manual), ✅ EXPORTED + registration re-scaled (Stage 0.3, June 2026).**
    Native-res `full_scale/` (9728×9216, 851 slices) is on F:; `config` now points at it
    (`GT_DOWNSCALE == 1`). This unblocks faithful tier-2 crops and required a full-res registration
-   (A ≈ I, not 0.25·I) — **done** by scaling the ¼ fit ×4 (`py -3 -m eval.scale_registration`; a
+   (A ≈ I, not 0.25·I), **done** by scaling the ¼ fit ×4 (`py -3 -m eval.scale_registration`; a
    from-scratch full-res `eval.registration` re-fit is geometrically identical but ~1.5 h of HDD
    decodes, so the ×4 scaling is the cheap exact equivalent). Validated: mean A ≈ I, on-mask 91.7%
    (5-neuron spot check). `registration.json` is now full-res; the ¼ fit is kept as
@@ -153,7 +152,7 @@ GT_PRED_DIR/masks/<neuron>/<slice:03d>.png   -> eval.score.DirPredictionSource
 GT_PRED_DIR/labelmaps/pred_s###.png          -> eval.run_erl --mode pred
 ```
 
-Run the scaffold (free the GPU first; `--clean` on every re-run — mask writes UNION onto existing files):
+Run the scaffold (free the GPU first; `--clean` on every re-run, mask writes UNION onto existing files):
 
 ```
 py -3 -m eval.predict_gt --neuron-limit 3 --clean        # points-only baseline; defaults to the SMALL model
@@ -161,7 +160,7 @@ py -3 -m eval.run_erl --mode pred --label-dir data/groundtruth/pred_p280/labelma
 # + eval.score.score_region(gt, DirPredictionSource("data/groundtruth/pred_p280/masks"))
 ```
 
-**Registration** (`registration.py`): fits skel→GT-mask as a **per-section affine** — a full 2×3
+**Registration** (`registration.py`): fits skel→GT-mask as a **per-section affine**, a full 2×3
 (rotation/scale/shear + translation) per z-slice, fit per slice with one round of outlier rejection,
 gaps interpolated + smoothed over z. This replaced the earlier *global linear `A` + per-section
 translation* model after `diag_registration.py` (Stage 0.1) showed the residual was structured: a
@@ -170,34 +169,34 @@ per-section rotation/scale a single global `A` can't). The re-fit confirmed it e
 
 | model | median residual | p90 | on-mask (40-neuron) |
 |-------|-----------------|-----|---------------------|
-| pure ¼-scale (baseline) | — | — | 44.6% |
+| pure ¼-scale (baseline) |, |, | 44.6% |
 | global A + per-section translation | 19.6 px | 57.4 px | 67.9% |
 | **per-section affine (current)** | **4.7 px** | **17.4 px** | **85.7%** |
 
 Saved to `data/groundtruth/skeletons_p280/registration.json` (the translation model is kept as
 `registration_translation_backup.json`). `Registration.transform(xy, z)` and the JSON are unchanged for
-consumers — the affine is stored as a per-z `affines` array; old translation-only JSONs still load
+consumers, the affine is stored as a per-z `affines` array; old translation-only JSONs still load
 (`affines=None` → the legacy path). Re-fit: `py -3 -u -m eval.registration`. Structural/visual check:
 `py -3 -u -m eval.diag_registration` (→ residual breakdown + `data/groundtruth/reg_diag/` montage).
-**Provenance** (the cross-worm import is genuinely project 280) is corroborated four ways — clean ¼·I
+**Provenance** (the cross-worm import is genuinely project 280) is corroborated four ways, clean ¼·I
 linear part, z-smooth per-section offsets, 97% neuron-name overlap, exact `[0,850]` z-range.
 
-**Advance gate (Stage 0 → Stage 1):** a per-neuron ERL + split/merge breakdown — now qualified as *from
+**Advance gate (Stage 0 → Stage 1):** a per-neuron ERL + split/merge breakdown, now qualified as *from
 the real `batch.py`, through a verified registration*.
 
-## Still open (Stage 0 sub-steps — see FUTURE_DIRECTIONS §5)
+## Still open (Stage 0 sub-steps, see FUTURE_DIRECTIONS §5)
 
-- **0.1 Transform — model upgraded ✅ (per-section affine; on-mask 67.9% → 85.7%).** The
+- **0.1 Transform, model upgraded ✅ (per-section affine; on-mask 67.9% → 85.7%).** The
   `diag_registration` structural check showed the residual was a per-section affine the old model
   missed; `registration.py` now fits that (see the Registration section above). Remaining 0.1 work:
   the *interactive* GUI overlay (scrub z, eyeball nodes on EM) for a human gut-check. **Self-consistency
   ERL recovered** (`run_erl --mode self`): node-on-segment 53→**85%**; strict still ≈0 (one stray node
   zeroes a neuron), but **affine + `--merge-tol-frac 0.1` → ERL 11.6 µm = 15% of the 76.3 µm ceiling,
-  merges 280→5** — so 0.1 and 0.4 must combine. *Caveat for 0.2:* 15% of nodes still land off-segment
+  merges 280→5**, so 0.1 and 0.4 must combine. *Caveat for 0.2:* 15% of nodes still land off-segment
   (residual ~4.7 px vs thin neurites), fragmenting runs, so the ruler's effective ceiling **through the
-  current registration + per-pixel sampling is ~11.6 µm, not 76.3** — close it with full-res (0.3) and/or
+  current registration + per-pixel sampling is ~11.6 µm, not 76.3**, close it with full-res (0.3) and/or
   neighborhood label sampling in `sample_node_labels`.
-- **0.2 Argparse `batch.py` → GT dataset** ✅ done — the real pipeline runs on SEM-Dauer 1 via the
+- **0.2 Argparse `batch.py` → GT dataset** ✅ done, the real pipeline runs on SEM-Dauer 1 via the
   `FrameStore` seam + `eval.gt_dataset` adapter and is scored by `eval.score_batch` (see *Running the
   real pipeline on GT* above). First small-model smoke landed (micro-IoU 0.022, bleed-dominated).
   **Remaining for the full gate:** a large-model run + composite pred labelmaps so ERL/VOI/ARAND join
@@ -207,10 +206,10 @@ the real `batch.py`, through a verified registration*.
   91.7% spot check; `registration.json` is now full-res, ¼ kept as `registration_quarter_scale.json`).
 - **0.4 ERL merge tolerance** so the metric isn't zeroed by a single stray node.
 - *Low priority:* `predict_gt` empty-name `--neuron-limit` bug + v1 bleed levers (points-only seed;
-  image-mode anchor / cross-neuron negatives / box seed) — only if the baseline is kept.
+  image-mode anchor / cross-neuron negatives / box seed), only if the baseline is kept.
 
 > Caveat (FUTURE_DIRECTIONS §3, §7): the cross-worm GT measures **generalization**, not
-> in-distribution accuracy — treat it as a domain-adaptation benchmark and spot-check on the target
+> in-distribution accuracy, treat it as a domain-adaptation benchmark and spot-check on the target
 > worm.
 
 See [`../roadmap.md`](../docs/explanation/roadmap.md) §4.1 and §5 Stage 0 for the full reasoning

@@ -1,5 +1,5 @@
 """
-predict_gt.py — run the SAM2 pipeline on SEM-Dauer 1's EM.
+predict_gt.py, run the SAM2 pipeline on SEM-Dauer 1's EM.
 
 Goal: produce predictions for the cross-worm GT (SEM-Dauer 1, project 280) so
 the eval ruler can measure the *current* pipeline. Output feeds both
@@ -129,7 +129,7 @@ def load_inputs(cfg: PredictGTConfig) -> PredictInputs:
 def chain_prompt_points(chain: dict, inp: PredictInputs) -> Dict[int, List[Tuple[float, float]]]:
     """Map a chain's skeleton nodes into the GT pixel grid, grouped by slice z.
 
-    Returns ``{z: [(x_px, y_px), ...]}`` — candidate positive point prompts for
+    Returns ``{z: [(x_px, y_px), ...]}``, candidate positive point prompts for
     SAM2 on each GT EM slice. z is the VAST slice index (1:1 with skeleton z).
     Real nodes are used (virtual nodes too, since they sit on intermediate slices
     and give a prompt on every section the chain crosses).
@@ -175,7 +175,7 @@ def _ensure_em_cache(cfg: PredictGTConfig, gt: GroundTruth, z_list: Sequence[int
     SAM2's video predictor reads JPEGs off disk; the GT EM is PNG. Decoding every
     chain's z-range from the HDD on every chain (9.7k chains, heavy overlap) would
     thrash the disk, so we cache the transcode keyed by z and reuse it across chains
-    (mirrors pipeline._ensure_cached_frames, minus the downscale — EM is already 1/4).
+    (mirrors pipeline._ensure_cached_frames, minus the downscale, EM is already 1/4).
     """
     from PIL import Image
     cache = Path(cfg.pred_dir) / "frames_cache"
@@ -226,7 +226,7 @@ def predict_chain(
 ) -> Dict[int, np.ndarray]:
     """Run SAM2 for one chain over the GT EM frames -> ``{z: bool mask on GT grid}``.
 
-    EM access is already solved (``inp.gt.em_slice(z)`` — the F: ``one_fourth_scale``
+    EM access is already solved (``inp.gt.em_slice(z)``, the F: ``one_fourth_scale``
     PNGs are GT-grid already, no TIF decode/downscale). The rest reuses pipeline.py's
     frame-agnostic ``propagate`` unchanged:
       1. Contiguous frame view over the chain's z-span (cached JPEG transcode of EM).
@@ -282,7 +282,7 @@ def predict_chain(
         if z is None or m is None:
             continue
         m = np.asarray(m, dtype=bool)
-        if m.ndim == 3:               # SAM2 yields (1, H, W) per object — drop the channel
+        if m.ndim == 3:               # SAM2 yields (1, H, W) per object, drop the channel
             m = m[0]
         if m.any():
             out[z] = m
@@ -331,7 +331,7 @@ def composite_labelmaps(
 
     Overlap policy (FIRST WRITER WINS) is a deliberate placeholder: when two
     neurons' predicted masks overlap, the lower-id neuron keeps the pixel and the
-    collision is counted. TODO: decide the real policy — overlaps are exactly the
+    collision is counted. TODO: decide the real policy, overlaps are exactly the
     *merge* signal ERL cares about, so you may instead want to mark contested
     pixels (e.g. a reserved MERGE id) or keep per-neuron labelmaps and resolve in
     the metric. Logged so the simplification is never silent.
@@ -365,7 +365,7 @@ def composite_labelmaps(
         Image.fromarray(lab).save(lm_dir / f"pred_s{int(z):03d}.png")
     if total_collisions:
         print(f"[predict_gt] WARNING: {total_collisions} overlap px resolved first-writer-wins "
-              "(see composite_labelmaps docstring — overlaps are the merge signal).")
+              "(see composite_labelmaps docstring, overlaps are the merge signal).")
     return neuron_ids
 
 
@@ -379,7 +379,7 @@ def run(cfg: PredictGTConfig, *, clean: bool = False) -> None:
     ``clean=True`` wipes ``masks/`` + ``labelmaps/`` first (but keeps
     ``frames_cache/``, so the EM transcode is reused). Use it on every re-run:
     ``write_neuron_masks`` UNIONS onto existing PNGs, so without a clean a re-run
-    would OR new masks into the previous run's — silently contaminating them.
+    would OR new masks into the previous run's, silently contaminating them.
     """
     if clean:
         import shutil

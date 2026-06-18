@@ -1,5 +1,5 @@
 """
-ab_tier2_wide.py — wider tier-2 A/B for the "run flagged chains as tier-2 by default?"
+ab_tier2_wide.py, wider tier-2 A/B for the "run flagged chains as tier-2 by default?"
 decision. Baseline (_sam) vs tier-2 (chain_crop=True, with the safety fallback
 ON) across several chains in 3 diverse neurons, with an aggregate verdict:
   - how many chains tier-2 IMPROVED (queue down) / REGRESSED (queue up) / unchanged

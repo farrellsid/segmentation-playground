@@ -1,7 +1,7 @@
-# notebooks/ — reference notebooks
+# notebooks/, reference notebooks
 
 Exploration / reference notebooks, kept live (not archived). They are *not* the source of truth for
-*how* the pipeline runs — `pipeline.py` is — but they remain the reference for *what* each phase does
+*how* the pipeline runs, `pipeline.py` is, but they remain the reference for *what* each phase does
 and for ad-hoc exploration.
 
 | Notebook | Role |

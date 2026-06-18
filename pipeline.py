@@ -107,7 +107,7 @@ def _read_tif_window(tif_path, sl) -> np.ndarray:
 def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
     """Decode+downscale any source frames not yet in the shared cache.
 
-    `subset` is a list of ``(key, src_path)`` from a FrameStore — one JPEG per `key`,
+    `subset` is a list of ``(key, src_path)`` from a FrameStore, one JPEG per `key`,
     written once ever at this `scale`, named ``z{key}.jpg`` and reused by every chain
     whose z-range overlaps it. This is where the prep cost actually lives (a ~9k x 9k
     imread + resize); overlapping chains now pay it once across the whole dataset
@@ -667,7 +667,7 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
     asks SAM2 for its 3 candidate masks and auto-selects one via `_select_anchor_mask`.
     This is near-free: SAM2's mask decoder
     *always* computes all 3 candidates regardless of the flag (it only slices the
-    output — see sam2/modeling/sam/mask_decoder.py), and the heavy image-encoder
+    output, see sam2/modeling/sam/mask_decoder.py), and the heavy image-encoder
     `set_image` runs once either way; the only added work is scoring 3 masks on CPU.
     The selection params are only consulted when `multimask=True`.
 
@@ -1105,8 +1105,7 @@ def chain_crop_window(chain: dict, annotate_df: pd.DataFrame, *, cfg: "PipelineC
     SAM2 input stays bounded for a chain that wanders far across the section. The
     realized window is clipped to the frame (alignment.CropWindow.around_box).
 
-    ``extra_box_tif`` (xyxy, _tif) is UNIONED with the skeleton bbox before padding —
-    the chain_crop_from_mask path passes the _sam mask's bbox here so the window grows
+    ``extra_box_tif`` (xyxy, _tif) is UNIONED with the skeleton bbox before padding, the chain_crop_from_mask path passes the _sam mask's bbox here so the window grows
     to contain the segmented cell, not just the centerline (a strict superset of the
     skeleton-only window). None reproduces the skeleton-only sizing exactly.
     """
@@ -1144,7 +1143,7 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     0-indexed JPEG view in `_pcrop` space.
 
     Each frame is the full-res tif cropped to ``cw.slice_tif()`` then downscaled by
-    ``cw.crop_scale`` — the SAME crop-then-downscale as ``anchor_crop_predict``, so
+    ``cw.crop_scale``, the SAME crop-then-downscale as ``anchor_crop_predict``, so
     the anchor seed (computed in the crop) and the propagated frames share EXACT
     `_pcrop` pixels. Unlike ``prepare_video_frames`` there is no cross-chain decode
     cache (every chain's window is unique). The per-frame read goes through
@@ -1222,7 +1221,7 @@ def _attach_iou_hook(video_predictor, sink: dict[int, float]) -> Callable[[], No
 
     Why a hook and not the public API: SAM2 *computes* the IoU head output (``ious``)
     in the mask decoder, but ``track_step`` unpacks the decoder tuple and **discards**
-    it — ``(_, _, _, low_res_masks, ...) = sam_outputs`` — so it never reaches
+    it, ``(_, _, _, low_res_masks, ...) = sam_outputs``, so it never reaches
     ``current_out``, ``inference_state``, or the ``propagate_in_video`` yield (trace:
     sam2/modeling/sam2_base.py ``_forward_sam_heads`` -> ``track_step``). ``_track_step``
     is the last point the value is in hand: it returns ``(current_out, sam_outputs, ...)``
@@ -1231,7 +1230,7 @@ def _attach_iou_hook(video_predictor, sink: dict[int, float]) -> Callable[[], No
     the call through untouched, so masks are bit-identical to an unhooked run.
 
     Best-effort by design: if ``_track_step`` is absent or its return shape changes, we
-    leave pred_iou unpopulated (NaN) rather than raise — same principle as the timing
+    leave pred_iou unpopulated (NaN) rather than raise, same principle as the timing
     wrapper that must never kill a chain. Scope the hook to one propagation run and
     always ``restore()`` (PropagationSession does this in close()).
     """
@@ -1263,7 +1262,7 @@ class PropagationSession:
     interruptible-propagation primitive. The headless ``propagate()``
     function below drives it straight through (and is the only thing run_chain uses); a
     future auto-intervention loop or napari GUI drives the *same* methods. No GUI, napari,
-    or torch import lives here — the session only calls the predictor's public API plus the
+    or torch import lives here, the session only calls the predictor's public API plus the
     one read-only ``_track_step`` IoU hook.
 
     Continuity lives in ``inference_state``, NOT in any generator object. Consequences the
@@ -1272,7 +1271,7 @@ class PropagationSession:
         every frame seen so far is already recorded in the accumulators.
       * ``add_points`` / ``add_mask`` mutate ``inference_state`` at a chosen frame.
       * Resuming is a **fresh** ``propagate(start_frame_idx=f)`` over the *same* mutated
-        state — never ``reset_state`` to resume (that wipes all prompts; it's a
+        state, never ``reset_state`` to resume (that wipes all prompts; it's a
         fresh-chain call, done once in __init__).
       * A re-propagation after a correction re-tracks from the corrected frame onward and
         **overwrites** the stale frames it revisits in the accumulators (last write wins).
@@ -1318,13 +1317,13 @@ class PropagationSession:
         anchor seed exactly so masks reproduce.
 
         SAM2 treats MASK and POINTS/BOX as mutually-exclusive conditioning per frame
-        (add_new_mask pops point_inputs and add_new_points_or_box pops mask_inputs — see
+        (add_new_mask pops point_inputs and add_new_points_or_box pops mask_inputs, see
         sam2_video_predictor.py), so seed_mask=True takes the add_new_mask path and ignores
         box/points on the anchor frame. The box/points path composes any subset of
         {box, positive, negative} in a single add_new_points_or_box call.
 
         Negatives are the same same-z neighbour nodes build_prompts placed in _sam (valid in
-        both crop and legacy paths — state.prompts stays in _sam). The mask seed needs the
+        both crop and legacy paths, state.prompts stays in _sam). The mask seed needs the
         anchor mask in the PROPAGATION space (legacy _sam or tier-2 _pcrop); run_chain passes
         the right-space mask and guards the tier-1 crop_anchor case.
         """
@@ -1359,8 +1358,7 @@ class PropagationSession:
                    clear_old_points: bool = False) -> None:
         """Inject a point correction at ``frame_idx`` (refinement click(s); incl. negative
         labels). ``clear_old_points=False`` *adds* to the frame's existing prompts (the
-        usual refine-click behaviour); pass True to replace them. Mutates inference_state —
-        resume with ``propagate(start_frame_idx=frame_idx)``."""
+        usual refine-click behaviour); pass True to replace them. Mutates inference_state, resume with ``propagate(start_frame_idx=frame_idx)``."""
         self.vp.add_new_points_or_box(
             inference_state=self.inference_state,
             frame_idx=int(frame_idx),
@@ -1372,7 +1370,7 @@ class PropagationSession:
 
     def add_mask(self, frame_idx: int, mask_sam) -> None:
         """Inject a painted-mask correction at ``frame_idx`` (human-painted anchor or a
-        mid-propagation fix). Mutates inference_state — resume with
+        mid-propagation fix). Mutates inference_state, resume with
         ``propagate(start_frame_idx=frame_idx)``."""
         self.vp.add_new_mask(
             inference_state=self.inference_state,
@@ -1916,7 +1914,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
             image_sam = None
             # chain_crop_from_mask: grow the window to contain the already-saved _sam
             # mask, not just the skeleton centerline (fixes the cell-edge clip). Only
-            # when the prior masks are _sam — a prior tier-2 (state.json has a
+            # when the prior masks are _sam, a prior tier-2 (state.json has a
             # crop_window) stores _pcrop masks whose bbox is the wrong space, so decline.
             extra_box_tif = None
             if cfg.chain_crop_from_mask:
@@ -2032,7 +2030,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         if not box_present:
             print("    empty anchor mask")
         elif use_chain_crop:
-            # tier-2: the WHOLE chain propagates in _pcrop, so the seed stays there — the
+            # tier-2: the WHOLE chain propagates in _pcrop, so the seed stays there, the
             # points (prompts_anchor, already mapped _sam->_pcrop) and box are crop coords,
             # NOT mapped back to _sam. state.prompts is thus the _pcrop seed (box_sam/points_sam
             # hold _pcrop px; the names are legacy). propagate() feeds them onto the _pcrop frames.
@@ -2074,7 +2072,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
               f"-> re-running this chain in the plain _sam path")
         state.fell_back_to_sam = True
         # capture the CROP-pass diagnostics BEFORE the _sam recovery pass below overwrites
-        # state.image_score / state.anchor_score — else the failing reason is lost (only the
+        # state.image_score / state.anchor_score, else the failing reason is lost (only the
         # run log had it), and the final state.json shows the healthy _sam recovery instead.
         state.fellback_reason = ", ".join(reasons)
         state.crop_image_score = state.image_score

@@ -106,7 +106,7 @@ df["y_tif"] = xy_tif[:, 1]
 - The Windows pagefile readout in `diagnostics` falls back to `psutil` on
   Linux/Mac, so `snapshot()` works across platforms.
 - `setup_device()` enters a bfloat16 autocast context that stays alive for
-  the session. Calling it more than once is safe — it only enters once.
+  the session. Calling it more than once is safe, it only enters once.
 - The affine constants (`M_AFFINE`, `T_AFFINE`) in `config.py` were fit to
   CATMAID z=1293. If you refit on a different section or with a larger
   landmark set, update them in `config.py` so every notebook gets the new fit.

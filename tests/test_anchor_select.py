@@ -74,7 +74,7 @@ def test_largest_cc_frac_two_blobs():
 
 
 # ---------------------------------------------------------------------------
-# _select_anchor_mask — the ranking
+# _select_anchor_mask, the ranking
 # ---------------------------------------------------------------------------
 
 def _prompts_at(x, y):

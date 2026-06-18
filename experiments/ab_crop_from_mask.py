@@ -1,5 +1,5 @@
 """
-ab_crop_from_mask.py — A/B harness: tier-2 crop sized from the SKELETON bbox
+ab_crop_from_mask.py, A/B harness: tier-2 crop sized from the SKELETON bbox
 (chain_crop_from_mask=False, current default) vs sized from the _sam MASK bbox
 (chain_crop_from_mask=True), on the same chains.
 
@@ -11,7 +11,7 @@ union of the skeleton bbox and the bbox of the chain's already-saved _sam masks.
 This reproduces the real auto-second-pass flow (batch.tier2_on_flagged): for the
 mask-sized arm we FIRST run the plain _sam pass into that arm's chain dir (writing
 the _sam masks + qc.csv the bbox is read from), THEN re-run tier-2 in place with
-chain_crop_from_mask=True — exactly what `_run_one_chain` does.
+chain_crop_from_mask=True, exactly what `_run_one_chain` does.
 
 Headline metric is the CLIP: how many frames have mask foreground touching the crop
 border. We want that to drop to ~0 without regressing the QC queue. The ruler is
@@ -33,7 +33,7 @@ from sam2_utils import setup, alignment, diagnostics, config
 import pipeline
 from pipeline import PipelineConfig, ChainState, run_chain, save_state
 
-# chains to A/B (neuron, chain_idx) — the measured clippers first.
+# chains to A/B (neuron, chain_idx), the measured clippers first.
 CHAINS = [("AIAL", 0), ("AIAL", 5)]
 
 AB_ROOT = Path(config.OUTPUT_ROOT).parent / "ab_crop_from_mask"
@@ -128,7 +128,7 @@ def main() -> None:
         cell_chains = [c for c in all_chains if c["cell_name"] == neuron]
         chain = cell_chains[idx]
 
-        # arm A — tier-2 sized from the skeleton bbox (current default)
+        # arm A, tier-2 sized from the skeleton bbox (current default)
         print(f"\n========== {neuron} c{idx:02d} [tier2_skel] ==========")
         try:
             cfg = _cfg(chain_crop=True, from_mask=False, out_root=AB_ROOT / "tier2_skel")
@@ -143,7 +143,7 @@ def main() -> None:
             image_predictor.reset_predictor()
             diagnostics.cleanup_vram()
 
-        # arm B — reproduce the real second pass: _sam pass first (writes the masks +
+        # arm B, reproduce the real second pass: _sam pass first (writes the masks +
         # qc.csv the bbox is read from), THEN tier-2 in place with from_mask=True.
         print(f"\n========== {neuron} c{idx:02d} [tier2_mask: _sam pre-pass] ==========")
         try:

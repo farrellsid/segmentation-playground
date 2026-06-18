@@ -1,10 +1,9 @@
-"""score_labelmap.py — labelmap metrics (VOI, ARAND, ERL) for a SEM-Dauer 1 batch run.
+"""score_labelmap.py, labelmap metrics (VOI, ARAND, ERL) for a SEM-Dauer 1 batch run.
 
 Region IoU (eval.score_batch) treats each neuron independently. The connectomics
 metrics need a *labelmap*: all neurons composited into one per-slice integer map, so
 split/merge between objects is visible. This module builds that **in memory at the
-`_sam` grid** (a full-res 9728×9216 uint16 labelmap is ~190 MP × 2 B ≈ 378 MB/slice —
-infeasible on disk for hundreds of slices) and computes:
+`_sam` grid** (a full-res 9728×9216 uint16 labelmap is ~190 MP × 2 B ≈ 378 MB/slice, infeasible on disk for hundreds of slices) and computes:
 
   * **VOI_split / VOI_merge** and **ARAND** (pred vs GT labelmap, over GT-foreground),
   * **per-neuron ERL** + split/merge breakdown, via skeleton-node sampling through the

@@ -1,11 +1,11 @@
 """
-groundtruth.py — read the cross-worm VAST ground truth.
+groundtruth.py, read the cross-worm VAST ground truth.
 
 There is manual VAST segmentation for a *different* worm
 (SEM dauer 1) with matching EM, the first real ruler for the pipeline. This module
 is the read layer for that GT: parse the VAST metadata table, and load per-slice
 binary masks for any segment / neuron. Torch-free / cv2-free (numpy + Pillow +
-pandas only), like ``sam2_utils.alignment`` / ``qc`` / ``labels`` — so it exercises
+pandas only), like ``sam2_utils.alignment`` / ``qc`` / ``labels``, so it exercises
 on any box and stays cheap to import.
 
 What the VAST export actually is
@@ -14,7 +14,7 @@ Each ``*.vsseg_export_s###.png`` is a **16-bit single-channel labelmap** (PIL mo
 ``I;16``), NOT an RGB color image: every pixel's value is the segment number
 (``Nr``) from the metadata, with ``0`` == Background. They look near-black because
 IDs are small (≤450). So the GT mask for segment ``Nr`` on slice ``s`` is simply
-``label_slice(s) == Nr`` — no palette lookup, no color matching.
+``label_slice(s) == Nr``, no palette lookup, no color matching.
 
 The metadata file (``VAST_segmentation_metadata.txt``) is VAST-Lite's "extended
 segmentation color file". One row per segment::
@@ -33,7 +33,7 @@ hierarchy links, the anchor, the bbox) and parse ``name`` into a neuron identity
 
 Per the lab: **everything present in this file is a manually-confirmed segment**
 (only confirmed objects were imported), so there is no separate "confirmed" flag
-to filter on — every named segment is valid GT. ``kind`` ("neuron" / "organelle" /
+to filter on, every named segment is valid GT. ``kind`` ("neuron" / "organelle" /
 "background") is a *convenience* classifier (heuristic, by name) for callers who
 want to score neurons only; it is not a confirmation gate. ``bracketed`` is exposed
 raw in case the bracket convention turns out to carry meaning later.
@@ -48,7 +48,7 @@ Slice index vs pipeline z
 -------------------------
 GT slices are numbered ``s000``..``s850`` (the VAST stack's own section index).
 The pipeline's predicted masks are named by ``catmaid_z`` in the *target* worm's
-frame — a different stack with no established mapping into this one. This module
+frame, a different stack with no established mapping into this one. This module
 deliberately does **not** invent that mapping: it indexes everything by the VAST
 slice index, and the eventual prediction-vs-GT alignment is the score.py wire-in
 point (and the open xy/z-registration question, see eval/README.md).
@@ -339,7 +339,7 @@ class GroundTruth:
     def slices_with_segment(self, nr: int) -> List[int]:
         """VAST slice indices on which segment ``nr`` appears at least once.
 
-        Reads every labelmap once — O(n_slices) IO. Use the metadata bbox z-range
+        Reads every labelmap once, O(n_slices) IO. Use the metadata bbox z-range
         (:meth:`bbox_z_range`) first to bound the scan when you can.
         """
         nr = int(nr)

@@ -1,4 +1,4 @@
-"""diag_target_registration.py — is the sensory-ablated-dauer (proj 336) single global
+"""diag_target_registration.py, is the sensory-ablated-dauer (proj 336) single global
 affine z-stable, or does it drift across the stack?
 
 Context: SEM-Dauer 1 (the cross-worm GT) needed a *per-section* affine
@@ -165,13 +165,13 @@ def report(df: pd.DataFrame) -> None:
     fe = df[df["z"] >= df["z"].max() - 30]
     fe_coh = np.hypot(fe["offx"].mean(), fe["offy"].mean())
     print(f"  far end (z>={df['z'].max()-30}): coherent |mean off| = {fe_coh:.1f} px "
-          f"(n={len(fe)}) — the worst-case slice for single-z drift")
+          f"(n={len(fe)}), the worst-case slice for single-z drift")
 
     drift = (not np.isnan(r_coh)) and r_coh > 0.4 and fe_coh > 15
     print("\n  VERDICT: " + (
-        "registration DRIFTS toward the far end — a single global affine is insufficient."
+        "registration DRIFTS toward the far end, a single global affine is insufficient."
         if drift else
-        "no coherent drift — the single global affine is z-STABLE across the imaged "
+        "no coherent drift, the single global affine is z-STABLE across the imaged "
         "range. The few-px spread is node-vs-centroid scatter (propagation/thinness), "
         "not registration."))
     print("  read: POSITIVE coherent corr + growing per-bin |mean off| + large far-end "

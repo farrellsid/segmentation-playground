@@ -1,4 +1,4 @@
-"""score_batch.py — score a SEM-Dauer 1 batch.py run against GT.
+"""score_batch.py, score a SEM-Dauer 1 batch.py run against GT.
 
 `batch.py --preset eval` writes per-CHAIN masks in `_sam` space:
     <output_root>/<neuron>/chain_NN/masks/mask_<slice:04d>.png   (0/255, ~1216x1152)
@@ -39,10 +39,10 @@ class BatchPredictionSource:
     """PredictionSource over a batch.py per-chain mask tree, GT-grid-aligned.
 
     Each chain's mask is first put on the full `_sam` frame (a `_sam` chain's PNG IS
-    the frame; a tier-2 `_pcrop` chain is placed via its `crop_window` — see
+    the frame; a tier-2 `_pcrop` chain is placed via its `crop_window`, see
     `score_labelmap.chain_sam_mask`), the neuron's chains are unioned, then the `_sam`
     union is upscaled to the GT grid so `score_region`'s shape check passes. Handling
-    `_pcrop` here is essential — a raw resize of a crop would stretch it across the
+    `_pcrop` here is essential, a raw resize of a crop would stretch it across the
     whole frame. `save_downscale` sets the `_sam` grid (gt_hw // save_downscale).
     """
 
@@ -136,7 +136,7 @@ def main() -> None:
     if args.preset:
         p = presets.get_preset(args.preset)
         if p.get("score_out") is None:
-            ap.error(f"preset {args.preset!r} has no GT scoring (score_out=None) — "
+            ap.error(f"preset {args.preset!r} has no GT scoring (score_out=None), "
                      "scoring is for cross-worm GT presets like 'eval'.")
         if args.root is None:
             args.root = Path(p["output_root"])

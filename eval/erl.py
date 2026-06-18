@@ -1,5 +1,5 @@
 """
-erl.py — Expected Run Length (skeleton-based).
+erl.py, Expected Run Length (skeleton-based).
 
 ERL is the *skeleton half* of the eval ruler: the **expected error-free traced
 path length** measured from a
@@ -14,12 +14,12 @@ Why this is buildable now (no pixel data)
 ERL needs two things: the skeletons (which true point connects to which) and a
 **predicted label per skeleton node** (which predicted object each point fell in).
 The skeletons are local (``data/groundtruth/skeletons_p280/``). Only the per-node
-labels come from a real prediction — sampling the predicted labelmap at each
-registered node — and that is the single drive-dependent wire-in, isolated in
+labels come from a real prediction, sampling the predicted labelmap at each
+registered node, and that is the single drive-dependent wire-in, isolated in
 :func:`sample_node_labels` (which takes a generic ``label_slice_fn`` so it tests
 on synthetic arrays). The metric core below is pure: it takes an edge list + two
 node→id maps and returns plain floats, so it unit-tests on toy skeletons with
-hand-computed answers — exactly like :mod:`eval.metrics`.
+hand-computed answers, exactly like :mod:`eval.metrics`.
 
 The run-length math
 -------------------
@@ -32,8 +32,7 @@ segment the model put it in).
   label is not background, and it is not a merge label.
 * **Runs** are the connected components of the error-free edges; a run's length is
   the sum of its error-free edge lengths. (Merge labels form no runs → length 0.)
-* For a uniformly-random point, E[run length] = Σ_runs len_run² / Σ_all len —
-  so ERL = (Σ run_len²) / (total skeleton length). Splits shrink runs; merges and
+* For a uniformly-random point, E[run length] = Σ_runs len_run² / Σ_all len, so ERL = (Σ run_len²) / (total skeleton length). Splits shrink runs; merges and
   background drop length from the numerator while it stays in the denominator.
 
 Pure / numpy + (pandas only in the loader). Coordinates in the skeleton CSV are
@@ -64,7 +63,7 @@ except Exception:                      # pragma: no cover - fallback for odd CWD
 
 _DEFAULT_RES_NM = (2.0, 2.0, 50.0)     # config.STACK_RESOLUTION_NM fallback
 
-# Labels that mean "no predicted object here" — these never form runs and never
+# Labels that mean "no predicted object here", these never form runs and never
 # count toward a merge. ``None`` and 0 (the labelmap background) and "" are it.
 _DEFAULT_BACKGROUND = (None, 0, "")
 
@@ -225,15 +224,15 @@ def merge_labels(
     **Merge tolerance.** A neuron counts as a *contributor* to a label only if it
     carries at least ``min_support_count`` of that label's edge-nodes **and** at
     least ``min_support_frac`` of them. A label is a merge iff it has ≥2
-    contributors. This stops a handful of stray nodes — e.g. a neighbour's
-    skeleton drifting onto this segment through registration error — from flagging
+    contributors. This stops a handful of stray nodes, e.g. a neighbour's
+    skeleton drifting onto this segment through registration error, from flagging
     a whole neuron as a merge and zeroing its run length. The defaults
     (``count=1, frac=0.0``) reproduce the strict "any two neurons ⇒ merge" rule, so
     existing behaviour is unchanged unless a tolerance is passed.
 
     Caveat: tolerance only changes the merge *flag*. A minority node is not
     relabelled, so two adjacent minority nodes sharing a (tolerated) label can still
-    form a short run attributed to their own neuron — bounded, and rare at sane
+    form a short run attributed to their own neuron, bounded, and rare at sane
     thresholds. Reassigning minority nodes to background would remove even that; left
     out for now as a deliberate simplification.
     """
@@ -276,26 +275,26 @@ def expected_run_length(
 
     Parameters
     ----------
-    edges : iterable of ``(u, v, length)`` — undirected skeleton edges, length in
+    edges : iterable of ``(u, v, length)``, undirected skeleton edges, length in
         any consistent unit (nm here). Both endpoints should have a neuron id.
     node_label : node id -> predicted segment label (any hashable; ``None``/0/""
-        treated as background — no object).
+        treated as background, no object).
     node_neuron : node id -> true neuron id (which arbor the node traces).
     background : label values that mean "no predicted object".
 
     Returns
     -------
     dict with
-      ``erl``               — Σ run_len² / total_length, same unit as ``length``.
-      ``total_length``      — Σ of all edge lengths (the denominator).
-      ``n_runs``            — number of non-empty error-free runs.
-      ``max_run``           — longest run length.
-      ``n_merge_labels``    — predicted labels merging ≥2 neurons.
-      ``merge_detail``      — ``{label: sorted([neurons...])}``.
-      ``n_split_edges``     — same-neuron edges broken by a label change
+      ``erl``, Σ run_len² / total_length, same unit as ``length``.
+      ``total_length``, Σ of all edge lengths (the denominator).
+      ``n_runs``, number of non-empty error-free runs.
+      ``max_run``, longest run length.
+      ``n_merge_labels``, predicted labels merging ≥2 neurons.
+      ``merge_detail``, ``{label: sorted([neurons...])}``.
+      ``n_split_edges``, same-neuron edges broken by a label change
                               (both endpoints non-bg, neither a merge label).
-      ``n_bg_edges``        — edges with a background endpoint.
-      ``n_merge_edges``     — edges dropped because an endpoint is a merge label.
+      ``n_bg_edges``, edges with a background endpoint.
+      ``n_merge_edges``, edges dropped because an endpoint is a merge label.
     """
     edges = list(edges)
     bg = frozenset(background)
@@ -320,7 +319,7 @@ def expected_run_length(
             n_split += 1
             continue
         # error-free edge: union its endpoints, then add its length once to the
-        # (now common) component — find() auto-inserts both nodes.
+        # (now common) component, find() auto-inserts both nodes.
         dsu.find(u); dsu.find(v)
         dsu.union(u, v)
         dsu.add_length(u, length)
@@ -443,7 +442,7 @@ def sample_node_labels(
       ``GroundTruth.label_slice`` for a self-consistency check, or a prediction
       store once one exists).
     * ``transform(xy, z)`` maps node **stack-px** xy at slice ``z`` to the label
-      array's pixel grid — pass an :class:`eval.registration.Registration`'s
+      array's pixel grid, pass an :class:`eval.registration.Registration`'s
       ``.transform``; default is identity (node coords already in label-px).
     * ``radius`` (default 0 = single pixel): sample a ``(2r+1)²`` window and take the
       **dominant non-background label** (0 only if the whole window is background).

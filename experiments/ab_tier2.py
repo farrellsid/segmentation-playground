@@ -1,5 +1,5 @@
 """
-ab_tier2.py — A/B harness: tier-2 per-chain crop (chain_crop=True) vs the _sam
+ab_tier2.py, A/B harness: tier-2 per-chain crop (chain_crop=True) vs the _sam
 full-frame baseline (chain_crop=False), on the same chains.
 
 Throwaway measurement script (not part of the library). Runs each listed chain

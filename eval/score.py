@@ -1,5 +1,5 @@
 """
-score.py — region-metric scoring harness.
+score.py, region-metric scoring harness.
 
 Joins predicted masks to the cross-worm GT (:mod:`eval.groundtruth`) and rolls the
 :mod:`eval.metrics` overlap numbers up per (neuron, slice) and per neuron. This is
@@ -12,8 +12,8 @@ space, indexed by ``catmaid_z``); the GT is a *different* worm in its own VAST
 pixel grid. There is no established xy/z registration between them yet (see
 eval/README.md). So this module does NOT try to register or resample: it requires a
 ``PredictionSource`` that already yields a boolean mask **on the GT mask grid**, for
-a given ``(neuron, slice_idx)``. Producing that — running the pipeline on the GT
-worm's EM, or resampling existing output through a fitted transform — is the next
+a given ``(neuron, slice_idx)``. Producing that, running the pipeline on the GT
+worm's EM, or resampling existing output through a fitted transform, is the next
 task; this harness scores it the moment it exists.
 
 ``DirPredictionSource`` is the concrete reference implementation: a directory tree
@@ -118,8 +118,8 @@ def score_region(
     Returns
     -------
     (frames_df, neurons_df).
-      frames_df  — one row per scored (neuron, slice).
-      neurons_df — one row per neuron: micro (volume, count-summed) IoU/Dice/
+      frames_df, one row per scored (neuron, slice).
+      neurons_df, one row per neuron: micro (volume, count-summed) IoU/Dice/
                    precision/recall, plus the per-frame means and frame count.
     """
     import sys

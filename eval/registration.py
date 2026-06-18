@@ -1,8 +1,8 @@
 """
-registration.py — align a worm's CATMAID skeleton to its VAST GT pixel grid.
+registration.py, align a worm's CATMAID skeleton to its VAST GT pixel grid.
 
 The cross-worm GT (project 280) was traced on the *pre-realignment* stack, while
-the VAST masks/EM live in the ``realigned_with_blur`` stack — re-aligned
+the VAST masks/EM live in the ``realigned_with_blur`` stack, re-aligned
 **section by section**. So skeleton stack-px → VAST mask-px is NOT one global
 affine: the linear part is just the ~¼ downscale (full-res trace px == full-res
 VAST px), but each z-slice carries its own small translation from the realignment.
@@ -14,10 +14,10 @@ This module fits that model
 in two stages, using the GT masks themselves as the alignment target (no manual
 landmarks):
 
-1. **Global linear A** — pooled least-squares of *z-centered* correspondences
+1. **Global linear A**, pooled least-squares of *z-centered* correspondences
    (subtract each slice's mean from both sides), so per-section translation can't
    contaminate the linear estimate. Comes out ≈ (1/downscale)·I.
-2. **Per-section offset[z]** — for each slice, the robust (median) residual
+2. **Per-section offset[z]**, for each slice, the robust (median) residual
    ``gt_centroid - skel_centroid @ A.T`` over the neurons present on that slice;
    slices with too few clean correspondences are linearly interpolated from their
    neighbours and the whole curve is lightly smoothed (realignment shifts vary
@@ -25,7 +25,7 @@ landmarks):
 
 A "correspondence" is one (neuron, z) where the neuron's GT segment is a single
 connected component and its skeleton nodes on that slice are spatially tight (one
-process crossing) — so the two centroids refer to the same thing.
+process crossing), so the two centroids refer to the same thing.
 
 Reusable for any worm: pass a :class:`eval.groundtruth.GroundTruth`, the skeleton
 ``aggregate_data_pv.csv``, and (optionally) a name-normalizer. Torch-free; needs
@@ -53,7 +53,7 @@ class Registration:
 
     Two models share one ``transform(xy, z)`` API and JSON:
 
-    * **per-section affine** (preferred; set ``affines``) — ``mask_xy = xy @ L[z].T
+    * **per-section affine** (preferred; set ``affines``), ``mask_xy = xy @ L[z].T
       + t[z]`` with a full 2×2 linear ``L[z]`` *and* translation ``t[z]`` per slice.
       ``affines`` is ``(n_z, 2, 3)``: ``affines[i, :, :2]`` is ``L`` (in the ``A.T``
       convention) and ``affines[i, :, 2]`` is ``t``, indexed by ``z_min + i``. This
@@ -61,7 +61,7 @@ class Registration:
       global linear + per-section *translation* misses (median residual
       19.6 px to 5.1 px).
     * **global linear + per-section translation** (legacy / baseline; ``affines is
-      None``) — ``mask_xy = xy @ A.T + offset[z]``.
+      None``), ``mask_xy = xy @ A.T + offset[z]``.
 
     ``A`` (2,2) and ``offsets`` (n_z,2) are always kept: they are the legacy model,
     the baseline constructor's inputs, and a human-readable summary of the affine
@@ -249,7 +249,7 @@ def fit(
 
     # --- stage 3: per-section AFFINE (the preferred model) ---
     # Fit a full 2×3 affine per slice (≥ min_corr_per_slice clean correspondences),
-    # then interpolate the 6 params over z and lightly smooth — same gap-handling as
+    # then interpolate the 6 params over z and lightly smooth, same gap-handling as
     # the translation offsets, since the realignment varies smoothly in z.
     affines = np.full((n_z, 2, 3), np.nan)
     direct_aff = 0

@@ -1,4 +1,4 @@
-"""eval/ — evaluation harness against the cross-worm VAST ground truth.
+"""eval/, evaluation harness against the cross-worm VAST ground truth.
 
 See README.md. Region-overlap + VOI
 metrics (`metrics`) and skeleton-based ERL (`erl`) are implemented, reading the

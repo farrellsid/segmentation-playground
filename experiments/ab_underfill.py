@@ -1,5 +1,5 @@
 """
-ab_underfill.py — find an under-filling anchor and test whether the %-of-bbox box
+ab_underfill.py, find an under-filling anchor and test whether the %-of-bbox box
 margin (box_margin_frac) fixes it.
 
 "Underfill" = the anchor mask covers only PART of the cell, so box_from_mask draws a

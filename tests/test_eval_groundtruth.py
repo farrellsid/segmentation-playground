@@ -1,4 +1,4 @@
-"""Unit tests for eval.groundtruth — VAST metadata parse + labelmap read.
+"""Unit tests for eval.groundtruth, VAST metadata parse + labelmap read.
 
 The name-parsing and metadata-table logic run on an inline fixture (portable, no
 data drive needed). A real-data smoke test loads one actual GT slice but is skipped
@@ -23,7 +23,7 @@ from PIL import Image
 from eval import groundtruth as G
 
 # A trimmed VAST extended-segmentation file: two comment lines, then rows that
-# cover the cases that matter — background, a plain neuron, a bracketed neuron, a
+# cover the cases that matter, background, a plain neuron, a bracketed neuron, a
 # bracketed neuron with an _or_ name, and a non-swc organelle.
 _SAMPLE = """% VAST Lite extended segmentation color file
 % Columns: Nr flags ... "name"

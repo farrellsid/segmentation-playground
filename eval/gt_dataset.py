@@ -1,13 +1,13 @@
-"""gt_dataset.py — wire the real pipeline (run_chain / batch.py) onto SEM-Dauer 1.
+"""gt_dataset.py, wire the real pipeline (run_chain / batch.py) onto SEM-Dauer 1.
 
 Score the *production* pipeline against the cross-worm
 GT, instead of the `predict_gt.py` reimplementation. The pipeline is worm-agnostic except
 two seams, both filled here:
 
-  1. **EM source** — `GtFrameStore` plugs into `pipeline.FrameStore`: SEM-Dauer 1's EM is a
+  1. **EM source**, `GtFrameStore` plugs into `pipeline.FrameStore`: SEM-Dauer 1's EM is a
      per-slice PNG export (`config.GT_EM_DIR`, key == VAST slice z, z 1:1), not the target
      worm's tif-by-file_z stack.
-  2. **Skeleton -> image transform** — the pipeline consumes `annotate_df`'s `x_tif/y_tif`.
+  2. **Skeleton -> image transform**, the pipeline consumes `annotate_df`'s `x_tif/y_tif`.
      For the target worm those come from the z-independent `catmaid_to_tif` affine; for p280
      they come from the **per-section** `eval.registration.Registration` (z-dependent), baked
      in here per node so every downstream phase (build_prompts, crop windows, run_qc) is
@@ -108,8 +108,8 @@ def load_gt_chains(chains_json: Path,
 
     `neurons`: explicit normalized-name allow-list (wins if given).
     `neuron_limit`: else keep the first N neurons by sorted normalized name (empty /
-        unnamed fragments excluded) — a quick deterministic subset without naming.
-    Neither: every neuron (9766 chains — the caller should gate this; see batch.py).
+        unnamed fragments excluded), a quick deterministic subset without naming.
+    Neither: every neuron (9766 chains, the caller should gate this; see batch.py).
     """
     with open(chains_json) as f:
         chains = json.load(f)
