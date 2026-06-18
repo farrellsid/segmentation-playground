@@ -1,26 +1,26 @@
 """
-batch.py — headless batch runner + resume (milestone 3 scaffold).
+batch.py: headless batch runner + resume.
 
 This is run_aval.py generalized into a loop. Same session setup (predictors,
 annotate_df, chains built once), then run *every* chain unattended, recording
 status to a manifest ledger as it goes, and rolling the per-chain QC flags up
 into one cross-chain triage queue.
 
-What M3 is and isn't
---------------------
+What this is and isn't
+----------------------
 IS:  run all chains overnight, survive crashes (resume from the manifest),
      never recompute a finished chain, and produce `_triage.csv` so you can
      measure the auto-flag rate across the whole dataset before building the GUI.
 ISN'T: mid-propagation halt-and-re-prompt. That's the `propagate` generator
-     restructure, coupled to the napari GUI, and lives in M4. This runner treats
+     restructure, coupled to the napari GUI, and lives in the GUI. This runner treats
      each chain as a single atomic `run_chain` call: run it, record what QC
      flagged, move on. Resist wiring interventions in here.
 
-Storage (PIPELINE_CONTEXT §3e)
-------------------------------
+Storage
+-------
     output/
-      _manifest.csv                 # every chain x status — drives batch + resume
-      _triage.csv                   # flagged frames across all chains — feeds the GUI
+      _manifest.csv                 # every chain x status: drives batch + resume
+      _triage.csv                   # flagged frames across all chains: feeds the GUI
       <neuron>/chain_<idx:02d>/
         state.json                  # ChainState (save_state/load_state)
         qc.csv                      # per-frame metrics (indexed by catmaid_z)
@@ -33,13 +33,13 @@ tier-2/gif, default neurons); pick one with `--preset` and override any field wi
 
     python batch.py                              # = --preset original (target worm defaults)
     py -3 batch.py --preset original --neurons AVAL AVAR --clean
-    py -3 batch.py --preset eval --neurons URYVL    # SEM-Dauer 1 cross-worm GT (Stage 0 eval)
+    py -3 batch.py --preset eval --neurons URYVL    # SEM-Dauer 1 cross-worm GT eval
     py -3 batch.py --preset eval --neuron-limit 3   # first N neurons; --all = every neuron (guarded)
     # then score a GT run:  py -3 -m eval.score_batch --preset eval
     # or import run_batch / build_triage_queue from a notebook for inspection.
 
 The GT path runs the SAME pipeline on a different worm via a `pipeline.FrameStore` (EM
-source) + registration-baked prompts — see eval/gt_dataset.py + eval/README.md.
+source) + registration-baked prompts: see eval/gt_dataset.py + eval/README.md.
 """
 from __future__ import annotations
 
@@ -57,23 +57,23 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
-# Project imports. `pipeline` is the M1/M2 library at the repo root; the
+# Project imports. `pipeline` is the library at the repo root; the
 # sam2_utils pieces are the stable helpers.
 import pipeline
 from pipeline import ChainState, PipelineConfig, save_state  # load_state if resuming state
 from sam2_utils import setup, alignment, diagnostics, review, config
 
-# DATA PATHS — defined once in sam2_utils.config; edit them there, not here.
+# DATA PATHS: defined once in sam2_utils.config; edit them there, not here.
 CSV_PATH    = config.CSV_PATH
 CHAINS_PATH = config.CHAINS_PATH
 OUTPUT_ROOT = config.OUTPUT_ROOT
 FRAMES_ROOT = config.FRAMES_ROOT     # SAM2 JPEG frame folders go here
 
 # Run configurations (which worm, paths, PipelineConfig knobs, tier-2/gif, default
-# neurons) live in sam2_utils/presets.py — `--preset eval|original`. Edit presets there.
+# neurons) live in sam2_utils/presets.py: `--preset eval|original`. Edit presets there.
 from sam2_utils import presets
 
-# Status vocabulary (matches ChainState.status / PIPELINE_CONTEXT §3b).
+# Status vocabulary (matches ChainState.status).
 PENDING, RUNNING, DONE, FLAGGED, FAILED = (
     "pending", "running", "done", "flagged", "failed",
 )
@@ -83,7 +83,7 @@ MANIFEST_COLUMNS = [
     "neuron", "chain_idx", "status",
     "n_frames", "n_flagged", "n_intervene", "flag_rate",
     "anchor_frame_idx",
-    # anchor-quality gate verdict (M3.5 item 1), rolled up per chain so it sits
+    # anchor-quality gate verdict, rolled up per chain so it sits
     # next to the QC summary and joins to _triage.csv on (neuron, chain_idx).
     # anchor_reasons is the comma-joined fail list ('' = passed); anchor_contained
     # is True/False/'' (blank = abstained, no positive point).
@@ -99,7 +99,7 @@ def _now() -> str:
 
 def _atomic_write_csv(df: pd.DataFrame, path: Path, index: bool = False) -> None:
     """Write to a temp file in the same dir, then rename. A crash mid-write
-    can't corrupt the manifest — you either get the old file or the new one.
+    can't corrupt the manifest: you either get the old file or the new one.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +123,7 @@ def enumerate_chains(
 ) -> List[Tuple[str, int, dict]]:
     """Flatten chains.json into [(neuron, chain_idx, chain_dict), ...].
 
-    chain_idx is the position *within that neuron's* chain list — the same index
+    chain_idx is the position *within that neuron's* chain list, the same index
     the notebook uses (`cell_chain.index(subchain)`), so it matches the on-disk
     `chain_<idx:02d>` folders and ChainState.chain_idx.
 
@@ -167,7 +167,7 @@ def _append_timing(output_root, neuron, chain_idx, state, peak_vram):
 # =============================================================================
 # IO timing accumulator
 # =============================================================================
-# Full-file rewrites — the per-chain manifest breadcrumb especially — are pure
+# Full-file rewrites (the per-chain manifest breadcrumb especially) are pure
 # overhead that scales with manifest size, not segmentation work. Track wall-clock
 # + count per file so a run can say whether the breadcrumbing is worth throttling.
 _IO_STATS: "OrderedDict[str, list]" = OrderedDict()   # filename -> [total_seconds, n_writes]
@@ -226,7 +226,7 @@ def load_or_init_manifest(
     if not new_rows.empty:
         existing = pd.concat([existing, new_rows], ignore_index=True)
     # reindex (not [MANIFEST_COLUMNS]) so a manifest written by an older batch.py
-    # without the anchor_* columns loads cleanly — missing columns come back as NA
+    # without the anchor_* columns loads cleanly: missing columns come back as NA
     # rather than raising KeyError.
     return existing.reindex(columns=MANIFEST_COLUMNS)
 
@@ -247,7 +247,7 @@ def _clean_outputs(
                   so it doesn't need pruning.)
 
     Unlike `force` (which re-runs but lets save_masks overwrite in place, leaving
-    orphan PNGs from any chain whose frame coverage shrank), this deletes first —
+    orphan PNGs from any chain whose frame coverage shrank), this deletes first,
     so QC never re-scores a stale mask.
     """
     output_root = Path(output_root)
@@ -315,26 +315,25 @@ def _should_run(status: str, retry_failed: bool, force: bool) -> bool:
 
 def _should_tier2_rerun(status: str, cfg_chain_crop: bool, tier2_on_flagged: bool,
                         *, tier2_all: bool = False) -> bool:
-    """Decision 1 (PIPELINE_CONTEXT §8.5 / §8.7): should a just-run chain get a second,
-    tier-2 (per-chain crop) pass?
+    """Should a just-run chain get a second, tier-2 (per-chain crop) pass?
 
-    Requires the first pass to have run in _sam, NOT already tier-2 (`not cfg_chain_crop`)
-    — a chain whose config already enabled chain_crop got tier-2 on its only pass — and the
+    Requires the first pass to have run in _sam, NOT already tier-2 (`not cfg_chain_crop`):
+    a chain whose config already enabled chain_crop got tier-2 on its only pass, and the
     chain to have completed a _sam pass (`status in {done, flagged}`; failed/pending never
     re-run). Then:
-      - ``tier2_all`` (default off): re-run EVERY completed chain — the "tier-2 everywhere"
+      - ``tier2_all`` (default off): re-run EVERY completed chain, the "tier-2 everywhere"
         test mode. Pairs with chain_crop_from_mask so each chain's crop is sized from its own
         _sam mask bbox (clip-fixed), not the centerline. ~2x compute per chain.
       - else ``tier2_on_flagged``: re-run only the QC-FLAGGED chains (the default auto
-        second-pass) — clean `done` chains stay _sam.
+        second-pass); clean `done` chains stay _sam.
 
-    Tier-2's own item-b fallback (chain_crop_fallback) reverts a chain with a poor crop
-    anchor to the plain _sam path, so this second pass is regression-free (§8.5: improved
-    3, regressed 0). The win is landing chains in _pcrop — higher-res propagation for real
-    drift, and a crisp manual-paint surface when the human opens the chain in the GUI (§8.6).
+    Tier-2's own fallback (chain_crop_fallback) reverts a chain with a poor crop
+    anchor to the plain _sam path, so this second pass is regression-free. The win is
+    landing chains in _pcrop: higher-res propagation for real drift, and a crisp
+    manual-paint surface when the human opens the chain in the GUI.
 
     NB this fires only in the SAME invocation, right after the first pass. A chain already
-    `done`/`flagged` on disk from a prior run is skipped by `_should_run` (both ∈
+    `done`/`flagged` on disk from a prior run is skipped by `_should_run` (both in
     COMPLETE_STATUSES), so it is never re-run twice; to upgrade a pre-existing backlog to
     tier-2, re-run those chains with `force=True`.
     """
@@ -346,7 +345,7 @@ def _should_tier2_rerun(status: str, cfg_chain_crop: bool, tier2_on_flagged: boo
 
 
 # =============================================================================
-# Per-chain run — THE wire-in point
+# Per-chain run: THE wire-in point
 # =============================================================================
 # Everything above/below is plumbing that doesn't care how a chain runs. This is
 # the *only* place that touches pipeline.run_chain. If the real signature drifts,
@@ -366,7 +365,7 @@ class Session:
 def _run_chain_once(session: Session, cfg: PipelineConfig, neuron: str,
                     chain_idx: int, chain: dict) -> ChainState:
     """One pipeline.run_chain call with the batch's standard wiring. Factored out so
-    the tier-2 second pass (decision 1) can re-invoke it with a chain_crop override."""
+    the tier-2 second pass can re-invoke it with a chain_crop override."""
     state = ChainState(neuron=neuron, chain_idx=chain_idx, config=cfg)
     return pipeline.run_chain(
         state,
@@ -396,15 +395,15 @@ def _run_one_chain(
     built predictors + annotate_df and a ChainState carrying (neuron, chain_idx,
     config); it runs all 9 phases (incl. run_qc), writes masks/ + qc.csv under
     the chain dir derived from cfg.output_root, sets state.status to done/flagged,
-    and returns the populated state. Validated against run_aval.py on the M3
-    subset run. on_video_phase=cleanup_vram reclaims VRAM between the image and
+    and returns the populated state. Validated against run_aval.py.
+    on_video_phase=cleanup_vram reclaims VRAM between the image and
     video phases (run_chain owns reset_predictor() internally).
 
-    Decision 1 (PIPELINE_CONTEXT §8.5 / §8.7): if the first (_sam) pass is FLAGGED and
+    If the first (_sam) pass is FLAGGED and
     `tier2_on_flagged` is set, re-run the chain ONCE with chain_crop=True. We keep the
-    tier-2 result unconditionally — its item-b fallback already reverts a poor crop anchor
-    to _sam, so the second pass never regresses (§8.5) and a kept-tier-2 chain lands in
-    _pcrop (crisp GUI paint, §8.6). The second run's save_masks overwrites the first pass's
+    tier-2 result unconditionally: its fallback already reverts a poor crop anchor
+    to _sam, so the second pass never regresses and a kept-tier-2 chain lands in
+    _pcrop (crisp GUI paint). The second run's save_masks overwrites the first pass's
     PNGs in place (same z-range/filenames), so there are no orphans. See _should_tier2_rerun
     for the precise trigger and the once-per-chain / backlog-upgrade semantics.
     """
@@ -426,8 +425,8 @@ def _run_one_chain(
 
 def _manifest_fields_from_state(state: ChainState) -> dict:
     """Pull the manifest summary columns off a finished ChainState.
-    QC summary per M2: n_frames / n_flagged / n_intervene / flag_rate.
-    Anchor verdict per M3.5: state.anchor_score (a plain dict; see score_anchor).
+    QC summary: n_frames / n_flagged / n_intervene / flag_rate.
+    Anchor verdict: state.anchor_score (a plain dict; see score_anchor).
     """
     qs = getattr(state, "qc_summary", None) or {}
     a = getattr(state, "anchor_score", None) or {}
@@ -480,7 +479,7 @@ def build_triage_queue(output_root: Path, manifest: pd.DataFrame) -> pd.DataFram
     Reads each chain's on-disk qc.csv (known schema from qc.compute_metrics:
     indexed by z, with flag / flag_count / area_ratio / temporal_iou /
     skeleton_contained / pred_iou). Reading the artifact keeps this decoupled
-    from in-memory ChainState internals — the filesystem is the index (§4).
+    from in-memory ChainState internals: the filesystem is the index.
     """
     output_root = Path(output_root)
     frames: List[pd.DataFrame] = []
@@ -544,8 +543,8 @@ def run_batch(
     clean: bool = False,         # True = delete prior outputs before running.
                                  #   full reset if neurons is None; else only those neurons.
     gif_mode: str = "flagged",   # "off" | "flagged" | "all": per-chain overlay gifs via review
-    tier2_on_flagged: bool = True,  # decision 1 (§8.5/§8.7): re-run a flagged _sam chain
-                                    # once with tier-2 crop (regression-free via item-b fallback).
+    tier2_on_flagged: bool = True,  # re-run a flagged _sam chain
+                                    # once with tier-2 crop (regression-free via fallback).
                                     # Set False to keep the legacy single-pass _sam behaviour.
     tier2_all: bool = False,        # "tier-2 everywhere" test mode: re-run EVERY completed
                                     # chain as tier-2 (pair with cfg.chain_crop_from_mask for
@@ -602,7 +601,7 @@ def run_batch(
             fields = _manifest_fields_from_state(state)
             _update_row(manifest, neuron, idx, **fields)
             ran += 1
-            # overlay gif/mp4 for eyeballing - review reads the chain's on-disk masks.
+            # overlay gif/mp4 for eyeballing: review reads the chain's on-disk masks.
             #   "off"     -> never; "flagged" -> only chains QC flagged; "all" -> every chain.
             # "flagged" keeps a full overnight run from gifing every clean chain.
             is_flagged = fields["status"] == FLAGGED
@@ -661,13 +660,13 @@ def _build_session(cfg: PipelineConfig) -> Session:
 def _build_gt_session(cfg: PipelineConfig,
                       neurons: Optional[Sequence[str]] = None,
                       neuron_limit: Optional[int] = None) -> Session:
-    """Session for a SEM-Dauer 1 (cross-worm GT) run — Stage 0.2.
+    """Session for a SEM-Dauer 1 (cross-worm GT) run.
 
     Same predictors as the target worm, but the dataset seams come from
     `eval.gt_dataset`: annotate_df with x_tif/y_tif from the per-section registration,
     a configurable chain subset (`neurons` / `neuron_limit`), and a GtFrameStore
     (per-slice PNG EM). Chain cell_names are normalized (strips brackets + trailing
-    !/? — also dodges the Windows mkdir-on-'?' bug)."""
+    !/?, also dodges the Windows mkdir-on-'?' bug)."""
     from eval import gt_dataset
     from sam2_utils.skeletons import normalize_name
 
@@ -723,7 +722,7 @@ def main() -> None:
 
     if p["dataset"] == "sem-dauer-1":
         # Guard the expensive full run: require an explicit scope (9766 chains × slow
-        # full-res PNG frame-prep is days of compute — don't do it by accident).
+        # full-res PNG frame-prep is days of compute, don't do it by accident).
         if not neurons and args.neuron_limit is None and not args.all:
             ap.error("preset 'eval' (SEM-Dauer 1) needs an explicit scope: pass "
                      "--neurons NAME ..., --neuron-limit N, or --all.")

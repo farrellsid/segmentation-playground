@@ -177,12 +177,12 @@ def build_video_predictor(
     verbatim and re-emitted on the next ``propagate_in_video`` instead of being
     re-inferred from memory (which silently discards the correction). Required by the
     interactive review GUI, where a human-painted mask must be authoritative across
-    iterative paint→resume→repaint cycles (PIPELINE_CONTEXT §7 *box vs mask*: "the
-    human-painted mask is the maximally-verified seed").
+    iterative paint, resume, repaint cycles (the human-painted mask is the
+    maximally-verified seed).
 
     **Default False** preserves the exact headless build: the batch pipeline only ever
     seeds the anchor (an *initial* conditioning frame, unaffected by this flag) and
-    never corrects an already-tracked frame, so the flag is inert there and the M1
+    never corrects an already-tracked frame, so the flag is inert there and the
     AVAL pixel-for-pixel reproduction is unchanged.
     """
     from sam2.build_sam import build_sam2_video_predictor
@@ -202,7 +202,7 @@ def build_predictor(
     """One-shot convenience: pick size + kind, get a ready-to-use predictor.
 
     ``correct_as_cond`` (video only) promotes human corrections to conditioning
-    frames — see ``build_video_predictor``. Ignored for ``kind="image"``.
+    frames; see ``build_video_predictor``. Ignored for ``kind="image"``.
 
     Returns
     -------

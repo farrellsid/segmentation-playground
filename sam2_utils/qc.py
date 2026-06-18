@@ -39,7 +39,7 @@ Design notes
   haven't refactored those into the package yet, fallback inline plotting
   kicks in.
 
-The five signals computed per frame (see proposed architecture doc, §3):
+The five signals computed per frame:
     area               - mask pixel count
     centroid_y,x       - mask center-of-mass
     n_components       - connected components (after thresholding)
@@ -69,7 +69,7 @@ import scipy.ndimage as ndi
 from skimage.measure import label
 import matplotlib.pyplot as plt
 
-from sam2_utils import alignment   # the one home for coordinate transforms (s4)
+from sam2_utils import alignment   # the one home for coordinate transforms
 
 # Optional: reuse the project's existing viz module if present.
 try:
@@ -96,15 +96,15 @@ def _iter_mask_paths(mask_dir: Path) -> list[tuple[int, Path]]:
 def _load_binary(path: Path) -> np.ndarray:
     """Load a uint8/uint16 PNG mask into a boolean array."""
     arr = np.array(Image.open(path))
-    if arr.ndim == 3:                          # RGBA — collapse
+    if arr.ndim == 3:                          # RGBA (collapse)
         arr = arr[..., 0]
     return arr > 0
 
 def _node_contained(mask: np.ndarray, sx_i: int, sy_i: int, r: int) -> bool:
     """True iff foreground lies within a (2r+1)x(2r+1) window of node pixel (sx_i, sy_i).
 
-    Single definition of the per-frame containment window — shared by
-    compute_metrics and sweep_dilation.py (item 0) so the sensitivity sweep
+    Single definition of the per-frame containment window, shared by
+    compute_metrics and sweep_dilation.py so the sensitivity sweep
     scores containment identically to the run. Assumes the node maps inside the
     frame and the mask is non-empty; the no-node / empty-mask / out-of-frame
     tri-state branches stay with the caller.
@@ -120,7 +120,7 @@ def _skeleton_xy_for_z(annotate: pd.DataFrame, z: int) -> Optional[tuple[float, 
     sub = annotate.loc[annotate["z"] == z, ["x_tif", "y_tif"]]
     if sub.empty:
         return None
-    # If multiple nodes on this z (branch point), return the centroid — good
+    # If multiple nodes on this z (branch point), return the centroid: good
     # enough as a containment probe.
     return float(sub["x_tif"].mean()), float(sub["y_tif"].mean())
 
@@ -145,7 +145,7 @@ def _resolve_skeleton(
       - A DataFrame holding multiple cells + a ``cell_name`` to filter on
         (must additionally have a ``cell_name`` column).
       - A dict {z: (x_tif, y_tif)}.
-      - None — skeleton-based checks are skipped.
+      - None: skeleton-based checks are skipped.
     """
     if skeleton is None:
         return None
@@ -198,7 +198,7 @@ def compute_metrics(
           - The full ``aggregate_data_pv`` df + a ``cell_name`` kwarg to
             filter on (must also have a ``cell_name`` column).
           - A ``{z: (x_tif, y_tif)}`` dict.
-          - ``None`` — skeleton-containment checks are skipped (composite
+          - ``None``: skeleton-containment checks are skipped (composite
             flag falls back to the other three signals).
     cell_name : str, optional
         Used only when ``skeleton`` is a multi-cell df. Equivalent to
@@ -214,7 +214,7 @@ def compute_metrics(
         that you logged during propagation. Joined onto the output df if
         provided; otherwise those columns are NaN.
     pred_iou : Mapping[int, float], optional
-        In-memory ``{z: pred_iou}`` (or anything dict-like) — the same data as
+        In-memory ``{z: pred_iou}`` (or anything dict-like): the same data as
         ``pred_iou_csv`` without the disk round-trip. Takes precedence over
         ``pred_iou_csv``. This is what the pipeline passes from
         ``PropagationSession.pred_iou`` (mapped frame_idx -> z).
@@ -262,9 +262,9 @@ def compute_metrics(
 
         # skeleton-node containment (cheapest, most informative signal).
         # Tri-state:
-        #   True  — a chain node exists at this z and the mask covers it
-        #   False — a chain node exists but the mask does NOT cover it (a flag)
-        #   NaN   — no chain node at this z (non-monotonic neurite leaves this
+        #   True  : a chain node exists at this z and the mask covers it
+        #   False : a chain node exists but the mask does NOT cover it (a flag)
+        #   NaN   : no chain node at this z (non-monotonic neurite leaves this
         #           section); NOT assessable, so it must not flag. The area /
         #           temporal signals still guard these frames.
         xy = _skeleton_xy_for_z(skel_df, z) if skel_df is not None else None
@@ -322,7 +322,7 @@ def compute_metrics(
     df = pd.DataFrame(rows).set_index("z").sort_index()
 
     # pred_iou join. Prefer an in-memory {z: pred_iou} mapping (what the pipeline
-    # passes now that propagate() captures SAM2's mask-decoder IoU head — see
+    # passes now that propagate() captures SAM2's mask-decoder IoU head, see
     # pipeline.PropagationSession / _attach_iou_hook); fall back to a CSV; else NaN.
     if pred_iou is not None:
         s = pd.Series(dict(pred_iou), dtype=float)
@@ -334,11 +334,11 @@ def compute_metrics(
     else:
         df["pred_iou"] = np.nan
 
-    # Composite flag — count how many signals fire. When no skeleton was
+    # Composite flag: count how many signals fire. When no skeleton was
     # provided, the containment signal is uninformative so we drop it from
     # the count (otherwise every frame would trip it). Thresholds are
     # parameters (defaults preserve the original hardcoded behavior) so the
-    # pipeline / a tuning sweep can adjust them in one call — see PIPELINE_CONTEXT §7.
+    # pipeline / a tuning sweep can adjust them in one call.
     ar_lo, ar_hi = area_ratio_bounds
     fc = (
         (df["pred_iou"].fillna(1.0) < pred_iou_min).astype(int)
@@ -346,7 +346,7 @@ def compute_metrics(
         + (df["temporal_iou"].fillna(1.0) < temporal_iou_min).astype(int)
     )
     if skel_df is not None:
-        fc = fc + (df["skeleton_contained"] == False).astype(int)  # noqa: E712 — NaN must not count
+        fc = fc + (df["skeleton_contained"] == False).astype(int)  # noqa: E712 (NaN must not count)
     df["flag_count"] = fc
     df["flag"] = fc >= 1
     df["intervene"] = fc >= 1 # changed intervention threshold to all flagged frames.
@@ -426,7 +426,7 @@ def show_flagged(
     skel_df = _resolve_skeleton(skeleton, cell_name)
     flagged = df.index[df["flag"]].tolist()[:n_max]
     if not flagged:
-        print("[qc] no flagged frames — nothing to show")
+        print("[qc] no flagged frames, nothing to show")
         return plt.figure()
 
     rows = (len(flagged) + cols - 1) // cols
@@ -459,7 +459,7 @@ def show_flagged(
 
         mask_crop = mask[y0:y1, x0:x1]
 
-        # Draw EM background if available — em_loader returns FULL-RES
+        # Draw EM background if available (em_loader returns FULL-RES)
         if em_loader is not None:
             try:
                 em = em_loader(z)
@@ -476,7 +476,7 @@ def show_flagged(
         # Overlay mask
         if _viz is not None and hasattr(_viz, "show_mask"):
             ax.set_xlim(x0, x1); ax.set_ylim(y1, y0)
-            # _viz.show_mask expects ax + mask in image coords — reproject
+            # _viz.show_mask expects ax + mask in image coords (reproject)
             full = np.zeros_like(mask, dtype=bool)
             full[y0:y1, x0:x1] = mask_crop
             _viz.show_mask(full, ax, borders=True)
@@ -525,7 +525,7 @@ def export_triage(df: pd.DataFrame, out_csv: str | Path,
 
 
 # ---------------------------------------------------------------------------
-# Mask I/O — bridge from in-memory video_segments to disk
+# Mask I/O: bridge from in-memory video_segments to disk
 # ---------------------------------------------------------------------------
 
 def save_masks(
@@ -544,7 +544,7 @@ def save_masks(
     ----------
     video_segments : dict
         ``{frame_idx: {obj_id: 2-D bool mask in SCALE-downscaled space}}``
-        — the dict your propagation loop builds in RAM.
+        (the dict your propagation loop builds in RAM).
     out_dir : path
         Created if missing. Existing mask files are overwritten.
     frame_to_z : Mapping[int, int], optional

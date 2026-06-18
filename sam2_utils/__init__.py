@@ -1,4 +1,4 @@
-"""sam2_utils — shared helpers for SAM2 experiments on Zhen Lab EM data.
+"""sam2_utils: shared helpers for SAM2 experiments on Zhen Lab EM data.
 
 Eagerly imported (available as ``sam2_utils.<name>`` after ``import sam2_utils``):
     config        - paths, checkpoint registry, affine constants, data/output paths
@@ -9,14 +9,14 @@ Eagerly imported (available as ``sam2_utils.<name>`` after ``import sam2_utils``
     alignment     - THE coordinate-transform home: affine, tif<->sam, z maps,
                     nm->stack-px, CropWindow, affine fit + grid sampling
 
-Import-on-demand (heavier deps - skimage/scipy/matplotlib/napari; do
+Import-on-demand (heavier deps: skimage/scipy/matplotlib/napari; do
 ``from sam2_utils import qc`` etc. so they're not pulled into light imports, and
 so pipeline.py can stay torch/qc-free at import time):
     qc            - post-hoc QC metrics + flag rule over a saved mask stack
     review        - read-only proofreading viewer for a finished chain on disk
     video_viz     - overlay/animate/grid an in-RAM video_segments dict
-    labels        - M4 per-frame label store (the "label engine"); pure pandas
-    review_queue  - M4 work queue + GUI-owned review-status ledger; pure pandas
+    labels        - per-frame label store (the "label engine"); pure pandas
+    review_queue  - work queue + GUI-owned review-status ledger; pure pandas
                     (the napari GUI itself is top-level ``gui.py``, not in this
                     package, to keep napari out of the import path entirely)
 """

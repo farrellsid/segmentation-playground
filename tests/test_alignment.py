@@ -3,7 +3,7 @@
 These are deliberately torch-free and data-free: they exercise the pure
 coordinate math (affine, _tif<->_sam, z section maps, nm->stack-px, CropWindow)
 and nothing that needs a GPU or the EM stack. That makes them the runnable
-guard for the s4 "centralize transforms" refactor: if the maps still round-trip
+guard for the "centralize transforms" refactor: if the maps still round-trip
 here, the inline call sites in pipeline.py / qc.py / catmaid.py that now delegate
 to them behave as before.
 

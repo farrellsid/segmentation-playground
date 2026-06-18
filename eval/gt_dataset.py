@@ -1,6 +1,6 @@
 """gt_dataset.py — wire the real pipeline (run_chain / batch.py) onto SEM-Dauer 1.
 
-Stage 0.2 (FUTURE_DIRECTIONS §5): score the *production* pipeline against the cross-worm
+Score the *production* pipeline against the cross-worm
 GT, instead of the `predict_gt.py` reimplementation. The pipeline is worm-agnostic except
 two seams, both filled here:
 
@@ -16,8 +16,8 @@ two seams, both filled here:
 `build_gt_session_inputs()` returns everything `batch._build_session` needs:
 `(annotate_df, chains, frame_store)`. Output/frames roots come from the caller (batch argparse).
 
-Registration is full-res (Stage 0.3: `registration.json` scaled x4 -> A ~ I), so `x_tif/y_tif`
-land in the full_scale VAST grid (9728x9216) — the same grid the full_scale EM PNGs live on.
+Registration is full-res (`registration.json` scaled x4 -> A ~ I), so `x_tif/y_tif`
+land in the full_scale VAST grid (9728x9216), the same grid the full_scale EM PNGs live on.
 """
 from __future__ import annotations
 

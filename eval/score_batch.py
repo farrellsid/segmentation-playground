@@ -1,4 +1,4 @@
-"""score_batch.py — score a SEM-Dauer 1 batch.py run against GT (Stage 0.2 gate).
+"""score_batch.py — score a SEM-Dauer 1 batch.py run against GT.
 
 `batch.py --preset eval` writes per-CHAIN masks in `_sam` space:
     <output_root>/<neuron>/chain_NN/masks/mask_<slice:04d>.png   (0/255, ~1216x1152)
@@ -10,7 +10,7 @@ module bridges the two:
     plugs straight into `eval.score.score_region` as a PredictionSource.
 
 Region metrics (IoU/Dice/precision/recall) are the immediate read; per-neuron ERL +
-split/merge (the Stage-0 gate) is layered on via labelmap compositing -> `eval.run_erl`.
+split/merge (the gate) is layered on via labelmap compositing -> `eval.run_erl`.
 
     py -3 -m eval.score_batch --root data/groundtruth/pred_p280/batch_masks --out eval/out_gt
 """

@@ -1,6 +1,6 @@
-"""eval/ — Stage 0 evaluation harness against the cross-worm VAST ground truth.
+"""eval/ — evaluation harness against the cross-worm VAST ground truth.
 
-See README.md and FUTURE_DIRECTIONS.md §4.1 / §5 Stage 0. Region-overlap + VOI
+See README.md. Region-overlap + VOI
 metrics (`metrics`) and skeleton-based ERL (`erl`) are implemented, reading the
 VAST GT (`groundtruth`) and scoring a prediction source (`score`). ERL's metric
 core is pure; only sampling real per-node labels needs the prediction pixels.

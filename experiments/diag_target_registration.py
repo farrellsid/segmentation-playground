@@ -1,14 +1,14 @@
 """diag_target_registration.py — is the sensory-ablated-dauer (proj 336) single global
 affine z-stable, or does it drift across the stack?
 
-Context (June 2026): SEM-Dauer 1 (the cross-worm GT) needed a *per-section* affine
+Context: SEM-Dauer 1 (the cross-worm GT) needed a *per-section* affine
 because its VAST masks/EM were realigned section-by-section vs the pre-realignment
 skeleton trace. The target worm uses ONE global affine (`config.M_AFFINE/T_AFFINE`,
 fit at CATMAID z=1293 == the FIRST stack slice). This script asks the cautious
 question the GT result raised: does that single-z affine hold across all ~338 z, or
 does it drift toward the far end (z far from 1293)?
 
-Method (no GT masks needed — uses the pipeline's own outputs):
+Method (no GT masks needed; uses the pipeline's own outputs):
 For every saved frame of every output chain, compare
   * node_sam   = the chain's skeleton node at that z, placed EXACTLY as the pipeline
                  placed it: catmaid_to_tif(x,y) / scale  (so this measures the same
@@ -19,11 +19,10 @@ and take the offset vector node - centroid.
 NB: ~⅔ of the chains here are tier-2 (`chain_crop`) so their qc centroid is in the
 per-chain crop space `_pcrop`, NOT `_sam`. We map it back via the chain's persisted
 `crop_window` (tif = origin_tif + p·crop_scale → sam = tif/scale) before differencing.
-Forgetting this compares two different frames and fabricates a huge fake "drift" — the
-first cut of this script did exactly that.
+Forgetting this compares two different frames and fabricates a huge fake "drift".
 
 A single chain's offset mixes registration error with propagation drift. To ISOLATE
-registration we use cross-chain *coherence* per z (the diag_registration trick):
+registration we use cross-chain *coherence* per z:
 propagation drift points in random per-chain directions and CANCELS in the mean;
 a registration error is shared by every chain on that slice and SURVIVES the mean.
 So the signature of registration drift is a per-z MEAN offset vector whose magnitude

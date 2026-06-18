@@ -1,7 +1,7 @@
 """Coordinate transforms for the SAM2 pipeline. THE single home for them.
 
-PIPELINE_CONTEXT s4 asks that every coordinate transform live in one place and
-that variables be tagged with their space. This module is that place. The spaces
+Every coordinate transform lives in one place and variables are tagged with
+their space. This module is that place. The spaces
 (suffix convention, matching pipeline.py):
     _cm    CATMAID stack-pixel coords (annotate_df x, y)
     _tif   full-resolution tif pixels (annotate_df x_tif, y_tif)
@@ -117,7 +117,7 @@ def file_z_to_catmaid_z(file_z: int) -> int:
 # CATMAID returns node coords in nm; dividing by the per-axis voxel size
 # (config.STACK_RESOLUTION_NM) gives stack-pixel coords. Used by
 # catmaid.fetch_all_annotations; kept here so every coordinate transform has one
-# home (PIPELINE_CONTEXT s4).
+# home.
 
 def nm_to_stack_px(x_nm, y_nm, z_nm):
     """Convert CATMAID nm coords to stack-pixel coords (per-axis voxel divide).
@@ -133,9 +133,9 @@ def nm_to_stack_px(x_nm, y_nm, z_nm):
 # =============================================================================
 # Crop window  (the ONE place crop<->tif<->sam mapping lives)
 # =============================================================================
-# PIPELINE_CONTEXT §4/§5: centralize coordinate transforms; tag every coord with
-# its space. The local high-res crop (M3.5) introduces a *new* space, _crop, and
-# the prior art (Bader Lab sam2maskpropagator) shows the trap — tangled x/y swaps
+# Centralize coordinate transforms; tag every coord with
+# its space. The local high-res crop introduces a *new* space, _crop, and
+# the prior art (Bader Lab sam2maskpropagator) shows the trap: tangled x/y swaps
 # when crop<->full mapping is done ad hoc. So all of it goes here, behind one
 # tested object, and nothing else does crop arithmetic by hand.
 #
@@ -145,7 +145,7 @@ def nm_to_stack_px(x_nm, y_nm, z_nm):
 #   _crop  pixels inside this crop's image = (_tif - origin_tif) / crop_scale
 #
 # Point convention is (x, y); box convention is xyxy = (x0, y0, x1, y1).
-# numpy arrays are [row, col] = [y, x], so the array slice swaps the order — that
+# numpy arrays are [row, col] = [y, x], so the array slice swaps the order: that
 # swap happens in exactly one method (slice_tif) and nowhere else.
 
 @dataclass(frozen=True)
@@ -154,7 +154,7 @@ class CropWindow:
 
     Build with `CropWindow.around_node(...)`, which centers a window on the node
     and clips it to the image. A node near an edge yields a smaller/shifted
-    window, so the realized `origin_tif`/`size_tif` are authoritative — never
+    window, so the realized `origin_tif`/`size_tif` are authoritative: never
     assume the node sits at the window centre.
     """
     origin_tif: Tuple[float, float]   # (x, y) top-left in full-res tif px, post-clip
@@ -190,10 +190,10 @@ class CropWindow:
         """Window covering a `_tif` bbox (xyxy), expanded by `pad_tif`, clipped to image.
 
         Unlike `around_node` (a fixed-size window slid inside the frame), this is the
-        *intersection* of the padded bbox with the image — so it is exactly the box's
+        *intersection* of the padded bbox with the image, so it is exactly the box's
         extent, only smaller at an edge. This is the tier-2 per-chain window: pass the
         bbox of a chain's whole skeleton xy-extent so the entire propagation runs in
-        one high-res crop (PIPELINE_CONTEXT §7 "Local high-res cropping" tier 2).
+        one high-res crop (the tier-2 local high-res cropping path).
 
         box_tif : (x0, y0, x1, y1) in full-res tif px.
         image_hw_tif : (H, W) of the full-res frame.

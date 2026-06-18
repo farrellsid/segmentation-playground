@@ -1,18 +1,18 @@
-"""presets.py — named run configurations for `batch.py` and `eval.score_batch`.
+"""presets.py: named run configurations for `batch.py` and `eval.score_batch`.
 
-A preset bundles everything that distinguishes one kind of run — which worm/dataset,
+A preset bundles everything that distinguishes one kind of run (which worm/dataset,
 the output + frames roots, the `PipelineConfig` knobs, the tier-2 / gif settings, and a
-default neuron set — so a run is just `--preset <name> [--neurons ...]` instead of a long
+default neuron set) so a run is just `--preset <name> [--neurons ...]` instead of a long
 command. Edit a preset here (or add a new one) rather than spelling out flags each time.
 
-  eval     — SEM-Dauer 1 cross-worm GT (Stage 0): large model, tier-2, the GT paths;
+  eval     : SEM-Dauer 1 cross-worm GT: large model, tier-2, the GT paths;
              scored by `eval.score_batch` against the VAST GT (`score_out`).
-  original — the target/production worm (CATMAID 336, the "sensory ablated dauer"): the
+  original : the target/production worm (CATMAID 336, the "sensory ablated dauer"): the
              params the batch driver used to hardcode (module-level knobs, moved here).
 
-Any CLI flag (`--neurons`, `--model-size`, `--output-root`, `--clean`, `--no-tier2`, …)
+Any CLI flag (`--neurons`, `--model-size`, `--output-root`, `--clean`, `--no-tier2`, ...)
 OVERRIDES the preset. `pipeline` is a dict of `PipelineConfig` kwargs (kept as a plain dict
-so this module stays import-light — no `pipeline` import; the driver constructs the config).
+so this module stays import-light: no `pipeline` import; the driver constructs the config).
 """
 from __future__ import annotations
 

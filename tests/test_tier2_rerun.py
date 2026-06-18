@@ -1,6 +1,5 @@
-"""Unit tests for batch._should_tier2_rerun — the trigger for decision 1
-(PIPELINE_CONTEXT §8.5 / §8.7): a chain flagged in the _sam pass is re-run once with
-tier-2 per-chain cropping.
+"""Unit tests for batch._should_tier2_rerun: a chain flagged in the _sam pass is
+re-run once with tier-2 per-chain cropping.
 
 Torch-free: batch imports pipeline/sam2_utils.setup, but all of them defer torch to
 call-time, so importing the module and exercising the pure decision function (and the

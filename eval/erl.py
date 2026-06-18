@@ -1,11 +1,11 @@
 """
-erl.py — Expected Run Length (skeleton-based) for eval/ Stage 0.
+erl.py — Expected Run Length (skeleton-based).
 
-ERL is the *skeleton half* of the Stage-0 ruler (FUTURE_DIRECTIONS §4.1; README
-"Not yet built"): the **expected error-free traced path length** measured from a
+ERL is the *skeleton half* of the eval ruler: the **expected error-free traced
+path length** measured from a
 uniformly-random point along the ground-truth skeletons, with any predicted
-segment that **merges two neurons** contributing zero length. It is the metric the
-Stage 0 → Stage 1 advance gate is stated in ("produce a per-neuron ERL and a
+segment that **merges two neurons** contributing zero length. The advance gate is
+stated in it ("produce a per-neuron ERL and a
 split/merge breakdown"). Source: Januszewski et al., Nature Methods 2018
 (s41592-018-0049-4); the merge-zeroing is what makes it punish the costly error.
 
@@ -447,8 +447,8 @@ def sample_node_labels(
       ``.transform``; default is identity (node coords already in label-px).
     * ``radius`` (default 0 = single pixel): sample a ``(2r+1)²`` window and take the
       **dominant non-background label** (0 only if the whole window is background).
-      Robust to thin structures where the exact node pixel lands just off a 1–3 px-wide
-      mask (the FUTURE_DIRECTIONS §5 neighborhood-sampling lever) — important when the
+      Robust to thin structures where the exact node pixel lands just off a 1-3 px-wide
+      mask (the neighborhood-sampling lever), important when the
       label grid is downscaled (``_sam``), where 1 px ≈ ``scale`` full-res px.
 
     A node whose mapped pixel is out of bounds gets label 0 (background).

@@ -1,5 +1,5 @@
 """
-video_viz.py — watch SAM2 video-mode propagation results.
+video_viz.py: watch SAM2 video-mode propagation results.
 
 Drop this in your `sam2_utils/` package (or next to the notebook) and import it.
 It overlays the per-frame masks in `video_segments` onto the JPEG frames that
@@ -8,7 +8,7 @@ SAM2 actually saw (the ones written to `video_frames_dir`).
 Why read frames from `video_frames_dir` instead of the tifs?
   Those JPEGs are 0-indexed and already at SCALE resolution, so frame `i` lines
   up exactly with `video_segments[i]` and the SCALE-space masks. No tif re-reads,
-  no resampling, no coordinate math — what you see is what SAM2 saw.
+  no resampling, no coordinate math: what you see is what SAM2 saw.
 
 Main entry points:
   animate(...)    -> inline scrubber/player (returns IPython HTML), best for *watching*
@@ -91,7 +91,7 @@ def _label(idx, frame_to_z, area, anchor_idx, total):
 
 
 # --------------------------------------------------------------------------- #
-# Inline player — the one you want for "let me actually see it"
+# Inline player: the one you want for "let me actually see it"
 # --------------------------------------------------------------------------- #
 def animate(
     video_segments,
@@ -115,7 +115,7 @@ def animate(
     max_frames  : cap the number of frames embedded (evenly subsampled). Useful
                   for long ~340-frame chains; None = all.
 
-    Returns an IPython.display.HTML — just `return` it as the last line of a cell,
+    Returns an IPython.display.HTML; just `return` it as the last line of a cell,
     or do `from IPython.display import display; display(animate(...))`.
     """
     from IPython.display import HTML
@@ -168,7 +168,7 @@ def animate(
 
 
 # --------------------------------------------------------------------------- #
-# Static grid — quick glance, survives notebook reloads, good for sharing
+# Static grid: quick glance, survives notebook reloads, good for sharing
 # --------------------------------------------------------------------------- #
 def grid(
     video_segments,

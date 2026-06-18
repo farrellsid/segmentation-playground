@@ -1,25 +1,25 @@
 """
-skeletons.py — pull + process CATMAID skeletons into the pipeline's node table.
+skeletons.py: pull + process CATMAID skeletons into the pipeline's node table.
 
 This is the library form of `Copy_of_Get_catmaid_information_lucinda.ipynb`: the
 notebook that produced `data/aggregate_data_pv.csv` + `chains.json` + `roots.json`
 for the original worm (CATMAID project 336). Factored into reusable functions so a
-new worm (e.g. the cross-worm GT, project 280) is one driver call — see
+new worm (e.g. the cross-worm GT, project 280) is one driver call, see
 `pull_worm.py`.
 
 The pipeline (three stages, each a function here)
 -------------------------------------------------
-1. **pull_aggregate** — every skeleton's node-overview into one DataFrame, with
+1. **pull_aggregate** : every skeleton's node-overview into one DataFrame, with
    nm→stack-px conversion (÷ STACK_RESOLUTION_NM). `node_id` is kept exactly as
    CATMAID returns it (integer); downstream matching everywhere stringifies via
-   ``annotate_df["node_id"].astype(str) == str(node)`` (pipeline.py §"node_id
-   matching"), so CSV and chains.json need only be *internally* consistent.
-2. **insert_virtual_nodes** — CATMAID traces skip z-sections; SAM2 propagation
+   ``annotate_df["node_id"].astype(str) == str(node)`` (pipeline.py's node_id
+   matching), so CSV and chains.json need only be *internally* consistent.
+2. **insert_virtual_nodes** : CATMAID traces skip z-sections; SAM2 propagation
    needs a node on every slice. For each parent→child edge spanning a z-gap (up to
    ``allowance`` sections) insert linearly-interpolated "virtual" nodes, one per
    intervening slice, and rewire the chain child → v1 → … → vk → parent. Returns
    the densified table with an ``is_vnode`` column.
-3. **decompose_chains** — split each neuron's (possibly branched) skeleton tree at
+3. **decompose_chains** : split each neuron's (possibly branched) skeleton tree at
    every branch point into maximal *linear* chains (a DFS). Each chain is what the
    pipeline propagates as one unit. Returns (chains, roots).
 

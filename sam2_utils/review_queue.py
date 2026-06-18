@@ -1,49 +1,48 @@
 """
-review_queue.py — the M4 GUI's work queue + review-status ledger.
+review_queue.py: the review GUI's work queue + review-status ledger.
 
 The batch runner (``batch.py``) owns the *execution* status of every chain
-(``_manifest.csv``: pending → running → done/flagged/failed) and rolls flagged
+(``_manifest.csv``: pending -> running -> done/flagged/failed) and rolls flagged
 frames into ``_triage.csv``. The review GUI is a separate consumer: it needs to
-know which *chains* still need a human and to record what the human decided —
+know which *chains* still need a human and to record what the human decided,
 **without** clobbering the execution status the batch owns.
 
-So, per PIPELINE_CONTEXT §7 *Performance scaling → parallel review*, the GUI owns
+So, for parallel review, the GUI owns
 a **separate** ledger, ``_review.csv``, with its own status column:
 
-    background batch  owns  _manifest.csv  (execution: pending→running→done/flagged)
-    review GUI        owns  _review.csv    (review:   unreviewed→in_review→
+    background batch  owns  _manifest.csv  (execution: pending->running->done/flagged)
+    review GUI        owns  _review.csv    (review:   unreviewed->in_review->
                                             approved/rejected/corrected)
 
-Keeping them in two files is the cheap version of the §7 "partition ownership"
-requirement: the two processes never write the same column, so the only thing a
+Keeping them in two files is the cheap version of partitioning ownership:
+the two processes never write the same column, so the only thing a
 file lock would add is protection against two writers of the *same* ledger. We
 take the same atomic-rewrite tactic as ``batch._atomic_write_csv`` (temp file +
 ``os.replace``); a cross-process file lock (``filelock``/``portalocker``) is the
-documented next step if a second GUI ever runs concurrently — see DEFERRED below.
+next step if a second GUI ever runs concurrently, see the not-implemented notes below.
 
 Queue definition
 ----------------
-A chain needs review when the batch flagged it — i.e. its manifest ``status`` is
+A chain needs review when the batch flagged it, i.e. its manifest ``status`` is
 ``flagged`` (which, at the canonical ``qc_triage_min_signals=2``, means it has
-≥1 intervene-level frame). The queue is those chains, minus any the human has
+>=1 intervene-level frame). The queue is those chains, minus any the human has
 already dispositioned in ``_review.csv``. ``_triage.csv`` gives the per-frame
 detail within a chain (which z's, why) and is read by the GUI when a chain opens;
 this module works at chain granularity.
 
-DEFERRED (not implemented this pass — PIPELINE_CONTEXT §7 parallel review)
+Not implemented this pass (parallel review)
 --------------------------------------------------------------------------
   * **Cross-process file lock** around ``_review.csv`` writes. Single-reviewer is
     safe as-is (one writer); a lock is required only for concurrent GUIs. Marked
-    with ``# [DEFERRED: filelock]`` at the write site.
+    at the write site.
   * **Live polling / fs-watch** so chains flagged by a still-running batch appear
     mid-session. ``refresh()`` re-reads from disk on demand (poll-on-demand); a
-    timer/watchdog auto-poll is a GUI-loop concern left to gui.py. Marked
-    ``# [DEFERRED: auto-poll]``.
-  * **GPU arbitration** for interactive re-runs vs. background batch — an
+    timer/watchdog auto-poll is a GUI-loop concern left to gui.py.
+  * **GPU arbitration** for interactive re-runs vs. background batch: an
     infra/runtime concern, not a ledger concern; lives in gui.py / a future
     multi-GPU harness, not here.
 
-Torch-free / napari-free, like ``labels`` and ``qc`` — unit-tested in
+Torch-free / napari-free, like ``labels`` and ``qc``; unit-tested in
 ``tests/test_review_queue.py``.
 """
 
@@ -64,7 +63,7 @@ APPROVED = "approved"       # human confirmed the auto masks are fine as-is
 REJECTED = "rejected"       # human judged it unfixable / to be redone (e.g. bad anchor)
 CORRECTED = "corrected"     # human edited prompts/masks and re-saved
 REVIEW_STATUSES = (UNREVIEWED, IN_REVIEW, APPROVED, REJECTED, CORRECTED)
-# Terminal dispositions — a chain in one of these drops out of the pending queue.
+# Terminal dispositions: a chain in one of these drops out of the pending queue.
 DONE_STATUSES = {APPROVED, REJECTED, CORRECTED}
 
 REVIEW_COLUMNS = ["neuron", "chain_idx", "review_status", "reviewer", "notes", "updated_at"]
@@ -113,7 +112,7 @@ class ReviewQueue:
     # -- manifest (read-only here) ---------------------------------------------
     def refresh(self) -> pd.DataFrame:
         """(Re)read _manifest.csv from disk. Call to pick up chains a still-running
-        batch has flagged since the GUI started (# [DEFERRED: auto-poll] — a timer
+        batch has flagged since the GUI started (auto-poll is not implemented: a timer
         in the GUI loop would call this; here it's poll-on-demand)."""
         if not self.manifest_path.exists():
             self._manifest = pd.DataFrame(columns=["neuron", "chain_idx", "status"])
@@ -160,7 +159,7 @@ class ReviewQueue:
             m = (df["neuron"] == neuron) & (df["chain_idx"] == int(chain_idx))
             df = df[~m]
         df = pd.concat([df, pd.DataFrame([row], columns=REVIEW_COLUMNS)], ignore_index=True)
-        _atomic_write_csv(df, self.review_path)   # [DEFERRED: filelock] for concurrent GUIs
+        _atomic_write_csv(df, self.review_path)   # not implemented: a file lock for concurrent GUIs
 
     def claim(self, neuron: str, chain_idx: int, *, reviewer: str = "") -> None:
         """Mark a chain in_review (a reviewer opened it). A session that crashes

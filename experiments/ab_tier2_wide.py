@@ -1,12 +1,12 @@
 """
 ab_tier2_wide.py — wider tier-2 A/B for the "run flagged chains as tier-2 by default?"
-decision (item d). Baseline (_sam) vs tier-2 (chain_crop=True, with the item-b fallback
+decision. Baseline (_sam) vs tier-2 (chain_crop=True, with the safety fallback
 ON) across several chains in 3 diverse neurons, with an aggregate verdict:
   - how many chains tier-2 IMPROVED (queue down) / REGRESSED (queue up) / unchanged
   - how often the _sam fallback fired (fell_back_to_sam)
   - net queue delta
 
-Per the §6 ruler: relative queue deltas at fixed thresholds. Throwaway harness.
+The ruler is relative queue deltas at fixed thresholds. Throwaway harness.
 
     py -3 ab_tier2_wide.py
 
@@ -48,7 +48,7 @@ def _cfg(chain_crop: bool, out_root: Path) -> PipelineConfig:
         chain_crop=chain_crop,
         chain_crop_pad_tif=64, chain_crop_scale=2, chain_crop_max_px=1536,
         chain_crop_min_tif=1024,
-        chain_crop_fallback=True,            # item b: safety net on
+        chain_crop_fallback=True,            # safety net on
         output_root=out_root, frames_root=FRAMES_ROOT,
     )
     base.update(SEED_OVERRIDE)

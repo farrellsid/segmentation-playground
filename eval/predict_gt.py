@@ -1,8 +1,8 @@
 """
-predict_gt.py — run the SAM2 pipeline on SEM-Dauer 1's EM (SCAFFOLD).
+predict_gt.py — run the SAM2 pipeline on SEM-Dauer 1's EM.
 
 Goal: produce predictions for the cross-worm GT (SEM-Dauer 1, project 280) so
-the Stage-0 ruler can finally measure the *current* pipeline. Output feeds both
+the eval ruler can measure the *current* pipeline. Output feeds both
 scorers with no further glue:
 
     GT_PRED_DIR/
@@ -15,7 +15,7 @@ How this differs from pipeline.py (why it's a separate module)
 (`config.WORM_PATH`) indexed by `catmaid_z`, prompts are built in that worm's
 `_sam` space. SEM-Dauer 1 is a *different* stack:
   * EM is PNG slices in `config.GT_EM_DIR` indexed by the VAST slice z (1:1 with
-    the p280 skeleton z — see eval-stage0 notes), read here via `GroundTruth.em_slice`.
+    the p280 skeleton z), read here via `GroundTruth.em_slice`.
   * Prompts come from the p280 skeletons, mapped into the GT pixel grid with the
     fitted `eval.registration.Registration` (skel stack-px -> GT mask/EM px).
   * Output lands directly on the GT grid (same H×W as the GT labelmaps), so
@@ -33,7 +33,7 @@ Pipeline (all wired)
   - composite_labelmaps()    : per-neuron masks -> per-slice uint16 labelmaps
   - run() orchestration + CLI
 
-v1 seed is positive-points-only; the obvious accuracy levers (image-mode anchor
+The seed is positive-points-only; the obvious accuracy levers (image-mode anchor
 refinement, cross-neuron negatives, box seed) are noted in predict_chain.
 
 pipeline/torch are imported lazily inside build_predictors/predict_chain so a bare
@@ -85,7 +85,7 @@ class PredictGTConfig:
 
 
 # =============================================================================
-# Inputs  (DONE — mechanical)
+# Inputs
 # =============================================================================
 
 @dataclass
@@ -149,15 +149,15 @@ def chain_prompt_points(chain: dict, inp: PredictInputs) -> Dict[int, List[Tuple
 
 
 # =============================================================================
-# SAM2 core  (TODO — adapt from pipeline.py / run_aval.py)
+# SAM2 core
 # =============================================================================
 
 def build_predictors(cfg: PredictGTConfig):
-    """Load SAM2 image + video predictors. (TODO)
+    """Load SAM2 image + video predictors.
 
-    Adapt from how run_aval.py / pipeline.py construct them
+    Built the same way run_aval.py / pipeline.py construct them
     (`sam2.build_sam2`, `SAM2ImagePredictor`, `build_sam2_video_predictor`) using
-    `config.SAM2_CHECKPOINTS[cfg.model_size]`. Return whatever predict_chain needs.
+    `config.SAM2_CHECKPOINTS[cfg.model_size]`. Returns whatever predict_chain needs.
     """
 
     image_pred, _ = setup.build_predictor(size=cfg.model_size, kind="image")
@@ -235,9 +235,9 @@ def predict_chain(
       3. ``pipeline.propagate`` seeds the anchor + tracks bidirectionally; the returned
          masks are at frame resolution == the GT grid, so no resampling.
 
-    v1 seeds POSITIVE POINTS only (no image-mode anchor refinement, no cross-neuron
+    Seeds POSITIVE POINTS only (no image-mode anchor refinement, no cross-neuron
     negatives, no box). Those are the obvious next levers if masks bleed into
-    neighbours — see pipeline.image_predict / build_prompts' negative construction.
+    neighbours (see pipeline.image_predict / build_prompts' negative construction).
     """
     import shutil
     import pipeline
@@ -290,7 +290,7 @@ def predict_chain(
 
 
 # =============================================================================
-# Output writers  (DONE — mechanical + testable)
+# Output writers
 # =============================================================================
 
 def write_neuron_masks(pred_dir: Path, neuron: str, masks_by_z: Dict[int, np.ndarray]) -> int:
@@ -407,7 +407,7 @@ def run(cfg: PredictGTConfig, *, clean: bool = False) -> None:
 
 def _main() -> None:
     import argparse
-    ap = argparse.ArgumentParser(description="Run SAM2 on SEM-Dauer 1 (predictions for Stage-0).")
+    ap = argparse.ArgumentParser(description="Run SAM2 on SEM-Dauer 1 (predictions for eval).")
     ap.add_argument("--pred-dir", type=Path, default=None)
     ap.add_argument("--neuron-limit", type=int, default=None)
     ap.add_argument("--model-size", default=config.DEFAULT_MODEL_SIZE)

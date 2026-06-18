@@ -1,9 +1,9 @@
-"""Unit tests for pipeline.chain_masks_in_sam — the M5-aggregation-prep reader that
+"""Unit tests for pipeline.chain_masks_in_sam, the aggregation-prep reader that
 puts any finished chain's masks back onto the common _sam grid with their placement,
 so a per-neuron z-union can paste legacy _sam AND tier-2 _pcrop chains on one grid.
 
-The point being guarded: the mask PNG + filename do NOT encode their space — only
-state.json's crop_window does — so this is the single place the _pcrop->_sam remap
+The point being guarded: the mask PNG + filename do NOT encode their space (only
+state.json's crop_window does), so this is the single place the _pcrop->_sam remap
 lives, and an aggregator must go through it.
 
 Torch-free (cv2/numpy + pipeline):
@@ -84,7 +84,7 @@ def test_tier2_pcrop_chain_downscales_and_offsets():
 
 def test_tier2_placement_lands_in_full_sam_frame():
     """Paste the returned local mask into a full _sam canvas at its offset and confirm
-    it occupies exactly the window's _sam footprint — the union operation M5 will do."""
+    it occupies exactly the window's _sam footprint (the union operation an aggregator does)."""
     with tempfile.TemporaryDirectory() as d:
         cd = pathlib.Path(d)
         cw = {"origin_tif": [800.0, 400.0], "size_tif": [1024, 512],

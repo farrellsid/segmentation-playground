@@ -58,8 +58,8 @@ class Registration:
       ``affines`` is ``(n_z, 2, 3)``: ``affines[i, :, :2]`` is ``L`` (in the ``A.T``
       convention) and ``affines[i, :, 2]`` is ``t``, indexed by ``z_min + i``. This
       captures the per-section rotation/scale the realignment carries, which a single
-      global linear + per-section *translation* misses (diag: median residual
-      19.6 px → 5.1 px).
+      global linear + per-section *translation* misses (median residual
+      19.6 px to 5.1 px).
     * **global linear + per-section translation** (legacy / baseline; ``affines is
       None``) — ``mask_xy = xy @ A.T + offset[z]``.
 

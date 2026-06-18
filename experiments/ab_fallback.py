@@ -1,10 +1,10 @@
 """
-ab_fallback.py — A/B harness for the tier-2 SAFETY fallback (M4.5 item b):
+ab_fallback.py — A/B harness for the tier-2 SAFETY fallback:
 image_score/anchor-gated fall-back from the per-chain crop (_pcrop) to the plain
 _sam path when the crop anchor is poor.
 
-Throwaway measurement script (not part of the library). Two questions, per the
-PIPELINE_CONTEXT §6 ruler (relative deltas at fixed thresholds, not absolute truth):
+Throwaway measurement script (not part of the library). Two questions, using the
+ruler of relative deltas at fixed thresholds, not absolute truth:
 
   1. Does the fallback CATCH the over-zoom collapse?  We recreate the c02 failure
      mode by DROPPING the chain_crop_min_tif floor (so a low-motion chain gets a
@@ -41,7 +41,7 @@ MODEL = "large"
 FORCE_ZOOM_MIN_TIF = 1          # disables the floor -> recreate the over-zoom window
 
 # (mode label, chain, cfg overrides). Each runs once.
-# Round 2: the gate-only criterion missed the over-zoom (its anchor mask passes the
+# The gate-only criterion missed the over-zoom (its anchor mask passes the
 # geometry gate; the collapse is a PROPAGATION effect). The image_score floor is the
 # pre-propagation tell: over-zoom=0.516 vs healthy 0.848-0.922. Re-verify with floor=0.7.
 SCORE_FLOOR = 0.7

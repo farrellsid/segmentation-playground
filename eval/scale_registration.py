@@ -1,6 +1,6 @@
 """scale_registration.py — derive the full-res registration from the ¼-scale fit by ×4.
 
-Stage 0.3 switched the GT to full_scale (GT_DOWNSCALE 4→1), which invalidates the
+Switching the GT to full_scale (GT_DOWNSCALE 4→1) invalidates the
 ¼-scale registration.json (linear part ≈ 0.25·I). A from-scratch full-res re-fit is
 correct but slow (851 × 89.6 MB HDD PNG decodes, ~1.5 h). It's also unnecessary: the
 full-res registration is *geometrically identical* to the ¼ fit with every parameter
@@ -10,8 +10,8 @@ physical point:
     mask_full = 4·mask_quarter = 4·(skel @ L.T + t) = skel @ (4L).T + (4t)
 
 so L→4L and t→4t for every section (and the mean A→4A, offsets→4·offsets). The only
-thing a true re-fit adds is marginally finer sub-pixel centroids — negligible for
-placing prompts on ~20–40 px neurites.
+thing a true re-fit adds is marginally finer sub-pixel centroids, negligible for
+placing prompts on ~20-40 px neurites.
 
 Run:  py -3 -u -m eval.scale_registration              # scale + light validate
       py -3 -u -m eval.scale_registration --no-validate
@@ -45,7 +45,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=base / "registration.json")
     ap.add_argument("--skeleton-csv", type=Path, default=base / "aggregate_data_pv.csv")
     ap.add_argument("--factor", type=float, default=4.0,
-                    help="¼→full == 4 (the old GT_DOWNSCALE)")
+                    help="¼→full == 4 (the GT_DOWNSCALE)")
     ap.add_argument("--no-validate", action="store_true")
     ap.add_argument("--validate-neurons", type=int, default=5)
     args = ap.parse_args()

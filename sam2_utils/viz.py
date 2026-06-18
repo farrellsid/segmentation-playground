@@ -41,7 +41,7 @@ def show_mask(mask, ax, random_color: bool = False, borders: bool = True,
         If given, color is chosen from matplotlib tab10 cmap by obj_id.
         Useful for multi-object video segmentation.
     """
-    import cv2  # local import — viz module shouldn't fail to import without cv2
+    import cv2  # local import; viz module shouldn't fail to import without cv2
 
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
@@ -226,6 +226,6 @@ def pick_landmark(image, target_row, zoom: float = 1000,
         center=(cx, cy),
         zoom=zoom,
         on_click=_on_click,
-        title=f"{name} (node {node_id}) — CATMAID coords ({cx:.1f}, {cy:.1f})",
+        title=f"{name} (node {node_id}), CATMAID coords ({cx:.1f}, {cy:.1f})",
         figsize=figsize,
     )

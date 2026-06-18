@@ -14,9 +14,9 @@ the _sam masks + qc.csv the bbox is read from), THEN re-run tier-2 in place with
 chain_crop_from_mask=True — exactly what `_run_one_chain` does.
 
 Headline metric is the CLIP: how many frames have mask foreground touching the crop
-border. We want that to drop to ~0 without regressing the QC queue. Per the
-PIPELINE_CONTEXT §6 ruler: relative deltas at fixed thresholds, not absolute truth.
-(Once the Stage-0 ERL eval exists, score this on confirmed GT instead.)
+border. We want that to drop to ~0 without regressing the QC queue. The ruler is
+relative deltas at fixed thresholds, not absolute truth.
+(Once the ERL eval exists, score this on confirmed GT instead.)
 
     py -3 experiments/ab_crop_from_mask.py
 """

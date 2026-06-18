@@ -1,61 +1,61 @@
 """
-gui.py — napari review / triage / correction GUI (milestone 4).
+gui.py: napari review / triage / correction GUI.
 
-The one human-facing tool (PIPELINE_CONTEXT §4: *one triage queue, one review
-tool*). It reads the batch's flagged chains, lets a human scrub a chain, inspect
+The one human-facing tool: one triage queue, one review tool. It reads the
+batch's flagged chains, lets a human scrub a chain, inspect
 why frames flagged, edit the SAM2 prompts (positive **and** negative points),
 paint an anchor mask, re-run the image phase, and resume propagation over the
-interruptible ``PropagationSession`` — then writes the corrected masks + QC back
+interruptible ``PropagationSession``, then writes the corrected masks + QC back
 to disk and logs every decision as a training label.
 
 It is a *thin driver*, like ``run_aval.py`` / ``batch.py``: all real work lives in
-the library it composes —
+the library it composes:
 
     sam2_utils.review        rebuild a finished chain's overlay from disk (load_chain)
     sam2_utils.review_queue  which chains need a human; the GUI-owned review ledger
-    sam2_utils.labels        the per-frame label store (the M4 "label engine")
+    sam2_utils.labels        the per-frame label store (the "label engine")
     pipeline                 the phase functions + PropagationSession (re-segmentation)
     sam2_utils.setup         lazy predictor construction (GPU only when needed)
 
 Two-tier loading (so review/labeling works WITHOUT a GPU)
 --------------------------------------------------------
-  * **light** — annotate_df (cached CSV + affine) + chains.json + the on-disk
+  * **light**: annotate_df (cached CSV + affine) + chains.json + the on-disk
     chain artifacts. Enough to browse, scrub, inspect flags, paint, and *label*.
     No torch, no predictors.
-  * **heavy** — the SAM2 image + video predictors, built lazily the first time the
+  * **heavy**: the SAM2 image + video predictors, built lazily the first time the
     human triggers a re-segmentation (re-run image phase / resume propagation).
-    This matches §7 *parallel review*: a reviewer can clear the labeling/approve
+    This enables *parallel review*: a reviewer can clear the labeling/approve
     queue while the GPU is busy with the background batch.
 
-Coordinate spaces (PIPELINE_CONTEXT §4)
----------------------------------------
+Coordinate spaces
+-----------------
 Everything the GUI shows shares one grid: the EM JPEG frames, the saved masks,
 and therefore the napari Image/Labels/Points layers are all in **_sam** space
 (``save_downscale == scale``, the canonical rule). So a point the human clicks on
-the canvas is already an _sam coordinate — it feeds straight into ``image_predict``
+the canvas is already an _sam coordinate: it feeds straight into ``image_predict``
 on the same-resolution anchor frame and into the video seed, no transform. (The
 default *crop* anchor path runs image mode in _crop; the GUI's re-predict instead
 uses the legacy full-frame _sam path precisely because the displayed frame is the
-_sam frame the human is clicking on. Crop re-predict is a DEFERRED refinement —
-see DEFERRED below.)
+_sam frame the human is clicking on. Crop re-predict is a not-implemented refinement,
+see "not implemented" below.)
 
-DEFERRED this pass (placeholders marked ``# [DEFERRED]`` in code)
-----------------------------------------------------------------
+Not implemented this pass (placeholders marked ``# not implemented`` in code)
+-----------------------------------------------------------------------------
   * **Crop-space anchor re-predict.** The re-run uses the legacy scale-8 full-frame
-    image path (matches the displayed frame). High-res crop re-predict (the §6 M3.5
-    default for the *batch*) would sharpen a thin-neurite re-seed but needs the
-    clicked points remapped _sam→_tif→_crop and a full-res tif read; left for later.
+    image path (matches the displayed frame). High-res crop re-predict (the default
+    for the *batch*) would sharpen a thin-neurite re-seed but needs the
+    clicked points remapped _sam->_tif->_crop and a full-res tif read; left for later.
   * **Confidence-gated mask-vs-box video seed.** The GUI always seeds corrections with
-    the *mask* (``add_mask`` of the re-predicted/painted mask on the frame) — the box
-    seed was dropped here as the more-informative human-curated path (§7 *box vs mask*).
+    the *mask* (``add_mask`` of the re-predicted/painted mask on the frame); the box
+    seed was dropped here as the more-informative human-curated path (box vs mask).
     The *automatic* confidence gate that chooses mask-vs-box in the headless pipeline is
-    still M4.5 label-gated.
+    still label-gated.
   * **Marking/intervention GUI split & strict-by-default flagging.** Review-testing
-    follow-ups documented in PIPELINE_CONTEXT §7 (a two-mode UI, and an aggressive-recall
-    QC posture) — not built this pass.
-  * **Cross-process file lock / live auto-poll / GPU arbitration** — see
-    ``review_queue`` DEFERRED; the GUI exposes a manual "refresh queue" button.
-  * **micro_sam napari-plugin build-vs-adopt eval** (§7) — this module is the
+    follow-ups (a two-mode UI, and an aggressive-recall
+    QC posture): not built this pass.
+  * **Cross-process file lock / live auto-poll / GPU arbitration**: see
+    ``review_queue`` (not implemented); the GUI exposes a manual "refresh queue" button.
+  * **micro_sam napari-plugin build-vs-adopt eval**: this module is the
     build path; the adopt evaluation is a separate spike, not code here.
 
 Launch
@@ -104,7 +104,7 @@ class ReviewContext:
     """Shared, build-once handles for a review session.
 
     The *light* members (annotate_df, chains, cfg) load from the cached CSV +
-    chains.json + an output tree — no torch. The *heavy* predictors are built
+    chains.json + an output tree (no torch). The *heavy* predictors are built
     lazily by ``ensure_predictors`` only when a re-segmentation action needs them,
     so a browse/label-only session never touches the GPU.
     """
@@ -142,7 +142,7 @@ class ReviewContext:
         return self._chains
 
     def find_chain(self, neuron: str, chain_idx: int) -> Optional[dict]:
-        """The chain dict for (neuron, chain_idx) — the position within that
+        """The chain dict for (neuron, chain_idx): the position within that
         neuron's chain list, matching batch.enumerate_chains / on-disk chain_NN."""
         chs = [c for c in self.chains if c.get("cell_name") == neuron]
         return chs[chain_idx] if 0 <= chain_idx < len(chs) else None
@@ -150,7 +150,7 @@ class ReviewContext:
     # -- heavy (lazy) ----------------------------------------------------------
     def ensure_predictors(self, *, need_image: bool = True, need_video: bool = True) -> None:
         """Build the SAM2 predictors on first use (heavy: VRAM + model load).
-        Idempotent — built once, reused for the session."""
+        Idempotent: built once, reused for the session."""
         from sam2_utils import setup
         if need_image and self.image_predictor is None:
             print("[gui] building image predictor (first use)...")
@@ -160,8 +160,8 @@ class ReviewContext:
             # correct_as_cond=True: a human paint/click on an already-tracked frame must
             # become a CONDITIONING frame so its mask is preserved verbatim on the next
             # propagate. Without it, SAM2 demotes a re-correction to non-conditioning and
-            # re-infers that frame from memory on resume — silently reverting the paint
-            # (the iterative paint→resume→repaint revert; PIPELINE_CONTEXT §7 *box vs mask*).
+            # re-infers that frame from memory on resume, silently reverting the paint
+            # (the iterative paint->resume->repaint revert; box vs mask).
             self.video_predictor, _ = setup.build_predictor(
                 size=self.cfg.model_size, kind="video", correct_as_cond=True)
 
@@ -228,10 +228,10 @@ class ReviewGUI:
                      bounding box (+ zoom_pad× margin) so you land on the object,
                      not the whole frame.
         hires_em   : load the *full-resolution* EM tifs as the background instead of
-                     the scale-8 JPEGs (lazy, opt-in — see _load_hires_stack and the
+                     the scale-8 JPEGs (lazy, opt-in; see _load_hires_stack and the
                      "Why low-res" note in the header). The MASK stays scale-8 (that
-                     is the only resolution it was propagated/saved at — sharper masks
-                     need the tier-2 per-chain crop, which is M4.5), but it is scaled
+                     is the only resolution it was propagated/saved at; sharper masks
+                     need the tier-2 per-chain crop), but it is scaled
                      to overlay the full-res image so the EM context is crisp.
         """
         import napari
@@ -278,7 +278,7 @@ class ReviewGUI:
         self.data = review.load_chain(chain_dir, verbose=True)
         self.qc_df = self.data.qc if isinstance(self.data.qc, pd.DataFrame) else None
         # the chain's serialized state carries the ORIGINAL seed (prompts.points_sam
-        # / labels / box_sam) — loaded so we can pre-populate the prompts layer with
+        # / labels / box_sam), loaded so we can pre-populate the prompts layer with
         # it rather than starting empty (else "re-run image phase" has no positive
         # point). Also reused by _anchor_dict.
         sp = chain_dir / "state.json"
@@ -287,7 +287,7 @@ class ReviewGUI:
         # CropWindow (persisted in state.json) is what maps _tif skeleton nodes + drives
         # crop-aware QC. The displayed EM/mask/prompts are ALL _pcrop already (frames_dir
         # points at the crop view, masks are crop-sized), so a click is a _pcrop coord and
-        # re-predict/resume need no transform — only skeleton/QC/hires consult the window.
+        # re-predict/resume need no transform: only skeleton/QC/hires consult the window.
         self._cw = None
         if self._state is not None and getattr(self._state, "crop_window", None):
             self._cw = alignment.CropWindow.from_dict(self._state.crop_window)
@@ -313,9 +313,9 @@ class ReviewGUI:
             em = _load_frame_stack(self.data.frames_dir, t)
         # world units (EM px) per mask px. Both EM axes are the mask scaled uniformly
         # (by `scale` for the full frame, by crop_scale for a tier-2 crop window), so
-        # use the WIDTH ratio — correct for non-square crop windows, identical to before
+        # use the WIDTH ratio: correct for non-square crop windows, identical to before
         # for the near-square full frame. ~8 / crop_scale hires, 1 else. NB em is
-        # (T, H, W, 3): the WIDTH axis is shape[2] (shape[1] is H — using it stretched
+        # (T, H, W, 3): the WIDTH axis is shape[2] (shape[1] is H; using it stretched
         # the mask/skeleton/prompt layers by H/W on non-square tier-2 _pcrop windows).
         self._em_world = float(em.shape[2]) / float(W) if W else 1.0
         s = self._em_world
@@ -364,10 +364,10 @@ class ReviewGUI:
 
     def _seed_prompts_from_state(self) -> None:
         """Pre-load the chain's ORIGINAL seed (state.prompts) into the prompts layer at
-        the anchor frame, so re-run/resume start from what the batch used — not an empty
+        the anchor frame, so re-run/resume start from what the batch used, not an empty
         layer. Points are placed in _sam data coords (the layer's scale handles overlay),
         matching the click round-trip in _prompts_for_frame. No box overlay: the GUI
-        seeds propagation with the mask, not a box (PIPELINE_CONTEXT §7). Best-effort: a
+        seeds propagation with the mask, not a box. Best-effort: a
         chain with no serialized prompts (legacy) just leaves the layer empty."""
         st = self._state
         if st is None or st.prompts is None or st.anchor_frame_idx is None:
@@ -433,9 +433,9 @@ class ReviewGUI:
     def _load_hires_stack(self, frame_to_z: dict, t: int):
         """Lazy full-res EM stack (T, H_full, W_full, 3) over the chain's frames,
         read from the original WORM_PATH tifs (NOT the scale-8 JPEGs). Opt-in via
-        ``hires_em`` — see the "Why low-res" note in the header: this sharpens only
+        ``hires_em``; see the "Why low-res" note in the header: this sharpens only
         the *underlying image*; the saved masks remain scale-8 (sharper masks need
-        the M4.5 tier-2 per-chain crop). Falls back to the scale-8 stack if dask is
+        the tier-2 per-chain crop). Falls back to the scale-8 stack if dask is
         unavailable, so a missing optional dep degrades, not crashes."""
         order = [frame_to_z[i] for i in range(t) if i in frame_to_z]
         if not order:
@@ -516,12 +516,12 @@ class ReviewGUI:
         """Re-run SAM2 image mode on the CURRENT frame from the human's prompt points
         and write the result into the **mask** layer. This is a *preview* step: it
         turns your clicks into a mask you can eyeball (and tweak by painting) before
-        committing. ``resume propagation`` then seeds that mask directly — no bounding
+        committing. ``resume propagation`` then seeds that mask directly: no bounding
         box is involved (the box seed was dropped; SAM2 propagates the mask itself,
-        the more-informative seed per PIPELINE_CONTEXT §7 *box vs mask*).
+        the more-informative seed, box vs mask).
 
         Uses the legacy full-frame _sam image path (the displayed frame IS the _sam
-        frame the human clicked on). Crop re-predict is # [DEFERRED] (see header).
+        frame the human clicked on). Crop re-predict is not implemented (see header).
         """
         if self.data is None:
             return
@@ -543,7 +543,7 @@ class ReviewGUI:
 
     def resume_propagation(self, *_) -> None:
         """Re-propagate from the CURRENT frame over a PropagationSession, seeding with
-        the **mask** on this frame (re-predicted via ``R`` and/or hand-painted) — never
+        the **mask** on this frame (re-predicted via ``R`` and/or hand-painted), never
         a box. Falls back to point-prompts only if the mask layer is empty here.
 
         Direction is **away from the anchor**, so an already-corrected frame is never
@@ -601,7 +601,7 @@ class ReviewGUI:
 
     def approve_chain(self, *_) -> None:
         """Mark the chain's auto masks acceptable as-is. Logs the queued frames as
-        verdict='ok' + a uniform sample of un-flagged frames (the §7 silent-error
+        verdict='ok' + a uniform sample of un-flagged frames (the silent-error
         window) so the label set isn't censored to flagged-only."""
         if self.data is None:
             return
@@ -625,7 +625,7 @@ class ReviewGUI:
     def reset_prompts(self, *_) -> None:
         """Discard the human's prompt edits and restore the chain's ORIGINAL saved
         seed (state.prompts) at the anchor frame. Does NOT undo mask paints (the Labels
-        layer has its own Ctrl+Z) — this is prompt-only, as asked."""
+        layer has its own Ctrl+Z): this is prompt-only, as asked."""
         if self.data is None:
             return
         if self._prompts is not None:                       # clear, then re-seed from disk
@@ -643,7 +643,7 @@ class ReviewGUI:
         self._label_current_frame(verdict="wrong", error_type=self._error_type(), source="mark")
 
     def mark_frame_ok(self, *_) -> None:
-        """Label the CURRENT frame verdict='ok' — confirm a frame is fine (incl. a
+        """Label the CURRENT frame verdict='ok': confirm a frame is fine (incl. a
         flagged frame you judge a false alarm)."""
         self._label_current_frame(verdict="ok", error_type="", source="mark")
 
@@ -678,7 +678,7 @@ class ReviewGUI:
         self._step_chain(-1)
 
     def _step_chain(self, direction: int) -> None:
-        """Cycle to the next/prev CHAIN that still needs a human (different chain — vs
+        """Cycle to the next/prev CHAIN that still needs a human (different chain, vs
         next/prev *flagged FRAME*, which moves between frames within the open chain).
 
         Includes ``in_review`` chains (the fix for "can't return to an unfinished
@@ -706,7 +706,7 @@ class ReviewGUI:
     # Label logging
     # =====================================================================
     def _anchor_dict(self) -> Optional[dict]:
-        """The chain's anchor verdict from state.json (the §7 anchor-contamination
+        """The chain's anchor verdict from state.json (the anchor-contamination
         guard feature). Read fresh so a re-seg's new state is picked up."""
         sp = self.ctx.output_root / self.neuron / f"chain_{self.chain_idx:02d}" / "state.json"
         if sp.exists():
@@ -738,7 +738,7 @@ class ReviewGUI:
     # Mask/segment plumbing
     # =====================================================================
     def _frame_image_sam(self, frame_idx: int) -> np.ndarray:
-        """The _sam EM frame as (H, W, 3) RGB uint8 — read from the same JPEG the
+        """The _sam EM frame as (H, W, 3) RGB uint8, read from the same JPEG the
         Image layer shows (so re-predict sees exactly what the human clicked on)."""
         from sam2_utils.video_viz import _load_frame
         return _load_frame(self.data.frames_dir, frame_idx)
@@ -779,7 +779,7 @@ class ReviewGUI:
         masks_dir = chain_dir / "masks"
         pipeline.save_masks(self.data.video_segments, self.data.frame_to_z, masks_dir,
                             obj_id=self.data.obj_id, mask_space_downscale=cfg.save_downscale)
-        # this chain's own skeleton (NOT the whole neuron — run_qc docstring / §5#6)
+        # this chain's own skeleton (NOT the whole neuron; see run_qc docstring)
         skel_chain = None
         if self.chain is not None:
             ids = {str(n) for n in self.chain["nodes"]}
@@ -1021,7 +1021,7 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
     pass False from an interactive napari/IPython session that already has one.
 
     ``point_size`` / ``auto_zoom`` / ``hires_em`` forward to ReviewGUI (smaller
-    prompt points, zoom-to-mask on open, full-res EM background — see ReviewGUI)."""
+    prompt points, zoom-to-mask on open, full-res EM background; see ReviewGUI)."""
     import napari
     ctx = ReviewContext(Path(output_root) if output_root else config.OUTPUT_ROOT, cfg)
     gui = ReviewGUI(ctx, reviewer=reviewer, point_size=point_size,

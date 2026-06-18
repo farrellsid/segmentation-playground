@@ -1,9 +1,8 @@
 """
-groundtruth.py — read the cross-worm VAST ground truth (eval/ Stage 0).
+groundtruth.py — read the cross-worm VAST ground truth.
 
-The June-2026 step-back obtained manual VAST segmentation for a *different* worm
-(SEM dauer 1) with matching EM — the first real ruler for the pipeline
-(PIPELINE_CONTEXT §"Research step-back"; FUTURE_DIRECTIONS §3, §4.1). This module
+There is manual VAST segmentation for a *different* worm
+(SEM dauer 1) with matching EM, the first real ruler for the pipeline. This module
 is the read layer for that GT: parse the VAST metadata table, and load per-slice
 binary masks for any segment / neuron. Torch-free / cv2-free (numpy + Pillow +
 pandas only), like ``sam2_utils.alignment`` / ``qc`` / ``labels`` — so it exercises
@@ -67,7 +66,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-# The full-res GT export (Stage 0.3) is 9728×9216 = 89.6M px, just over PIL's default
+# The full-res GT export is 9728×9216 = 89.6M px, just over PIL's default
 # decompression-bomb limit (~89.5M), so every slice read would otherwise warn. These
 # are trusted local files, so lift the cap.
 Image.MAX_IMAGE_PIXELS = None
@@ -83,7 +82,7 @@ except Exception:                      # pragma: no cover - fallback for odd CWD
 _ORGANELLE_TERMS = ("phagosome", "fragment", "frag", "vesicle", "dying_cell")
 
 # `name` tail: "_<skeletonid>.swc". Captured so we can recover the SWC skeleton id
-# (the ERL hook for a later stage) and strip it to get the bare identity.
+# (the ERL hook) and strip it to get the bare identity.
 _SWC_TAIL = re.compile(r"_(\d+)\.swc$")
 
 # slice index embedded in an export filename: "..._s007.png" -> 7

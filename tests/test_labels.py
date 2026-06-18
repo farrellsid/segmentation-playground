@@ -1,8 +1,8 @@
-"""Unit tests for sam2_utils.labels.LabelStore — the M4 per-frame label engine.
+"""Unit tests for sam2_utils.labels.LabelStore, the per-frame label engine.
 
 Torch-free / napari-free, like test_alignment / test_anchor_select: labels.py is a
 pure pandas CSV ledger, so the schema, idempotent upsert, qc-row feature copy,
-anchor-verdict block, and the uniform un-flagged sample (the §7 selection-bias
+anchor-verdict block, and the uniform un-flagged sample (the selection-bias
 guard) all exercise on any box with a temp dir.
 
 Run either way:
@@ -135,7 +135,7 @@ def test_distinct_keys_accumulate():
 
 
 # ---------------------------------------------------------------------------
-# uniform un-flagged sample (the §7 silent-error window)
+# uniform un-flagged sample (the silent-error window)
 # ---------------------------------------------------------------------------
 
 def test_sample_unflagged_picks_only_unflagged_and_is_reproducible():

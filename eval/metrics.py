@@ -1,11 +1,10 @@
 """
-metrics.py — region-overlap + split/merge metrics for eval/ Stage 0.
+metrics.py — region-overlap + split/merge metrics.
 
-The buildable-now half of the Stage-0 ruler (FUTURE_DIRECTIONS §4.1): per-object
+The region half of the eval ruler: per-object
 overlap (IoU / Dice / precision / recall) and **Variation of Information split into
-VOI_split + VOI_merge**, computed straight off the GT labelmaps — no skeletons
-required. ERL (the skeleton-based half) is deferred until SEM-Dauer 1's skeletons
-are wired in (see eval/README.md); when it lands it joins these on (neuron, slice).
+VOI_split + VOI_merge**, computed straight off the GT labelmaps, no skeletons
+required. ERL (the skeleton-based half) lives in `erl`; it joins these on (neuron, slice).
 
 Pure numpy, torch-free, no IO — every function takes arrays and returns plain
 Python floats/dicts, so it unit-tests on synthetic masks with known answers.
@@ -173,7 +172,7 @@ def adapted_rand(
     *,
     ignore_gt: Sequence[int] = (),
 ) -> Dict[str, float]:
-    """Adapted-Rand F-score + error between two integer labelings (FUTURE_DIRECTIONS §4.1).
+    """Adapted-Rand F-score + error between two integer labelings.
 
     The SNEMI3D connectomics metric, complementary to VOI: it scores agreement over
     *pairs of pixels grouped into the same segment* via the contingency matrix.
@@ -282,9 +281,9 @@ def voi_arand(
 
 
 def weighted_voi(voi: Dict[str, float], merge_split_ratio: float = 5.0) -> float:
-    """Single cost number weighting merges over splits (FUTURE_DIRECTIONS §4.1).
+    """Single cost number weighting merges over splits.
 
-    Mergers are far costlier to fix by hand than splits, so the roadmap proposes a
-    merge:split cost ratio of ~5:1 or higher. ``cost = ratio*VOI_merge + VOI_split``.
+    Mergers are far costlier to fix by hand than splits, so the proposed
+    merge:split cost ratio is ~5:1 or higher. ``cost = ratio*VOI_merge + VOI_split``.
     """
     return float(merge_split_ratio) * voi["voi_merge"] + voi["voi_split"]

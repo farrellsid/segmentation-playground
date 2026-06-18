@@ -1,11 +1,11 @@
 """
-run_aval.py — milestone-1 bootstrap driver.
+run_aval.py: bootstrap driver.
 
 Runs ONE chain (AVAL) end-to-end through pipeline.run_chain and serializes the
 resulting ChainState. This is the regression harness: its masks should match the
 notebook's output for the same chain (same z-range, same mask pixels).
 
-pipeline.py stays a pure library — this script is the only place that knows about
+pipeline.py stays a pure library: this script is the only place that knows about
 predictors, the CSV/CATMAID source, chains.json, and the filesystem layout.
 
 Run it directly:  python run_aval.py
@@ -43,7 +43,7 @@ cfg = PipelineConfig(
     scale=8,
     save_downscale=8,        # canonical: == scale, no resample, no 2x skeleton bug
     k_max_neg=7,
-    neg_radius=150,          # accepted but unused in M1 (see build_prompts docstring)
+    neg_radius=150,          # accepted but unused (see build_prompts docstring)
     box_margin=10,
     output_root=OUTPUT_ROOT,
     frames_root=FRAMES_ROOT,
@@ -86,7 +86,7 @@ print(f"{TARGET_CELL_NAME}: {len(cell_chains)} chain(s); "
 # 3. Predictors: build image + video once, using cfg.model_size
 # =============================================================================
 # Note: both "large" predictors resident at once is heavy on VRAM. If you OOM,
-# build the video predictor lazily after the image phase instead — but then you
+# build the video predictor lazily after the image phase instead, but then you
 # can't pass a single video_predictor into run_chain, so you'd inline the phases.
 image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image")
 diagnostics.snapshot("after image model load")

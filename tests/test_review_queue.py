@@ -1,4 +1,4 @@
-"""Unit tests for sam2_utils.review_queue.ReviewQueue — the M4 work queue + the
+"""Unit tests for sam2_utils.review_queue.ReviewQueue, the work queue + the
 GUI-owned review-status ledger (_review.csv), kept separate from the batch's
 execution manifest (_manifest.csv).
 

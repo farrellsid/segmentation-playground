@@ -3,9 +3,9 @@ ab_tier2.py — A/B harness: tier-2 per-chain crop (chain_crop=True) vs the _sam
 full-frame baseline (chain_crop=False), on the same chains.
 
 Throwaway measurement script (not part of the library). Runs each listed chain
-through pipeline.run_chain twice — once per config — into separate output roots,
+through pipeline.run_chain twice (once per config) into separate output roots,
 then prints a side-by-side of the QC verdict, flag/queue/noskel rates, mask
-resolution, and timing. Per the PIPELINE_CONTEXT §6 ruler: relative deltas at fixed
+resolution, and timing. The ruler is relative deltas at fixed
 thresholds (does tier-2 move the noskel queue / sharpen masks), not absolute truth.
 
     py -3 ab_tier2.py

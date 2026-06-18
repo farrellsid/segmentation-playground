@@ -1,14 +1,14 @@
-"""diag_registration.py — structural + visual check of the skel→GT registration (Stage 0.1).
+"""diag_registration.py — structural + visual check of the skel→GT registration.
 
 `registration.py` reports the headline on-mask rate; this answers the *next* question:
-**is the leftover residual structured or irreducible?** That decides the 0.1 fix:
+**is the leftover residual structured or irreducible?** That decides the fix:
 
 * If a per-section **full affine** (rotation/scale/shear, not just the current per-section
   *translation*) cuts the residual a lot, the realignment carries per-section rotation/scale the
   translation-only model misses → upgrade the registration model.
 * If it doesn't, the residual is noise / single-process-centroid ambiguity, and the ~half-of-nodes
-  miss is just neurite thinness (~20–40 px wide) vs the residual (~20 px) — no amount of global
-  re-fitting helps, and 0.1's lever is elsewhere (snap-to-neurite seeding, neighborhood label
+  miss is just neurite thinness (~20-40 px wide) vs the residual (~20 px). No amount of global
+  re-fitting helps, and the lever is elsewhere (snap-to-neurite seeding, neighborhood label
   sampling for ERL, or full-res which shrinks both in px).
 
 Also writes overlay montages (EM + GT segment + registered skeleton nodes) so the transform can be
@@ -180,7 +180,7 @@ def montage(gt: GroundTruth, sk: pd.DataFrame, reg: Registration, corr: pd.DataF
 
 def main() -> None:
     base = config.DATA_DIR / "groundtruth" / "skeletons_p280"
-    ap = argparse.ArgumentParser(description="Structural + visual registration diagnostic (Stage 0.1).")
+    ap = argparse.ArgumentParser(description="Structural + visual registration diagnostic.")
     ap.add_argument("--skeleton-csv", type=Path, default=base / "aggregate_data_pv.csv")
     ap.add_argument("--registration", type=Path, default=base / "registration.json")
     ap.add_argument("--out", type=Path, default=config.DATA_DIR / "groundtruth" / "reg_diag")

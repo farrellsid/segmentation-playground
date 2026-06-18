@@ -4,7 +4,7 @@ and its shared geometry helpers (_point_in_mask / _largest_cc_frac).
 Torch-free and data-free, like test_alignment: pipeline.py imports torch only
 lazily (inside the predictor-touching functions), so importing the module and
 exercising the pure selection/geometry logic needs no GPU and no EM stack. This
-guards M3.5 item 2c (PIPELINE_CONTEXT §7): the ranking is node-containment ->
+guards the anchor ranking: node-containment ->
 plausible-area -> single-CC -> SAM IoU, graceful (always returns a candidate).
 
 Run either way:

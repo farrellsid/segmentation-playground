@@ -1,5 +1,5 @@
 """
-pull_worm.py — fetch + process a worm's CATMAID skeletons into the pipeline's
+pull_worm.py: fetch + process a worm's CATMAID skeletons into the pipeline's
 node table (aggregate_data_pv.csv) + chain decomposition (chains.json / roots.json).
 
 The script form of `Copy_of_Get_catmaid_information_lucinda.ipynb`, generalized so
@@ -15,7 +15,7 @@ Stages (all in sam2_utils.skeletons; see that module's docstring):
 z-range (--start/--end)
 -----------------------
 Clips chains to the imaged sections (the GT masks only exist there). Default: no
-clip — the script prints the pulled z-distribution so you can pick the range, then
+clip: the script prints the pulled z-distribution so you can pick the range, then
 re-run with --start/--end. For project 280 the VAST GT stack is slices 0..850.
 
 Coordinate frames
@@ -23,7 +23,7 @@ Coordinate frames
 Node x/y/z come out in **CATMAID stack pixels** (nm ÷ STACK_RESOLUTION_NM). Landing
 them in a worm's image/mask grid is a per-worm registration step (an affine; see
 sam2_utils.alignment / config.M_AFFINE for the original worm). That transform is NOT
-applied here — this script only produces the raw stack-px node table.
+applied here: this script only produces the raw stack-px node table.
 """
 
 from __future__ import annotations

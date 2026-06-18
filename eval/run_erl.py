@@ -2,15 +2,14 @@
 run_erl.py — compute per-neuron ERL on the cross-worm GT, end to end.
 
 This wires the four pieces together (skeletons + registration + GT labelmaps +
-the ERL metric) into the Stage-0 advance-gate deliverable: a per-neuron ERL and
-a split/merge breakdown. Two modes:
+the ERL metric) into a per-neuron ERL and a split/merge breakdown. Two modes:
 
 * ``--mode self`` (default) — **GT self-consistency check.** The "prediction" is
   the GT labelmap itself: sample it at each skeleton node *through the fitted
   registration*, map the sampled segment ``Nr`` to its GT neuron label, and run
   ERL. If the registration is good, each node lands on its own neuron's segment,
   so ERL should approach the perfect-segmentation **ceiling** (≈76 µm on p280).
-  This validates the whole chain before any model prediction exists — the gap
+  This validates the whole chain before any model prediction exists: the gap
   from the ceiling is exactly registration / GT-coverage error, expressed in µm.
 
 * ``--mode pred`` — score a real prediction. Same node sampling, but the sampled

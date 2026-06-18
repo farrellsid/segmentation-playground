@@ -1,13 +1,12 @@
 """
-pipeline.py -> phase functions + per-chain orchestration (milestone 1).
+pipeline.py -> phase functions + per-chain orchestration.
 
 This is the "library of phase functions" the notebook lifts into. Each function
 is a near-mechanical extraction of a notebook cell-group. `run_chain` at the
 bottom is the thin driver -> reproducing the current AVAL masks is the regression
 baseline.
 
-State machine, inline QC, and the GUI are left for later milestones. The hooks
-where they plug in are marked `# [Mn]`.
+State machine, inline QC, and the GUI are not implemented yet.
 
 Coordinate-space convention
 ---------------------------
@@ -17,7 +16,7 @@ Tag every coordinate/array with the space it lives in, via a suffix:
     _sam  SAM2 *video* input space = full / SCALE (the propagation frames + the
           canonical on-disk mask space; the video predictor + saved masks live here)
     _crop high-res anchor-crop space = (full - crop_origin) / crop_scale. Only the
-          *image/anchor* phase uses it (M3.5 default crop); alignment.CropWindow is
+          *image/anchor* phase uses it (default crop); alignment.CropWindow is
           the one place _crop <-> _tif <-> _sam mapping lives. The crop's box is
           mapped back to _sam before the video seed, so _sam stays the spine.
 z is even more error-prone, so name it explicitly too:
@@ -25,8 +24,8 @@ z is even more error-prone, so name it explicitly too:
     file_z      tif filename z           (catmaid_z - config.FILE_Z_OFFSET)
     frame_idx   0-based video frame index
 
-Canonical on-disk mask space (resolves PIPELINE_CONTEXT §5.1-5.2)
-----------------------------------------------------------------
+Canonical on-disk mask space
+----------------------------
 Masks are *computed* at _sam (SCALE). Store them there too: set
 save_downscale == SCALE so there's no resample and no 2x skeleton bug. Filenames
 are `mask_<catmaid_z:04d>.png` (no 'z' prefix) so qc._iter_mask_paths finds them.
@@ -78,9 +77,9 @@ def _downscale_image(img: np.ndarray, scale: int) -> np.ndarray:
 
 
 def _read_tif_window(tif_path, sl) -> np.ndarray:
-    """Return the [y0:y1, x0:x1] window `sl` of a tif as BGR HxWx3 uint8 — EXACTLY what
+    """Return the [y0:y1, x0:x1] window `sl` of a tif as BGR HxWx3 uint8, EXACTLY what
     ``cv2.imread(str(tif_path))[sl]`` returns, but read lazily so only the window's rows
-    page in instead of decoding the whole frame (the §7 tier-2 perf optimisation, item c).
+    page in instead of decoding the whole frame (the tier-2 perf optimisation).
 
     The Zhen EM tifs are uncompressed, single-strip (row-contiguous), 8-bit grayscale, so a
     ``tifffile.memmap`` slice touches only the sliced rows: ~(y1-y0)*W bytes vs the full
@@ -89,7 +88,7 @@ def _read_tif_window(tif_path, sl) -> np.ndarray:
     replication, so GRAY2BGR reproduces it bit-for-bit (and BGR==RGB here anyway since the
     source is grayscale). Any tif that can't be windowed this way (compressed, tiled,
     multi-page/3-channel, or tifffile missing) falls through to a full cv2.imread+slice, so
-    the output is invariant to the read path — only the wall-time differs."""
+    the output is invariant to the read path, only the wall-time differs."""
     import cv2
     try:
         import tifffile
@@ -102,7 +101,7 @@ def _read_tif_window(tif_path, sl) -> np.ndarray:
             del mm                                    # release the mapping
         return cv2.cvtColor(win, cv2.COLOR_GRAY2BGR)  # -> BGR 3-ch, matching cv2.imread
     except Exception:
-        return cv2.imread(str(tif_path))[sl]          # safe full-read fallback (pre-c behaviour)
+        return cv2.imread(str(tif_path))[sl]          # safe full-read fallback
 
 
 def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
@@ -148,7 +147,7 @@ def _link_frame(src: Path, dst: Path) -> None:
 
 
 # =============================================================================
-# Frame source — the ONE worm-coupled seam (PIPELINE_CONTEXT §3a / FUTURE_DIRECTIONS Stage 0.2)
+# Frame source, the ONE worm-coupled seam
 # =============================================================================
 # run_chain's phase functions are otherwise worm-agnostic (they consume annotate_df's
 # x_tif/y_tif + a logical z), but the EM frames are read straight from the target worm's
@@ -181,7 +180,7 @@ class FrameStore:
 class TifFrameStore(FrameStore):
     """Target worm: a ``.tif`` stack under ``worm_path`` named ``..z{file_z}.tif``.
     key == file_z, logical z == catmaid_z (related by config.FILE_Z_OFFSET via alignment).
-    Reproduces the original glob/parse/z-map exactly — the M1 reproduction path."""
+    Reproduces the original glob/parse/z-map exactly, the reproduction path."""
 
     def __init__(self, worm_path: Optional[Path] = None):
         self.worm_path = Path(worm_path) if worm_path is not None else config.WORM_PATH
@@ -217,7 +216,7 @@ class PipelineConfig:
 
     These are the fields a future settings GUI binds to. Kept deliberately as a
     plain dataclass: no file format, no loader, no validation yet -> that pairs
-    with the GUI later (M3/M4). Static project facts (WORM_PATH, checkpoint
+    with the GUI later. Static project facts (WORM_PATH, checkpoint
     registry, affine, CATMAID) stay in sam2_utils.config; this is per-run tuning
     only.
 
@@ -228,18 +227,18 @@ class PipelineConfig:
     # model / resolution
     model_size: str = "large"          # tiny / small / base_plus / large; read at predictor-build
     scale: int = 8                     # SAM2 input downscale (1 = full-res)
-    save_downscale: int = 8            # on-disk mask downscale; == scale is canonical
-                                       # (PIPELINE_CONTEXT §5.2). Diverge only if you
-                                       # want interpolated higher-res Blender masks.
+    save_downscale: int = 8            # on-disk mask downscale; == scale is canonical.
+                                       # Diverge only if you want interpolated
+                                       # higher-res Blender masks.
 
     # prompt construction
     k_max_neg: int = 7                 # max negative points per object
     neg_radius: int = 150              # neg-point exclusion radius, _sam pixels
     box_margin: int = 10               # anchor-box padding, _sam pixels
 
-    # QC thresholds (M2). Forwarded to qc.compute_metrics; defaults match its
-    # original hardcoded rule. PIPELINE_CONTEXT §7 flags these as needing tuning
-    # on AVAL -> this is the one place to turn the knobs.
+    # QC thresholds. Forwarded to qc.compute_metrics; defaults match its
+    # original hardcoded rule. These need tuning on AVAL, and this is the one
+    # place to turn the knobs.
     qc_area_ratio_bounds: tuple[float, float] = (0.5, 2.0)
     qc_temporal_iou_min: float = 0.3
     qc_pred_iou_min: float = 0.3       # pred_iou is now populated (propagate captures
@@ -250,24 +249,24 @@ class PipelineConfig:
     # hit `intervene` (>=2 signals). 1 = flag the chain if any frame needs a human.
     qc_intervene_to_flag_chain: int = 1
 
-    # anchor-quality gate (M3.5 item 1). The raw image-mode anchor mask is scored
+    # anchor-quality gate. The raw image-mode anchor mask is scored
     # in _sam space *before* propagation (see score_anchor). Deliberately loose
-    # first-pass values: per the PIPELINE_CONTEXT §6 ruler, M3.5 levers are judged
-    # by *relative* queue deltas at fixed thresholds, not absolute correctness, so
-    # these start permissive and get tuned, not trusted. The containment probe
-    # reuses qc_skeleton_dilation_px (no separate knob) so anchor- and per-frame
-    # containment mean the same thing -> and the §6 item-0 dilation sweep informs both.
+    # first-pass values: levers are judged by *relative* queue deltas at fixed
+    # thresholds, not absolute correctness, so these start permissive and get
+    # tuned, not trusted. The containment probe reuses qc_skeleton_dilation_px (no
+    # separate knob) so anchor- and per-frame containment mean the same thing, and
+    # the dilation sweep informs both.
     gate_min_area_frac: float = 1e-5       # area floor (frac of frame): catch empty/near-empty
     gate_max_area_frac: float = 0.4       # area ceiling: catch a runaway background grab
     gate_min_largest_cc_frac: float = 0.8  # single-CC: >= this share of fg in the largest blob
 
-    # anchor crop (M3.5 item 2 -> DEFAULT). The image/anchor phase runs image mode
+    # anchor crop (DEFAULT). The image/anchor phase runs image mode
     # on a high-res crop around the node (space _crop, via alignment.CropWindow)
     # instead of the scale-8 full frame, then maps the resulting box back to _sam
     # for the video seed. `scale` is UNCHANGED by this: it still governs video
     # propagation + the canonical mask space; the crop only changes the *anchor*
     # resolution. Set crop_anchor=False to fall back to the legacy scale-8 image
-    # phase (A/B testing + the M1 pixel-for-pixel regression baseline).
+    # phase (the pixel-for-pixel regression baseline).
     # NB the gate's contain radius and area_frac are space-relative, so under the
     # crop the radius is rescaled (x scale/crop_scale) and the area_frac thresholds
     # are measured against the crop, not the full frame -> re-tune on the next run.
@@ -275,14 +274,14 @@ class PipelineConfig:
     crop_size_tif: int = 1200          # crop window edge in full-res tif px
     crop_scale: int = 2                # crop read downscale (1 = full-res); input edge = size/scale px
 
-    # tier-2 per-chain crop (M4.5). The resolution lever that actually moves
-    # downstream propagation drift (PIPELINE_CONTEXT §7 "Local high-res cropping",
+    # tier-2 per-chain crop. The resolution lever that actually moves
+    # downstream propagation drift ("Local high-res cropping",
     # tier 2): instead of propagating the scale-8 full frame, crop ONE window sized
     # to the chain's whole skeleton xy-extent (+ chain_crop_pad_tif) and run the
     # *entire* image+propagation in that crop at chain_crop_scale. Masks are then
     # stored in this per-chain crop space (`_pcrop`), NOT _sam, and the CropWindow is
     # persisted to state.json so QC/review/GUI can interpret them (alignment.CropWindow).
-    # Default OFF -> the _sam full-frame path above is unchanged (and the M1 baseline
+    # Default OFF -> the _sam full-frame path above is unchanged (and the baseline
     # holds). When on it SUPERSEDES crop_anchor (the chain window is the anchor window
     # too). chain_crop_scale is a *target*: a chain whose padded extent would exceed
     # chain_crop_max_px on its longest edge is read coarser (scale bumped up) so the
@@ -295,14 +294,14 @@ class PipelineConfig:
     chain_crop_max_px: int = 1536      # cap on the crop's longest input edge (bounds VRAM)
     # FLOOR on the crop's _tif extent. A low-motion chain (neurite barely moves in xy)
     # otherwise gets a tiny over-zoomed window where SAM2 loses inter-frame context and
-    # the mask collapses to empty — the AIYL chain_02 A/B failure (June 2026). This pads
+    # the mask collapses to empty (the AIYL chain_02 over-zoom failure). This pads
     # the window out (centred) so the crop always carries enough surrounding context to
     # track. 1024 _tif px -> ~512 px input at crop_scale 2, still ~4x the neurite
     # resolution of the scale-8 full frame.
     chain_crop_min_tif: int = 1024
 
-    # Tier-2 crop sizing from the _sam mask, not the skeleton (M4.5, default OFF —
-    # A/B gate). The skeleton-bbox window (chain_crop_window/_chain_skeleton_box_tif)
+    # Tier-2 crop sizing from the _sam mask, not the skeleton (default OFF).
+    # The skeleton-bbox window (chain_crop_window/_chain_skeleton_box_tif)
     # is sized to the centerline NODES; a cell whose membrane bulges past the nodes +
     # chain_crop_pad_tif gets CLIPPED at the window edge (measured: AIAL/chain_00 clips
     # 24/113 frames). With radius dead (placeholder), there's no per-node extent to pad
@@ -311,43 +310,43 @@ class PipelineConfig:
     # "generate normally -> bbox -> crop" idea): a strict SUPERSET of the skeleton
     # window, so it can only grow to contain the segmented cell, never clip worse. The
     # mask bbox is taken over the NON-queued frames only (the flagged frames are the
-    # least-trustworthy masks — drift/merge would inflate the box toward the error);
+    # least-trustworthy masks, drift/merge would inflate the box toward the error);
     # if every frame is queued it falls back to all frames, and if no usable _sam mask
     # exists (or the prior masks are themselves _pcrop) it falls back to the skeleton
     # bbox. chain_crop_max_px still caps the result (bumps crop_scale coarser), trading
-    # resolution for not clipping — the §4 accuracy-over-everything call. The natural
+    # resolution for not clipping (the accuracy-over-everything call). The natural
     # home is the auto second-pass (batch.tier2_on_flagged), where the _sam masks the
     # first pass just wrote are exactly the bbox source.
     chain_crop_from_mask: bool = False
 
-    # Tier-2 SAFETY (M4.5 item b). When the per-chain crop yields a POOR anchor, do
+    # Tier-2 SAFETY. When the per-chain crop yields a POOR anchor, do
     # not propagate a bad crop (or flag the chain); re-run the image phase + the whole
     # propagation in the plain _sam full-frame path instead. "Poor" = empty anchor mask
     # in the crop, OR the anchor gate fires (area/frag/noskel), OR (if a floor is set)
     # image_score below chain_crop_min_image_score. This is what makes chain_crop safe
     # to enable broadly: a chain only KEEPS the crop when its anchor is trustworthy
-    # there, else it degrades to the M1 path rather than to a collapsed _pcrop mask
-    # (the AIYL chain_02 over-zoom failure, June 2026). Only active when chain_crop is on;
-    # records ChainState.fell_back_to_sam for the A/B + the future P(error) features.
+    # there, else it degrades to the full-frame path rather than to a collapsed _pcrop mask
+    # (the AIYL chain_02 over-zoom failure). Only active when chain_crop is on;
+    # records ChainState.fell_back_to_sam for the future P(error) features.
     chain_crop_fallback: bool = True
     # image_score floor that triggers the fallback. THIS, not the geometry gate, is what
-    # catches the over-zoom: the ab_fallback.py A/B (June 2026) showed the over-zoomed
+    # catches the over-zoom: the fallback behavior showed the over-zoomed
     # _pcrop anchor PASSES the geometry gate (clean single blob, contains the node) yet
-    # collapses during propagation — the failure is a tracking effect, invisible at the
+    # collapses during propagation, the failure is a tracking effect, invisible at the
     # anchor frame. SAM2's own anchor confidence IS the pre-propagation tell: over-zoom
     # scored 0.516 vs 0.848 / 0.879 for healthy crops, so a 0.7 floor cleanly separates
     # them (over-zoom -> fall back to _sam and recover the clean baseline; healthy ->
-    # keep tier-2). First-pass value per the §6 "permissive, tune don't trust" rule;
-    # widen the A/B (item d) before trusting it. 0 disables the floor (gate-only, which
-    # the A/B proved insufficient on its own).
+    # keep tier-2). First-pass value per the "permissive, tune don't trust" rule;
+    # widen the sweep before trusting it. 0 disables the floor (gate-only, which
+    # proved insufficient on its own).
     chain_crop_min_image_score: float = 0.7
 
-    # multimask anchor auto-select (M3.5 item 2c). Ask SAM2 for its 3 candidate
+    # multimask anchor auto-select. Ask SAM2 for its 3 candidate
     # masks and auto-pick (node-containment -> plausible-area -> single-CC -> IoU;
     # see _select_anchor_mask) instead of taking the single-mask output. Near-free:
     # SAM2's decoder computes all 3 either way, set_image runs once, only CPU scoring
-    # of 3 masks is added. Default OFF to preserve the M1 pixel-for-pixel baseline
-    # (it changes which anchor mask is chosen); flip on to A/B. Reuses the gate's
+    # of 3 masks is added. Default OFF to preserve the pixel-for-pixel baseline
+    # (it changes which anchor mask is chosen); flip on to compare. Reuses the gate's
     # contain radius + area_frac bounds, so it scores in the same space as the gate.
     multimask_anchor: bool = False
 
@@ -356,12 +355,12 @@ class PipelineConfig:
     frames_root: Optional[Path] = None     # parent dir for SAM2 JPEG frame folders
 
 
-    # video seed (M3.5 item 3 -> M4.5 seed ablation). What conditioning to put on the
+    # video seed (seed ablation). What conditioning to put on the
     # anchor frame for video propagation. SAM2 treats MASK and POINTS/BOX as mutually
     # exclusive per frame (add_new_mask pops point/box inputs and vice-versa), so the
     # valid space is: seed_mask alone, OR any combination of {box, positive, negative}.
-    # Defaults reproduce the M1/current seed exactly (fixed-margin box + positive point).
-    # The ablation (ab_seed.py, June 2026) sweeps these to find the seeding sweet spot —
+    # Defaults reproduce the current seed exactly (fixed-margin box + positive point).
+    # The ablation sweeps these to find the seeding sweet spot:
     # more prompts is NOT always better (over-constraining the anchor can hurt tracking).
     seed_box: str = "fixed"            # "none" | "fixed" (box_margin px) | "frac" (box_margin_frac)
     seed_points: bool = True           # include the positive (anchor skeleton) point
@@ -371,8 +370,8 @@ class PipelineConfig:
                                        # legacy _sam or tier-2 _pcrop, NOT tier-1 crop_anchor _crop)
     box_margin_frac: float = 0.0       # %-of-bbox-size box pad when seed_box == "frac" (underfill fix)
 
-    # mask post-processing (M3.5 item 5) -> deterministic, no model. Runs before
-    # save+QC so QC scores the delivered mask. Off = M1 baseline. Kernels are in
+    # mask post-processing -> deterministic, no model. Runs before
+    # save+QC so QC scores the delivered mask. Off = baseline. Kernels are in
     # scale-8 _sam px; keep <= the neurite half-width.
     postprocess_masks: bool = False
     postproc_open_px: int = 1
@@ -380,9 +379,9 @@ class PipelineConfig:
     postproc_keep_largest_cc: bool = True
     postproc_fill_holes: bool = True
 
-    # which per-frame severity enters the human triage queue (item 4). A frame is
+    # which per-frame severity enters the human triage queue. A frame is
     # queued when flag_count >= this. 2 = intervene-level (>=2 corroborating signals),
-    # the default since item 0 (June 2026): single-signal flags are dominated by
+    # the default: single-signal flags are dominated by
     # dilation-sensitive `noskel` noise (flag_rate moved 0.33->0.19 over a 0..10px
     # dilation sweep) while the intervene set is dilation-robust (rate moved <0.005).
     # Set to 1 to restore the legacy "queue every flag" behaviour.
@@ -421,8 +420,8 @@ class ChainState:
     # image-phase result summary (mask itself goes to disk)
     image_score: Optional[float] = None
 
-    # anchor-quality gate verdict (M3.5 item 1), as a plain JSON-ready dict ->
-    # parallel to qc_summary. Filled by score_anchor in run_chain. M4 logs this as
+    # anchor-quality gate verdict, as a plain JSON-ready dict ->
+    # parallel to qc_summary. Filled by score_anchor in run_chain. Logs this as
     # the per-chain "anchor verdict" feature for the learned P(error) detector.
     anchor_score: Optional[dict] = None
 
@@ -438,28 +437,28 @@ class ChainState:
     # cfg.chain_crop is on.
     crop_window: Optional[dict] = None
 
-    # tier-2 SAFETY (M4.5 item b): True when cfg.chain_crop was requested but the
+    # tier-2 SAFETY: True when cfg.chain_crop was requested but the
     # per-chain crop anchor was poor, so this chain was re-run in the plain _sam path
-    # (crop_window is then None and masks/frames are _sam, exactly like an M1 run).
-    # Recorded for the A/B (how often the fallback fires) and as a P(error) feature.
+    # (crop_window is then None and masks/frames are _sam, exactly like a full-frame run).
+    # Recorded for how often the fallback fires, and as a P(error) feature.
     fell_back_to_sam: bool = False
 
     # tier-2 fallback DIAGNOSTICS (captured from the CROP pass before the _sam recovery
-    # pass overwrites image_score/anchor_score — otherwise the failing crop-pass values
+    # pass overwrites image_score/anchor_score, otherwise the failing crop-pass values
     # are lost and the final state.json only shows the healthy _sam recovery, making it
     # impossible to tell WHY a chain fell back). None unless fell_back_to_sam is True.
-    #   fellback_reason   : which trigger fired — "empty-mask" / "gate(...)" / "score<0.7"
-    #   crop_image_score  : the crop-pass anchor image_score (the over-zoom tell, §7)
+    #   fellback_reason   : which trigger fired, "empty-mask" / "gate(...)" / "score<0.7"
+    #   crop_image_score  : the crop-pass anchor image_score (the over-zoom tell)
     #   crop_anchor_score : the crop-pass anchor gate verdict (score_anchor dict)
     fellback_reason: Optional[str] = None
     crop_image_score: Optional[float] = None
     crop_anchor_score: Optional[dict] = None
 
-    # qc summary + triage (filled in milestone 2)
+    # qc summary + triage
     qc_summary: Optional[dict] = None          # flag counts, worst frames, etc.
     triage_frames: list[int] = field(default_factory=list)
 
-    obj_id: int = 1                            # per-chain; increments for multi-obj merge (M5)
+    obj_id: int = 1                            # per-chain; increments for multi-obj merge
 
     # snapshot of the run settings this chain was processed under (reproducibility):
     # a resumed/re-opened chain replays with the knobs it actually ran under, even
@@ -484,7 +483,7 @@ def select_anchor(chain: dict, annotate_df: pd.DataFrame) -> tuple[int, int]:
     Currently the mid-node heuristic. Returns (anchor_node_id, anchor_catmaid_z).
 
     Lift from: 'Load Image' cell (midnode / TARGET_Z).
-    # [M4] failed-anchor auto re-pick policy lives here later, not in the driver.
+    not implemented: failed-anchor auto re-pick policy lives here later, not in the driver.
     """
     nodes = chain["nodes"]
     midnode = nodes[len(nodes) // 2]
@@ -530,7 +529,7 @@ def build_prompts(anchor_node_id: int, catmaid_z: int, annotate_df: pd.DataFrame
     `neg_radius` is accepted for signature stability but is intentionally NOT
     applied: the notebook's prompt-construction cell never filtered negatives by
     radius (it only capped count via k_max_neg). Applying it now would change the
-    masks and break the M1 regression match. Wire the radius gate in M2 when QC
+    masks and break the regression match. Wire the radius gate in later when QC
     thresholds are being tuned, not here.
     """
     # --- positive: the anchor (mid) node, _tif -> _sam ---
@@ -574,7 +573,7 @@ def _point_in_mask(mask: np.ndarray, x: float, y: float, radius: int) -> bool:
     Point and mask must share a space (no transform here). Out-of-frame -> False.
     The single neighbourhood-containment test reused by score_anchor (anchor gate)
     and _select_anchor_mask (multimask pick) and matching qc's per-frame probe, so
-    "node is inside the mask" means one thing everywhere (PIPELINE_CONTEXT §4).
+    "node is inside the mask" means one thing everywhere.
     """
     h, w = mask.shape
     xi, yi = int(round(x)), int(round(y))
@@ -615,19 +614,19 @@ def _positive_point(prompts: Optional[Prompts]) -> Optional[np.ndarray]:
 def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional[Prompts],
                         image_hw: tuple[int, int], *, contain_radius_px: int,
                         area_bounds: tuple[float, float]) -> tuple[int, np.ndarray, float]:
-    """Pick the best of SAM2's multimask candidates for an anchor seed (M3.5 item 2c).
+    """Pick the best of SAM2's multimask candidates for an anchor seed.
 
-    Ranking is lexicographic and *graceful* — it always returns one candidate, so a
+    Ranking is lexicographic and *graceful*, it always returns one candidate, so a
     chain with no clean mask still produces a box (and is then caught by the gate /
-    empty-mask flag downstream) rather than crashing. Priority order mirrors
-    PIPELINE_CONTEXT §7 (node-containment / plausible-area / single-CC):
-      1. contains the positive node      — domain anchor: the mask must sit on the neurite
-      2. plausible area (in area_bounds)  — reject runaway background grabs / empty masks
+    empty-mask flag downstream) rather than crashing. Priority order is
+    node-containment / plausible-area / single-CC:
+      1. contains the positive node      : domain anchor, the mask must sit on the neurite
+      2. plausible area (in area_bounds)  : reject runaway background grabs / empty masks
                                             *before* single-CC, since a runaway grab is
                                             usually one huge clean blob (lcc ~ 1.0) that
                                             would otherwise win on step 3
-      3. single-CC health (largest_cc_frac) — one clean blob over fragmented membrane
-      4. SAM predicted IoU (scores)       — final tiebreak among otherwise-equal masks
+      3. single-CC health (largest_cc_frac) : one clean blob over fragmented membrane
+      4. SAM predicted IoU (scores)       : final tiebreak among otherwise-equal masks
 
     Everything is judged in the space the masks live in (the caller passes matching
     `prompts`, `image_hw`, and `contain_radius_px`), so this is transform-free like
@@ -663,17 +662,17 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
 
     Returns (mask bool HxW, score, logits) in whatever space `image_sam` is.
 
-    `multimask=False` (default) is the single-mask path — `multimask_output=False`,
-    the M1 regression baseline, exactly reproduces the notebook. `multimask=True`
-    asks SAM2 for its 3 candidate masks and auto-selects one via `_select_anchor_mask`
-    (M3.5 item 2c, PIPELINE_CONTEXT §7). This is near-free: SAM2's mask decoder
+    `multimask=False` (default) is the single-mask path, `multimask_output=False`,
+    the regression baseline, exactly reproduces the notebook. `multimask=True`
+    asks SAM2 for its 3 candidate masks and auto-selects one via `_select_anchor_mask`.
+    This is near-free: SAM2's mask decoder
     *always* computes all 3 candidates regardless of the flag (it only slices the
     output — see sam2/modeling/sam/mask_decoder.py), and the heavy image-encoder
     `set_image` runs once either way; the only added work is scoring 3 masks on CPU.
     The selection params are only consulted when `multimask=True`.
 
     Lift from: 'Image Prediction' cell.
-    # [M3] the GUI refinement loop wraps this call (re-predict on each point edit).
+    not implemented: the GUI refinement loop wraps this call (re-predict on each point edit).
     """
     import torch
 
@@ -700,9 +699,9 @@ def box_from_mask(mask_sam: np.ndarray, *, margin: int, margin_frac: float = 0.0
     chain for human review rather than feed garbage into propagation.
 
     ``margin`` is a fixed pad in mask-space px (the historical behaviour). ``margin_frac``
-    (>0) adds a pad scaled to the box's own size — ``round(margin_frac * max(w, h))`` of
-    the largest-CC bbox, applied per side — and the effective pad is the LARGER of the two.
-    Rationale (June 2026 seed ablation): when the anchor mask *under*-fills the cell, a
+    (>0) adds a pad scaled to the box's own size (``round(margin_frac * max(w, h))`` of
+    the largest-CC bbox, applied per side) and the effective pad is the LARGER of the two.
+    Rationale (seed ablation): when the anchor mask *under*-fills the cell, a
     fixed 10px box doesn't enclose the whole process, so propagation can't recover the
     missing extent; a size-relative pad widens the box in proportion to the object, which
     is the cheap way to keep the box seed competitive with the (curated) mask seed.
@@ -738,10 +737,10 @@ class AnchorScore:
     The geometry here is judged entirely in _sam space -> the space image_predict
     works in, and the space prompts.points_sam already lives in -> so there is *no*
     coordinate transform in this function (deliberately: the anchor mask and the
-    positive prompt point share one frame). That keeps it off the §4/§5 bug-prone
+    positive prompt point share one frame). That keeps it off the bug-prone
     transform path.
 
-    Three sub-checks, mirroring the M3.5 gate (PIPELINE_CONTEXT §6 item 1):
+    Three sub-checks, mirroring the gate:
       contained        -> does the mask cover the positive (skeleton) prompt point,
                           within a small radius? Tri-state, same meaning as
                           qc.skeleton_contained but encoded JSON-clean:
@@ -788,7 +787,7 @@ def score_anchor(mask_sam: np.ndarray, prompts: Prompts, *,
 
     Called *before* box_from_mask (it judges the raw multi-blob mask, not the
     largest-CC box) and before propagation, so a bad anchor costs one frame's
-    compute instead of a wasted ~300-frame propagate. This is M3.5 item 1's
+    compute instead of a wasted ~300-frame propagate. This is the
     *scoring* half only: it is pure (reads the mask + prompts, writes nothing) and
     decides nothing -> the gate that escalates prompts / re-picks the node / blocks
     propagation consumes this verdict in the next increment.
@@ -844,7 +843,7 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
                         multimask: bool = False, select_contain_radius_px: int = 0,
                         select_area_bounds: tuple[float, float] = (0.0, 1.0),
                         ) -> tuple[np.ndarray, float, "alignment.CropWindow", "Prompts"]:
-    """Image-mode anchor prediction on a high-res crop (M3.5 item 2 -> default path).
+    """Image-mode anchor prediction on a high-res crop (default path).
 
     Crops a `crop_size_tif` window around the anchor node (alignment.CropWindow ->
     the single home of _crop<->_tif<->_sam mapping), runs image mode in _crop at
@@ -859,12 +858,12 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
     still seed the video positive point; only the box comes from the crop.
 
     `multimask` + the `select_*` params forward straight to image_predict's
-    multimask auto-select (M3.5 item 2c). They must already be in _crop space — the
+    multimask auto-select. They must already be in _crop space: the
     caller rescales `select_contain_radius_px` by scale/crop_scale, and
-    `select_area_bounds` are frame-fraction bounds the crop config already tunes
-    (PIPELINE_CONTEXT §7) — so selection scores in the same _crop space as the mask.
+    `select_area_bounds` are frame-fraction bounds the crop config already tunes,
+    so selection scores in the same _crop space as the mask.
 
-    A prebuilt ``cw`` (tier-2 per-chain window) is used as-is — the image phase then
+    A prebuilt ``cw`` (tier-2 per-chain window) is used as-is: the image phase then
     runs in the SAME crop the whole chain propagates in, so the seed needs no
     _crop->_sam remap. When ``cw`` is None (tier-1 default) a fresh ``crop_size_tif``
     window is centred on the anchor node.
@@ -1009,11 +1008,11 @@ def _prior_queued_z(qc_csv_path: Path) -> set[int]:
 def mask_union_box_px(masks_dir: Path, *, exclude_z: Optional[set[int]] = None
                       ) -> Optional[tuple[float, float, float, float]]:
     """Union foreground bbox (x0, y0, x1, y1) over a chain's saved mask PNGs, in MASK
-    px (the space the PNGs are stored in — _sam for a normal run). Returns None if no
+    px (the space the PNGs are stored in, _sam for a normal run). Returns None if no
     usable foreground. ``exclude_z`` drops those CATMAID-z (the queued frames); if the
     exclusion would empty the set, it retries over ALL frames so a fully-queued chain
     still yields a box. Reuses qc's single mask-reading definition (_iter_mask_paths /
-    _load_binary), so "how a mask is read" stays one place (§4)."""
+    _load_binary), so "how a mask is read" stays one place."""
     from sam2_utils import qc   # lazy: keeps pipeline import free of qc's heavy deps
     masks_dir = Path(masks_dir)
 
@@ -1041,9 +1040,9 @@ def mask_union_box_px(masks_dir: Path, *, exclude_z: Optional[set[int]] = None
 
 def chain_masks_in_sam(chain_dir: Path, *, verbose: bool = False
                        ) -> dict[int, tuple[np.ndarray, int, int]]:
-    """[M5 aggregation prep] Read a finished chain's saved masks back onto the canonical
+    """Aggregation prep: read a finished chain's saved masks back onto the canonical
     _sam grid WITH their placement in the full _sam frame, so a per-neuron z-union can
-    paste every chain — legacy _sam AND tier-2 _pcrop — onto one common grid.
+    paste every chain (legacy _sam AND tier-2 _pcrop) onto one common grid.
 
     Returns ``{catmaid_z: (mask_sam: bool ndarray, x0_sam: int, y0_sam: int)}``:
       * legacy _sam chain (state.json ``crop_window`` is null): the saved mask IS already
@@ -1052,14 +1051,14 @@ def chain_masks_in_sam(chain_dir: Path, *, verbose: bool = False
         top-left offset is ``origin_tif / sam_scale``, so it drops into the full _sam frame
         at ``frame[y0:y0+h, x0:x0+w] |= mask_sam``.
 
-    THIS is the single home for the _pcrop -> _sam remap downstream merge needs (§5:
+    THIS is the single home for the _pcrop -> _sam remap downstream merge needs:
     crop_window is persisted to state.json precisely so aggregation can rebuild the crop
-    space — the mask PNG + filename alone do NOT encode their space). The aggregator must
+    space (the mask PNG + filename alone do NOT encode their space). The aggregator must
     consume it; globbing ``masks/*.png`` without it would mis-place every tier-2 chain.
 
     Resolution note: a tier-2 mask carries MORE spatial detail than _sam; here it is
     *downsampled* to the shared _sam grid for the union. Keep the _pcrop original on disk
-    if a higher-res mesh is wanted later (the §5 anisotropy / Blender path). Mask reading
+    if a higher-res mesh is wanted later (the anisotropy / Blender path). Mask reading
     reuses qc's _iter_mask_paths / _load_binary so "how a mask is read" stays one place.
     """
     from sam2_utils import qc   # lazy: keeps pipeline import free of qc's heavy deps
@@ -1149,7 +1148,7 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     the anchor seed (computed in the crop) and the propagated frames share EXACT
     `_pcrop` pixels. Unlike ``prepare_video_frames`` there is no cross-chain decode
     cache (every chain's window is unique). The per-frame read goes through
-    ``_read_tif_window`` (item c): a windowed memmap slice that pages in only the
+    ``_read_tif_window``: a windowed memmap slice that pages in only the
     window's rows instead of decoding the whole ~85 MB frame, which is where this
     function's wall-time lived. View dir is namespaced by neuron+chain+crop_scale and
     rebuilt fresh. Returns (view_dir str, frame_to_z, anchor_frame_idx, n_frames).
@@ -1184,7 +1183,7 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     frame_to_z: dict[int, int] = {}
     anchor_frame_idx: Optional[int] = None
     for i, (key, src_path) in enumerate(tqdm(subset, desc="caching _pcrop frames", unit="frame")):
-        crop = _read_tif_window(src_path, sl)       # windowed read (item c); == cv2.imread(src)[sl]
+        crop = _read_tif_window(src_path, sl)       # windowed read; == cv2.imread(src)[sl]
         crop = _downscale_image(crop, cw.crop_scale)
         cv2.imwrite(str(view_dir / f"{i:05d}.jpg"), crop)
         frame_to_z[i] = fs.z_of_key(key)
@@ -1205,7 +1204,7 @@ class FrameResult:
     frame_idx  : 0-based video frame index.
     masks      : {obj_id: bool HxW in _sam} for this frame.
     logit_conf : mean-foreground-sigmoid proxy for the session's obj_id
-                 (NaN if the mask is empty). The §5.3 "stop discarding logits" proxy.
+                 (NaN if the mask is empty). The "stop discarding logits" proxy.
     pred_iou   : SAM2 mask-decoder predicted-IoU for the session's obj_id, captured
                  from the decoder's IoU head (see _attach_iou_hook). NaN if the hook
                  couldn't read it (e.g. a SAM2 refactor) -> the QC flag rule treats
@@ -1260,8 +1259,8 @@ class PropagationSession:
     """Interruptible, resumable SAM2 video propagation for ONE chain.
 
     Holds the live ``inference_state`` so propagation can be **stopped** at a degrading
-    frame, **corrected** (``add_points`` / ``add_mask``), and **resumed** — the
-    PIPELINE_CONTEXT §3c interruptible-propagation primitive. The headless ``propagate()``
+    frame, **corrected** (``add_points`` / ``add_mask``), and **resumed**: the
+    interruptible-propagation primitive. The headless ``propagate()``
     function below drives it straight through (and is the only thing run_chain uses); a
     future auto-intervention loop or napari GUI drives the *same* methods. No GUI, napari,
     or torch import lives here — the session only calls the predictor's public API plus the
@@ -1278,7 +1277,7 @@ class PropagationSession:
       * A re-propagation after a correction re-tracks from the corrected frame onward and
         **overwrites** the stale frames it revisits in the accumulators (last write wins).
 
-    GUI/auto-intervention sketch (not built here — M4):
+    GUI/auto-intervention sketch (not built here):
         sess = PropagationSession(vp, frames_dir, obj_id=1)
         sess.seed(prompts, anchor_idx)
         for fr in sess.propagate(reverse=False):      # fr: FrameResult (mask, conf, pred_iou)
@@ -1453,16 +1452,16 @@ def propagate(video_predictor, frames_dir: str, prompts: Prompts,
     -------
     (video_segments, frame_conf, pred_iou)
         video_segments : {frame_idx: {obj_id: mask_sam bool}}
-        frame_conf     : {frame_idx: float} — mean-foreground-sigmoid proxy (the
-                         `logit_conf` diagnostic column; §5.3).
-        pred_iou       : {frame_idx: float} — SAM2's mask-decoder predicted IoU, now
-                         actually captured (PIPELINE_CONTEXT §5#4 resolved). NaN per
+        frame_conf     : {frame_idx: float}, mean-foreground-sigmoid proxy (the
+                         `logit_conf` diagnostic column).
+        pred_iou       : {frame_idx: float}, SAM2's mask-decoder predicted IoU, now
+                         actually captured. NaN per
                          frame only if the hook couldn't read it. run_chain maps this
                          frame_idx -> catmaid_z and hands it to run_qc, where it populates
                          the `pred_iou` QC column and becomes the 4th flag-rule signal
                          (was inert while NaN). NOTE: enabling this signal changes the
-                         flag/queue distribution — clear/re-score the manifest after the
-                         switch (the §5#7 mixed-threshold discipline), and set
+                         flag/queue distribution, clear/re-score the manifest after the
+                         switch (the mixed-threshold discipline), and set
                          cfg.qc_pred_iou_min <= 0 to record-but-not-flag.
 
     Lift from: 'init_state' cell + 'Anchor and propagate bidirectionally' cell.
@@ -1492,7 +1491,7 @@ def save_masks(video_segments: dict[int, dict[int, np.ndarray]],
     Returns count written. Files are `mask_<catmaid_z:04d>.png`, single-channel,
     255 = inside the neurite, 0 = background -> the notebook's exact format, so the
     masks are directly viewable AND pixel-comparable to the notebook output (the
-    M1 done-check). qc._load_binary reads `arr > 0`, so this stays fully
+    done-check). qc._load_binary reads `arr > 0`, so this stays fully
     compatible with compute_metrics.
 
     Why NOT qc.save_masks here: that writer stores uint16 *instance labels*
@@ -1500,7 +1499,7 @@ def save_masks(video_segments: dict[int, dict[int, np.ndarray]],
     1 in a 16-bit image is visually indistinguishable from black -> it looks empty
     and is destroyed by any 16->8-bit conversion, which is exactly the "empty
     masks" confusion. Instance-label encoding is a multi-object concern; adopt it
-    in M5 when aggregating several objects per neuron, not now.
+    later when aggregating several objects per neuron, not now.
 
     No resample happens: masks already live at _sam, and under the canonical rule
     (scale == save_downscale) that IS the on-disk space. `mask_space_downscale` is
@@ -1535,7 +1534,7 @@ def postprocess_mask(mask_sam: np.ndarray, *, open_px: int = 1, close_px: int = 
     """Deterministic, model-free cleanup of one propagated mask, in _sam space.
 
     Masks are downscaled then NN-upscaled, so they come out blocky / speckled /
-    holey while true neurite borders are smooth -> cleanup priors are safe (§7).
+    holey while true neurite borders are smooth -> cleanup priors are safe.
     Order: open (despeckle) -> close (bridge grid gaps) -> largest-CC (drop
     detached fragments, generalising box_from_mask's pick) -> fill holes. Keep
     kernels small or thin neurites erode away. Empty in -> empty out.
@@ -1574,12 +1573,12 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
            ) -> tuple[dict, list[int], str]:
     """Compute QC over the saved masks, write qc.csv, return (summary, triage_z, status).
 
-    Resolves PIPELINE_CONTEXT §5.4 to the extent M2 needs: QC runs over the
+    QC runs over the
     just-saved chain (joining the inline-captured confidence), produces flags, and
     drives the chain's verdict -> all headless, no human. It still reads the PNGs
     back off disk rather than scoring inside the propagate loop; that fully-inline,
-    interleaved form is only required for *halt-and-re-prompt*, which is M3/M4. So
-    this is "QC moved into the run," not yet "QC moved into the propagation loop."
+    interleaved form is only required for *halt-and-re-prompt*, which is not built
+    yet. So this is "QC moved into the run," not yet "QC moved into the propagation loop."
 
     Signals and the composite flag/intervene rule come straight from
     ``qc.compute_metrics`` (single source of truth); thresholds come from ``cfg``.
@@ -1606,13 +1605,13 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
     # Invariant: pipeline.save_masks writes masks at _sam (scale) and never
     # resamples, so the on-disk mask space IS `scale`. qc.compute_metrics divides
     # the _tif skeleton by `save_downscale` to land in mask space, so the two must
-    # be equal or QC silently mis-locates every node (PIPELINE_CONTEXT s5.2). The
+    # be equal or QC silently mis-locates every node. The
     # canonical rule already enforces this; the guard turns a future divergence
     # from a silent wrong-QC run into a loud failure. If you ever want resampled,
     # higher-res Blender masks, make save_masks resample first, then relax this.
     # The scale==save_downscale guard protects the _sam node lookup (skeleton / scale).
     # Tier-2 masks live in _pcrop, where the node lookup goes through crop_window
-    # instead of / save_downscale, so the guard does not apply — skip it when a
+    # instead of / save_downscale, so the guard does not apply, skip it when a
     # crop_window is supplied (and the node mapping is overridden below).
     if crop_window is None and cfg.scale != cfg.save_downscale:
         raise ValueError(
@@ -1662,8 +1661,8 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
 
     # The human triage queue is the frames at/above the configured severity
     # (flag_count >= qc_triage_min_signals; default 2 = intervene-level). `flag`
-    # (>=1 signal) stays in the row as a diagnostic — single-signal flags are kept on
-    # disk for M4 labels, just not surfaced to a human. Persisted to qc.csv so the
+    # (>=1 signal) stays in the row as a diagnostic: single-signal flags are kept on
+    # disk for labels, just not surfaced to a human. Persisted to qc.csv so the
     # cross-chain rollup (batch.build_triage_queue) can filter on the artifact alone.
     df["queue"] = df["flag_count"] >= cfg.qc_triage_min_signals
 
@@ -1695,8 +1694,8 @@ def run_qc(masks_dir: Path, skeleton: pd.DataFrame, *,
 
     qc_summary = {
         "n_frames": n,
-        "n_flagged": n_flag,          # all >=1-signal flags (diagnostic; kept for M4 labels)
-        "n_queue": n_queue,           # frames surfaced to a human (item 4 gate)
+        "n_flagged": n_flag,          # all >=1-signal flags (diagnostic; kept for labels)
+        "n_queue": n_queue,           # frames surfaced to a human (the triage gate)
         "n_intervene": n_int,
         "n_missing_skel": n_noskel,
         "n_skel_not_assessable": n_skel_na,
@@ -1852,7 +1851,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     threads ChainState through, so you can see exactly which field each phase fills.
     All tunables come from state.config; the state carries its own settings so it
     stays self-contained for serialize / resume. Getting this to reproduce the
-    AVAL masks is the milestone-1 done condition.
+    AVAL masks is the done condition.
 
     `on_video_phase` is an optional callback fired once, after the image phase and
     before video propagation. The driver passes diagnostics.cleanup_vram here so
@@ -1860,10 +1859,10 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     VRAM). Keeping it a callback lets pipeline.py stay free of a torch/diagnostics
     import -> the library doesn't decide *how* to clean up, the driver does.
 
-    `frame_store` selects the EM source (PIPELINE_CONTEXT §3a seam): None = the target
-    worm's tif stack (TifFrameStore, the M1 path); pass a different store (e.g. the GT
+    `frame_store` selects the EM source (the worm-coupled seam): None = the target
+    worm's tif stack (TifFrameStore, the default path); pass a different store (e.g. the GT
     per-slice PNG store) to run the same pipeline on another worm. The skeleton->image
-    transform is *not* threaded here — it's baked into annotate_df's x_tif/y_tif by the
+    transform is *not* threaded here, it's baked into annotate_df's x_tif/y_tif by the
     caller (catmaid_to_tif for the target worm; the per-section registration for GT).
     """
     cfg = state.config
@@ -1898,12 +1897,12 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     print(f"    anchor node {state.anchor_node_id}  (CATMAID z={state.anchor_catmaid_z})")
 
     # 2-5. Anchor phase (load frame -> prompts -> image-mode predict -> gate + box),
-    #    factored into a closure so the tier-2 SAFETY fallback (item b) can re-run it in
+    #    factored into a closure so the tier-2 SAFETY fallback can re-run it in
     #    the plain _sam path when the per-chain crop yields a poor anchor (the c02
     #    over-zoom mode: a tiny/over-zoomed window where SAM2 loses inter-frame context
     #    and the anchor mask collapses). use_chain_crop=False reproduces the legacy /
     #    tier-1 _sam path EXACTLY (build_prompts in _sam, crop_anchor honoured), so the
-    #    M1 baseline and the gate's observational role are unchanged on non-tier-2 runs.
+    #    baseline and the gate's observational role are unchanged on non-tier-2 runs.
     #    Returns (cw_chain|None, anchor verdict, box_present); sets state.prompts /
     #    image_score / anchor_score / crop_window. (build_prompts is inside so the _sam
     #    rerun rebuilds the seed in its own space; running it twice is deterministic.)
@@ -1968,13 +1967,13 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         n_neg = int((state.prompts.labels == 0).sum())
         print(f"    {n_pos} positive + {n_neg} negative point(s)")
 
-        # 4. image mode -> on a high-res crop by default (M3.5 item 2), else scale-8.
+        # 4. image mode -> on a high-res crop by default, else scale-8.
         _step(4, "image-mode prediction")
         # Space-relative tolerances, computed ONCE up front so the multimask pick (step 4)
         # and the anchor gate (step 5) score with the same radius/area bounds in the same
         # space as the mask: 1 _sam px = scale/crop_scale _crop px, so the contain radius
         # + box margin rescale under the crop. area_frac bounds are frame-fractions the
-        # crop config already tunes (PIPELINE_CONTEXT §7), so they pass through unscaled.
+        # crop config already tunes, so they pass through unscaled.
         # tier-2 uses the chain window's (possibly bumped) crop_scale; tier-1 uses crop_scale.
         crop_active = use_chain_crop or cfg.crop_anchor
         eff_crop_scale = (cw_chain_l.crop_scale if use_chain_crop else cfg.crop_scale)
@@ -2008,7 +2007,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         #    anchor mask in WHATEVER space it lives in (_crop under the crop path, _sam
         #    in legacy); score_anchor is space-agnostic, we just feed it matching coords
         #    + a space-correct contain radius. Still OBSERVATIONAL for flagging -> the
-        #    only branch it drives is the tier-2->_sam fallback (item b), decided below.
+        #    only branch it drives is the tier-2->_sam fallback, decided below.
         _step(5, "box from mask")
         anchor = score_anchor(
             mask_anchor, prompts_anchor, image_hw_sam=image_hw_anchor,
@@ -2089,7 +2088,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         print("    empty anchor mask -> flagging chain for human review")
         state.status = "flagged"
         _finish()
-        return state                          # [M4] later: re-pick anchor before flagging
+        return state                          # later: re-pick anchor before flagging
 
     # Mask seed (seed ablation): valid only if the anchor mask is in the propagation space.
     # _anchor_phase returns None for the tier-1 crop_anchor case (anchor in _crop != _sam).
@@ -2105,7 +2104,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
 
     # 6. video frames -> tier-2 crops each frame to the chain window (_pcrop); else
     #    the shared scale-8 cache + per-chain link view (_sam). eff_chain_crop (not
-    #    cfg.chain_crop) so a chain that fell back to _sam (item b) preps _sam frames.
+    #    cfg.chain_crop) so a chain that fell back to _sam preps _sam frames.
     _step(6, "prepare video frames")
     if eff_chain_crop:
         (state.frames_dir, state.frame_to_z,
@@ -2121,7 +2120,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
             neuron=state.neuron, chain_idx=state.chain_idx, frame_store=fs)
     print(f"    {state.n_frames} frames  (anchor frame_idx={state.anchor_frame_idx})")
 
-    # 7. propagate (seed per the ablation spec; defaults = box+positive = M1 seed)
+    # 7. propagate (seed per the ablation spec; defaults = box+positive = baseline seed)
     _step(7, "propagate (bidirectional)")
     video_segments, frame_conf, pred_iou = propagate(
         video_predictor, state.frames_dir, state.prompts,
@@ -2131,7 +2130,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         mask_anchor=(mask_anchor_seed if cfg.seed_mask else None),
         subtimings=subtimings)
 
-    # 8. (post-process, then) save at canonical space. Cleanup is a §3a phase
+    # 8. (post-process, then) save at canonical space. Cleanup is a phase
     #    folded in here so it lands BEFORE QC (step 9) reads the masks back.
     _step(8, "save masks")
     if cfg.postprocess_masks:
@@ -2151,7 +2150,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     save_masks(video_segments, state.frame_to_z, out_dir,
                obj_id=state.obj_id, mask_space_downscale=cfg.save_downscale)
 
-    # 9. QC + flagging (M2): score the run, write qc.csv, set the chain verdict.
+    # 9. QC + flagging: score the run, write qc.csv, set the chain verdict.
     _step(9, "qc + flag")
     # this chain's own skeleton (NOT the whole neuron -> see run_qc docstring)
     chain_node_ids = {str(n) for n in chain["nodes"]}

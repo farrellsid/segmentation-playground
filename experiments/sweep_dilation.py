@@ -1,9 +1,9 @@
 """
-sweep_dilation.py — item-0 threshold-sensitivity sweep over qc_skeleton_dilation_px.
+sweep_dilation.py — threshold-sensitivity sweep over qc_skeleton_dilation_px.
 
 Read-only post-hoc analysis over a FINISHED batch run (batch.py output_root).
-It does NOT re-segment and it does NOT touch _manifest.csv (avoiding the §5#7
-mixed-threshold trap — the manifest is per-chain append-mode; mixing dilations
+It does NOT re-segment and it does NOT touch _manifest.csv (avoiding the
+mixed-threshold trap: the manifest is per-chain append-mode; mixing dilations
 into it would silently blend configs).
 
 Why this is cheap *and* exact
@@ -19,12 +19,12 @@ containment at every candidate radius from the on-disk masks + this chain's
 skeleton, and recombine. One mask read per frame total; all radii are evaluated
 in the inner loop.
 
-The §5#6 trap
--------------
+The per-chain-skeleton trap
+---------------------------
 Containment must use THIS CHAIN's skeleton nodes, not the whole neuron's (the
 AVAL 100%-flag bug). We rebuild the per-chain skeleton exactly as
-``pipeline.run_chain`` does — chains.json ``nodes`` -> ``annotate_df`` filter on
-``node_id`` — so the recomputed tri-state matches the run.
+``pipeline.run_chain`` does (chains.json ``nodes`` -> ``annotate_df`` filter on
+``node_id``) so the recomputed tri-state matches the run.
 
 Success marker (what to check)
 ------------------------------
@@ -32,12 +32,12 @@ At d == the run-time ``qc_skeleton_dilation_px`` (read from each chain's
 state.json), the recomputed flag_count must equal that chain's qc.csv
 flag_count for every frame (``baseline_match``). A mismatch means the
 skeleton/coordinate reconstruction is wrong and nothing downstream is
-trustworthy — the same role "reproduce AVAL pixel-for-pixel" plays for M1.
+trustworthy, the same role "reproduce AVAL pixel-for-pixel" plays.
 
 This measures *sensitivity*, not *correctness*: it shows how many flags dilation
 removes and whether they are structural (won't heal) or tolerance (heal at some
 radius), but it cannot say which removed flags were genuine errors. That waits
-for M4-collected labels.
+for collected labels.
 
 Outputs (written under output_root, prefixed to sort beside _manifest.csv)
 --------------------------------------------------------------------------
@@ -140,7 +140,7 @@ def _sweep_one_chain(chain_dir: Path, nodes: Sequence,
     ).to_dict()
     fc_run = qdf["flag_count"].astype(int).to_dict()   # for the baseline check
 
-    # This chain's skeleton only (the §5#6 filter), in full-res tif coords.
+    # This chain's skeleton only (the per-chain-skeleton filter), in full-res tif coords.
     node_ids = {str(n) for n in nodes}
     skel = annotate_df[
         annotate_df["node_id"].astype(str).isin(node_ids)

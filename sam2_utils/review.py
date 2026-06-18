@@ -1,5 +1,5 @@
 """
-review.py — read-only proofreading viewer for SAM2 mask stacks *on disk*.
+review.py: read-only proofreading viewer for SAM2 mask stacks *on disk*.
 
 A sibling of ``video_viz``. Where ``video_viz`` overlays the in-RAM
 ``video_segments`` dict a propagation run just produced, this module rebuilds the
@@ -9,17 +9,17 @@ same overlay from the **saved** artifacts of a finished chain::
         state.json                  # frame_to_z, frames_dir, anchor_frame_idx,
                                     #   triage_frames, obj_id
         masks/mask_<catmaid_z>.png  # 0/255 uint8, written by pipeline.save_masks
-        qc.csv                      # optional (written in M2): flag columns if present
+        qc.csv                      # optional: flag columns if present
 
 so you can re-open and proofread a chain long after the run, without re-running
 SAM2 or keeping anything in memory.
 
 Read-only by design
 -------------------
-This is the proofreading tool, NOT the M4 intervention GUI — no point editing, no
-re-prompting (that is napari, and per PIPELINE_CONTEXT §4 there is exactly one
+This is the proofreading tool, NOT the intervention GUI: no point editing, no
+re-prompting (that is napari, and there is exactly one
 correction tool). Adding click-to-edit here is precisely the thing to *not* do; it
-would grow this into the second GUI that doc warns against.
+would grow this into a second GUI.
 
 Single source of truth
 -----------------------
@@ -34,13 +34,13 @@ Coordinate spaces
 -----------------
 Masks are stored at _sam (the canonical rule ``save_downscale == scale``), and the
 JPEG frames are downscaled by the same ``scale``, so a mask and its frame share
-resolution and no coordinate math is needed — the same invariant ``video_viz``
+resolution and no coordinate math is needed, the same invariant ``video_viz``
 relies on. (If you ever set ``save_downscale != scale``, ``video_viz._overlay``
 nearest-resizes the mask to the frame, so it still displays, just softer.)
 
 A note on filenames: only ``mask_<catmaid_z>.png`` (no ``z`` prefix) is parsed,
 matching ``pipeline.save_masks`` and ``qc._iter_mask_paths``. The old notebook's
-``mask_z<...>.png`` files are skipped (same as qc) — re-run through the pipeline.
+``mask_z<...>.png`` files are skipped (same as qc); re-run through the pipeline.
 
 Entry points mirror video_viz
 ------------------------------
@@ -147,7 +147,7 @@ def load_chain(
         How to interpret ``state.json``'s ``triage_frames`` when qc.csv is absent.
         Defaults to True: entries are CATMAID-z values (consistent with qc, the
         mask filenames, and ``qc.show_flagged``, which are all z-keyed). Set False
-        if a future milestone decides to store raw frame_idx there instead. qc.csv,
+        if a future change decides to store raw frame_idx there instead. qc.csv,
         when present, is always z-keyed and takes priority regardless.
 
     Returns
@@ -156,7 +156,7 @@ def load_chain(
     """
     chain_dir = Path(chain_dir)
 
-    # state.json supplies the frame<->z map, frames_dir, anchor, obj_id, triage —
+    # state.json supplies the frame<->z map, frames_dir, anchor, obj_id, triage,
     # any of which the caller may override. Only read it if something's missing.
     state: dict = {}
     if (frames_dir is None or frame_to_z is None
@@ -199,7 +199,7 @@ def load_chain(
     if warn_unmapped and unmapped:
         print(f"[review] {unmapped} mask file(s) had a z not in frame_to_z; skipped")
 
-    # Optional QC table (written in M2). Derive flagged frames for the *_flagged views.
+    # Optional QC table. Derive flagged frames for the *_flagged views.
     qc_df = None
     triage_z: list[int] = []
     if with_qc:
@@ -255,7 +255,7 @@ def _subset(data: ReviewData, frame_idxs: Sequence[int]) -> ReviewData:
 
 
 # ---------------------------------------------------------------------------
-# Viewers — thin wrappers that delegate rendering to video_viz
+# Viewers: thin wrappers that delegate rendering to video_viz
 # ---------------------------------------------------------------------------
 
 def animate(chain: Union[PathLike, ReviewData], *, obj_id: Optional[int] = None,
@@ -304,7 +304,7 @@ def animate_flagged(chain: Union[PathLike, ReviewData], **kwargs):
 
 
 def grid_flagged(chain: Union[PathLike, ReviewData], **kwargs):
-    """Like ``grid`` but restricted to QC-flagged frames — the M2 threshold-eyeball view.
+    """Like ``grid`` but restricted to QC-flagged frames: the threshold-eyeball view.
 
     Note: for *why* each frame flagged (the signal breakdown + EM context +
     skeleton marker), ``qc.show_flagged`` is the richer tool. This is the quick
@@ -317,7 +317,7 @@ def grid_flagged(chain: Union[PathLike, ReviewData], **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# Disk exports — share a proof without opening a notebook
+# Disk exports: share a proof without opening a notebook
 # ---------------------------------------------------------------------------
 
 def to_mp4(chain: Union[PathLike, ReviewData], out_path: PathLike, *,

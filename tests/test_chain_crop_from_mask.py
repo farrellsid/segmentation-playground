@@ -1,13 +1,13 @@
-"""Unit tests for the tier-2 ``chain_crop_from_mask`` sizing path (PIPELINE_CONTEXT
-§7 "Local high-res cropping"): size the per-chain crop from the already-saved _sam
+"""Unit tests for the tier-2 ``chain_crop_from_mask`` sizing path ("Local high-res
+cropping"): size the per-chain crop from the already-saved _sam
 mask bbox (unioned with the skeleton bbox) so a cell whose membrane bulges past the
 centerline nodes is no longer clipped at the window edge.
 
 Covers the two pure helpers + the union plumbing:
-  * pipeline.mask_union_box_px   — union foreground bbox over saved PNGs, queued-frame
+  * pipeline.mask_union_box_px   : union foreground bbox over saved PNGs, queued-frame
                                    exclusion, the all-queued fallback, empty handling.
-  * pipeline._prior_queued_z     — read the queued z from a prior qc.csv.
-  * pipeline.chain_crop_window   — extra_box_tif unions with the skeleton bbox (strict
+  * pipeline._prior_queued_z     : read the queued z from a prior qc.csv.
+  * pipeline.chain_crop_window   : extra_box_tif unions with the skeleton bbox (strict
                                    superset; None reproduces skeleton-only sizing).
 
 Torch-free (only cv2/pandas/numpy + pipeline, which defers torch to call-time):

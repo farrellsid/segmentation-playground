@@ -1,5 +1,5 @@
 """
-score.py — region-metric scoring harness for eval/ Stage 0.
+score.py — region-metric scoring harness.
 
 Joins predicted masks to the cross-worm GT (:mod:`eval.groundtruth`) and rolls the
 :mod:`eval.metrics` overlap numbers up per (neuron, slice) and per neuron. This is

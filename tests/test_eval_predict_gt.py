@@ -1,5 +1,5 @@
-"""Tests for the DONE (mechanical) surface of eval.predict_gt — the scaffold's
-plumbing the SAM2 stubs sit on top of: prompt mapping + labelmap compositing.
+"""Tests for the plumbing surface of eval.predict_gt: prompt mapping + labelmap
+compositing.
 
     py -3 -m pytest tests/test_eval_predict_gt.py
 """
