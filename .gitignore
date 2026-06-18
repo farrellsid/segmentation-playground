@@ -10,6 +10,7 @@ checkpoints/
 .ipynb_checkpoints/
 output/
 references/
+documentation/
 
 # Generated run logs from experiments/ are disposable (findings live in PIPELINE_HISTORY old §8).
 experiments/*.log
