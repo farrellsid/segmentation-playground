@@ -316,6 +316,9 @@ M4.5's entire premise is "M4 collects labels." Make the labels *unbiased* and th
    flagged) so the label store gets the **random sample of un-flagged frames** the learned detector
    requires, without it the model can only shrink the queue, never catch silent errors. **[R1]**
    *(old §9.1; old §7 "GUI as label engine")*
+   - *Chain-level half landed (2026-06):* the picker has a **flagged only / everything** mode
+     (`gui.py`, `ReviewQueue.all_chains`/`chain_status`), so any chain on disk is openable for
+     proofreading, not just flagged ones. The per-*frame* verify-everything sweep is still open.
 6. **Marking vs intervention GUI split.** A *marking* mode (sweep frames ok/bad, label-only) and a
    separate *intervention* mode (shows only the flagged frame, exposes correction tools), removes
    accidental edits while scrubbing and the too-many-buttons confusion. *(old §7, old §9.2)*

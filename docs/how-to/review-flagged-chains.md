@@ -42,12 +42,13 @@ A frame slider (top/bottom) scrubs through the chain by **frame index**. Layers
 
 | Layer | What it is | Editable? |
 |---|---|---|
+| **box** | A blue bounding box, an optional seed for the image-phase re-predict (see §5b). One per frame; pre-loaded with the chain's *original* box at the anchor frame. | **Yes**, press `B` (or "draw box") then drag; select+delete to remove |
 | **prompts** | The SAM2 seed points: **green = positive**, **red = negative**. Pre-loaded with the chain's *original* seed at the anchor frame. | **Yes**, click to add (in *add* mode), select+delete to remove |
 | **skeleton** | Yellow dots = this chain's CATMAID skeleton nodes per slice. Context only, these are *not* the SAM prompts. | No |
 | **mask** | The segmentation, as a paintable label layer. **Paint here** to correct a mask by hand. | **Yes**, napari brush/eraser; `Ctrl+Z` undoes |
 | **EM** | The electron-microscopy image. | No |
 
-The dock panel on the right is grouped: **queue (chains) · frames (this chain) ·
+The dock panel on the right is grouped: **chains · frames (this chain) ·
 prompts · view · correct · label / disposition**.
 
 ---
@@ -59,14 +60,31 @@ These move at two different scales:
 - **next flagged FRAME** (`.`) / **prev flagged FRAME** (`,`), stay *in the current
   chain*, jump to the next/previous frame QC queued. Use these to walk the problem
   spots of the chain you're reviewing.
-- **prev / next CHAIN** (buttons), *close this chain and open another* in the queue.
-  They **cycle** through every chain that still needs a human, **including ones you've
-  opened but not yet finished** (status `in_review`), and wrap around, so you can
-  always come back to an unfinished chain. A chain only leaves the cycle once it's
-  **approved / rejected / corrected**. (You can also pick any chain directly from the
-  **chain** dropdown.)
+- **prev / next CHAIN** (buttons), *close this chain and open another*. They **cycle**
+  the same list the picker shows (see §3a), and wrap around. In **flagged only** mode
+  that is every chain still needing a human, **including ones you've opened but not yet
+  finished** (status `in_review`), so you can always come back to an unfinished chain; a
+  chain leaves the cycle once it's **approved / rejected / corrected**. In **everything**
+  mode it cycles every chain on disk.
 
-So: frames are *within* a chain; the queue is *across* chains.
+So: frames are *within* a chain; the picker list is *across* chains.
+
+## 3a. Picking a chain: flagged only vs everything
+
+The **chains** group has a mode toggle (`show`) and two cascading dropdowns: pick a
+**neuron**, then a **chain**, then hit **open selected chain**.
+
+- **flagged only** (default): the dropdowns and the prev/next CHAIN cycle list only
+  the chains QC flagged and you haven't dispositioned yet, the review queue. This is
+  the post-batch triage workflow.
+- **everything**: they list *every* chain saved on disk, flagged or not, so you can
+  open and proofread any chain during manual review. Each chain in the **chain**
+  dropdown carries a status badge, e.g. `chain_03 [flagged]`, `[done]`, `[approved]`,
+  `[corrected]`, so you can see at a glance which need attention. The badge is your
+  review disposition when there is one, otherwise the batch's execution status.
+
+The mode is the single source of truth: it drives the dropdowns **and** the prev/next
+CHAIN cycle, and `↻ refresh queue` re-reads from disk in whichever mode you're in.
 
 ---
 
@@ -76,7 +94,8 @@ So: frames are *within* a chain; the queue is *across* chains.
 |---|---|
 | `.` / `,` | next / prev flagged **frame** (this chain) |
 | `p` / `n` | set new prompt points to **p**ositive / **n**egative |
-| `R` | **re-run image phase**, re-predict the anchor mask from the current points |
+| `B` | **draw box**, activate the box layer to drag a bounding box on this frame |
+| `R` | **re-run image phase**, re-predict the anchor mask from the current points and/or box |
 | `G` | **resume propagation**, re-track from the current frame over the correction |
 | `W` / `O` | mark the current **frame** **w**rong / **o**k (uses the error-type picker) |
 | `A` / `X` | **approve** / **reject** the whole **chain** |
@@ -94,9 +113,10 @@ flagged frames (`.`), and if the masks look correct, hit **approve** (`A`). This
 keeps the masks as-is, marks the chain `approved`, and logs the frames as `ok`.
 
 **How seeding works (read once):** propagation is always seeded with the **mask** on
-the current frame, the re-predicted and/or hand-painted mask in the **mask** layer, *not* a bounding box. `R` turns your points into a mask you can preview and tweak; `G`
-takes whatever mask is on the current frame and propagates it. Direction is **away
-from the anchor**, so an already-good segment is never re-tracked:
+the current frame, the re-predicted and/or hand-painted mask in the **mask** layer, *not* a bounding box. `R` turns your points (and an optional drawn box, §5b) into a mask
+you can preview and tweak; `G` takes whatever mask is on the current frame and
+propagates it. Direction is **away from the anchor**, so an already-good segment is
+never re-tracked:
 
 - correcting the **anchor** frame → propagates **both ways** (re-does the whole chain);
 - a frame **after** the anchor → **forward only** (anchor → here is preserved);
@@ -109,6 +129,11 @@ from the anchor**, so an already-good segment is never re-tracked:
    seed, §5e.)
 3. **Re-run image phase** (`R`), re-predicts the anchor mask from your points into the
    **mask** layer. Tweak it by painting if needed.
+   - *Optional box.* If points alone won't capture the neurite's full extent, press
+     `B` (or "draw box") and drag a box around it, then `R`. The box and any points go
+     into SAM2 together (box-only works too). The box shapes only this image-phase
+     mask; `G` still propagates the resulting **mask**, never the box. The saved box is
+     pre-loaded at the anchor, so you can nudge it instead of drawing from scratch.
 4. **Resume propagation** (`G`), re-tracks the whole chain from the re-seeded anchor
    (anchor → both directions).
 5. Inspect, then **approve** (`A`). The corrected `masks/` + `qc.csv` + `state.json`

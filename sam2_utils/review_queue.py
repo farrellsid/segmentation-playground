@@ -49,6 +49,7 @@ Torch-free / napari-free, like ``labels`` and ``qc``; unit-tested in
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,6 +135,48 @@ class ReviewQueue:
             return []
         sel = m[m["status"] == "flagged"]
         return [(str(r["neuron"]), int(r["chain_idx"])) for _, r in sel.iterrows()]
+
+    def manifest_status(self, neuron: str, chain_idx: int) -> Optional[str]:
+        """The batch's execution status for a chain ('done'/'flagged'/'failed'/...),
+        or None when the chain has no manifest row (e.g. saved to disk by hand or by
+        an experiment that doesn't write the manifest)."""
+        m = self.manifest
+        if "status" not in m.columns:
+            return None
+        sel = m[(m["neuron"].astype(str) == str(neuron))
+                & (m["chain_idx"].astype(int) == int(chain_idx))]
+        return str(sel["status"].iloc[0]) if len(sel) else None
+
+    def all_chains(self) -> List[tuple]:
+        """Every chain with on-disk artifacts under output_root, as (neuron, chain_idx),
+        sorted by (neuron, chain_idx).
+
+        This is the openable universe the GUI's 'everything' mode browses, a superset
+        of flagged_chains(): a chain need not be flagged, or even present in the
+        manifest, to be opened, only saved to disk as <neuron>/chain_NN. Top-level
+        files (_manifest.csv, _review.csv, _triage.csv) are skipped because they are
+        not directories; a missing output_root returns an empty list."""
+        if not self.output_root.exists():
+            return []
+        out: List[tuple] = []
+        for neuron_dir in self.output_root.iterdir():
+            if not neuron_dir.is_dir():
+                continue
+            for chain_dir in neuron_dir.iterdir():
+                m = re.fullmatch(r"chain_(\d+)", chain_dir.name)
+                if m and chain_dir.is_dir():
+                    out.append((neuron_dir.name, int(m.group(1))))
+        return sorted(out)
+
+    def chain_status(self, neuron: str, chain_idx: int) -> str:
+        """Short status badge for the picker. Precedence: the human's review
+        disposition if the chain has one (in_review/approved/rejected/corrected),
+        else the batch's execution status, else 'unreviewed'. The review disposition
+        wins because it is the later, human word on the chain."""
+        rs = self.status_of(neuron, chain_idx)
+        if rs != UNREVIEWED:
+            return rs
+        return self.manifest_status(neuron, chain_idx) or UNREVIEWED
 
     # -- review ledger (owned here) --------------------------------------------
     def load_review(self) -> pd.DataFrame:

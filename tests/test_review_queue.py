@@ -166,6 +166,71 @@ def test_summary_shape():
 
 
 # ---------------------------------------------------------------------------
+# all_chains: the openable universe (on-disk chain dirs), the GUI 'everything' mode
+# ---------------------------------------------------------------------------
+
+def _mkchains(root, specs):
+    """Create <neuron>/chain_NN directories under root from (neuron, idx) specs."""
+    for neuron, idx in specs:
+        (root / neuron / f"chain_{idx:02d}").mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def test_all_chains_enumerates_on_disk_dirs_sorted():
+    root = _basic_manifest()
+    _mkchains(root, [("AIAL", 2), ("AIAL", 0), ("AIYL", 12), ("AIAR", 8)])
+    q = RQ.ReviewQueue(root)
+    # sorted by (neuron, chain_idx); a superset of flagged, includes done/failed
+    assert q.all_chains() == [("AIAL", 0), ("AIAL", 2), ("AIAR", 8), ("AIYL", 12)]
+
+
+def test_all_chains_ignores_top_level_files_and_non_chain_dirs():
+    root = _basic_manifest()                       # writes _manifest.csv at top level
+    _mkchains(root, [("AIAL", 0)])
+    (root / "AIAL" / "notes").mkdir()              # a non-chain dir inside a neuron
+    q = RQ.ReviewQueue(root)
+    assert q.all_chains() == [("AIAL", 0)]          # _manifest.csv + 'notes' excluded
+
+
+def test_all_chains_can_include_chains_absent_from_manifest():
+    root = _basic_manifest()
+    _mkchains(root, [("AIAL", 0), ("ZZZ", 5)])      # ZZZ has no manifest row
+    q = RQ.ReviewQueue(root)
+    assert ("ZZZ", 5) in q.all_chains()
+
+
+def test_all_chains_missing_root_is_empty():
+    d = pathlib.Path(tempfile.mkdtemp()) / "nope"   # never created
+    assert RQ.ReviewQueue(d).all_chains() == []
+
+
+# ---------------------------------------------------------------------------
+# chain_status / manifest_status: the picker badge
+# ---------------------------------------------------------------------------
+
+def test_manifest_status_reads_execution_status_or_none():
+    q = RQ.ReviewQueue(_basic_manifest())
+    assert q.manifest_status("AIAL", 0) == "flagged"
+    assert q.manifest_status("AIAL", 1) == "done"
+    assert q.manifest_status("AIAR", 8) == "failed"
+    assert q.manifest_status("ZZZ", 9) is None      # no manifest row
+
+
+def test_chain_status_review_disposition_wins():
+    q = RQ.ReviewQueue(_basic_manifest())
+    q.set_status("AIAL", 0, RQ.CORRECTED)           # flagged in manifest, but corrected
+    assert q.chain_status("AIAL", 0) == RQ.CORRECTED
+    q.claim("AIYL", 12)                             # in_review beats manifest 'flagged'
+    assert q.chain_status("AIYL", 12) == RQ.IN_REVIEW
+
+
+def test_chain_status_falls_back_to_manifest_then_unreviewed():
+    q = RQ.ReviewQueue(_basic_manifest())
+    assert q.chain_status("AIAL", 1) == "done"      # no review row -> manifest status
+    assert q.chain_status("ZZZ", 9) == RQ.UNREVIEWED  # neither -> unreviewed
+
+
+# ---------------------------------------------------------------------------
 # plain runner
 # ---------------------------------------------------------------------------
 

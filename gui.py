@@ -3,10 +3,10 @@ gui.py: napari review / triage / correction GUI.
 
 The one human-facing tool: one triage queue, one review tool. It reads the
 batch's flagged chains, lets a human scrub a chain, inspect
-why frames flagged, edit the SAM2 prompts (positive **and** negative points),
-paint an anchor mask, re-run the image phase, and resume propagation over the
-interruptible ``PropagationSession``, then writes the corrected masks + QC back
-to disk and logs every decision as a training label.
+why frames flagged, edit the SAM2 prompts (positive **and** negative points, plus a
+drawn bounding box), paint an anchor mask, re-run the image phase, and resume
+propagation over the interruptible ``PropagationSession``, then writes the corrected
+masks + QC back to disk and logs every decision as a training label.
 
 It is a *thin driver*, like ``run_aval.py`` / ``batch.py``: all real work lives in
 the library it composes:
@@ -45,11 +45,12 @@ Not implemented this pass (placeholders marked ``# not implemented`` in code)
     image path (matches the displayed frame). High-res crop re-predict (the default
     for the *batch*) would sharpen a thin-neurite re-seed but needs the
     clicked points remapped _sam->_tif->_crop and a full-res tif read; left for later.
-  * **Confidence-gated mask-vs-box video seed.** The GUI always seeds corrections with
-    the *mask* (``add_mask`` of the re-predicted/painted mask on the frame); the box
-    seed was dropped here as the more-informative human-curated path (box vs mask).
-    The *automatic* confidence gate that chooses mask-vs-box in the headless pipeline is
-    still label-gated.
+  * **Confidence-gated mask-vs-box video seed.** The GUI always seeds *propagation* with
+    the *mask* (``add_mask`` of the re-predicted/painted mask on the frame), not a box,
+    as the more-informative human-curated path (box vs mask). A drawn box IS supported,
+    but only as an *image-phase* prompt: it shapes the re-predicted mask (``R``)
+    alongside points, and that mask is what propagation then seeds from. The *automatic*
+    confidence gate that chooses mask-vs-box in the headless pipeline is still label-gated.
   * **Marking/intervention GUI split & strict-by-default flagging.** Review-testing
     follow-ups (a two-mode UI, and an aggressive-recall
     QC posture): not built this pass.
@@ -94,6 +95,45 @@ _POS_COLOR = "#2ca02c"
 _NEG_COLOR = "#d62728"
 _PROMPT_LABELS = ["positive", "negative"]
 _LABEL_TO_SAM = {"positive": 1, "negative": 0}
+
+# Picker modes (the "show" toggle). flagged: the review queue, today's behaviour;
+# everything: every chain on disk, so a reviewer can open un-flagged chains.
+_MODE_FLAGGED = "flagged only"
+_MODE_EVERYTHING = "everything"
+_MODE_CHOICES = [_MODE_FLAGGED, _MODE_EVERYTHING]
+
+# Box-prompt geometry: convert between an xyxy box (the pipeline.Prompts.box_sam
+# format) and a napari Shapes rectangle's (N, 3) vertices in (t, y, x). Pure and
+# torch/napari-free so they unit-test without a GPU or a viewer.
+_BOX_EDGE_COLOR = "#1f77b4"   # blue, distinct from the green/red prompt points
+
+
+def _rect_to_xyxy(verts) -> np.ndarray:
+    """A rectangle's (N, 3) vertices (t, y, x) -> (x0, y0, x1, y1) in data coords.
+    Axis-aligned: takes the min/max of the y and x columns, so it is correct for a
+    box drawn in any corner order (and for a rotated box, its bounding extent)."""
+    v = np.asarray(verts, dtype=float)
+    ys, xs = v[:, 1], v[:, 2]
+    return np.array([xs.min(), ys.min(), xs.max(), ys.max()], dtype=float)
+
+
+def _xyxy_to_rect(xyxy, t: int) -> np.ndarray:
+    """(x0, y0, x1, y1) + frame index t -> a (4, 3) rectangle vertex array (t, y, x),
+    the inverse of _rect_to_xyxy, for seeding a saved box into the Shapes layer."""
+    x0, y0, x1, y1 = (float(c) for c in xyxy)
+    return np.array([[t, y0, x0], [t, y0, x1], [t, y1, x1], [t, y1, x0]], dtype=float)
+
+
+def _box_on_frame(shapes_data, frame_idx: int) -> Optional[np.ndarray]:
+    """The xyxy of the LAST rectangle on ``frame_idx`` in a list of napari shape vertex
+    arrays, or None. A shape's frame is the rounded t of its first vertex (every vertex
+    shares one t for a box drawn on a single slice). Last-wins matches "redraw replaces"."""
+    box = None
+    for verts in shapes_data:
+        v = np.asarray(verts, dtype=float)
+        if len(v) and int(round(v[0, 0])) == int(frame_idx):
+            box = _rect_to_xyxy(v)
+    return box
 
 
 # =============================================================================
@@ -257,8 +297,9 @@ class ReviewGUI:
         self.session: Optional[pipeline.PropagationSession] = None  # built lazily on resume
 
         # layers (set in open_chain)
-        self._img = self._mask = self._skel = self._prompts = None
+        self._img = self._mask = self._skel = self._prompts = self._box = None
         self._lscale = (1.0, 1.0, 1.0)   # _sam->EM world scale of the current chain's layers
+        self._populating = False         # re-entrancy guard for the neuron->chain cascade
 
         self._build_widgets()
         self._bind_keys()
@@ -330,7 +371,8 @@ class ReviewGUI:
             scale=lscale, face_color="yellow", border_color="black", opacity=0.7)
         self._skel.editable = False
         self._prompts = self._new_prompts_layer(scale=lscale)
-        # pre-load the chain's original seed into the prompts layer (+ a context box)
+        self._box = self._new_box_layer(scale=lscale)
+        # pre-load the chain's original seed (points + box) at the anchor frame
         self._seed_prompts_from_state()
 
         # land on the anchor frame and update the info panel
@@ -339,6 +381,7 @@ class ReviewGUI:
         self._zoom_to_mask(self.data.anchor_idx if self.data.anchor_idx is not None
                            else self._current_frame())
         self.queue.claim(neuron, chain_idx, reviewer=self.reviewer)
+        self._sync_selectors()        # point the picker at this chain, refresh its badge
         self._refresh_info()
         print(f"[gui] opened {neuron} chain {chain_idx:02d}: {t} frames, "
               f"{len(self.data.triage_frames)} queued, anchor frame {self.data.anchor_idx}")
@@ -362,13 +405,25 @@ class ReviewGUI:
         layer.mode = "add"
         return layer
 
+    def _new_box_layer(self, scale=(1.0, 1.0, 1.0)):
+        """An empty editable Shapes layer for one human-drawn bounding box per frame,
+        a seed for the image-phase re-predict (R). ndim=3 so a rectangle binds to a
+        frame (t, y, x); ``scale`` matches the other layers so the box's data coords
+        stay _sam (or _pcrop), the space image_predict reads (see header). The 'B' key
+        / 'draw box' button puts it in add_rectangle mode."""
+        layer = self.viewer.add_shapes(
+            name="box", ndim=3, scale=scale, edge_color=_BOX_EDGE_COLOR,
+            face_color="transparent", edge_width=1.0, opacity=0.8)
+        return layer
+
     def _seed_prompts_from_state(self) -> None:
-        """Pre-load the chain's ORIGINAL seed (state.prompts) into the prompts layer at
-        the anchor frame, so re-run/resume start from what the batch used, not an empty
-        layer. Points are placed in _sam data coords (the layer's scale handles overlay),
-        matching the click round-trip in _prompts_for_frame. No box overlay: the GUI
-        seeds propagation with the mask, not a box. Best-effort: a
-        chain with no serialized prompts (legacy) just leaves the layer empty."""
+        """Pre-load the chain's ORIGINAL seed (state.prompts) at the anchor frame, so
+        re-run starts from what the batch used, not an empty layer: points into the
+        prompts layer and the saved box (state.prompts.box_sam) into the box layer.
+        Coords are _sam (or _pcrop), the layer scale handles overlay, matching the
+        round-trips in _prompts_for_frame / _box_for_frame. The box seeds only the
+        image phase; resume still propagates the mask, not the box. Best-effort: a
+        chain with no serialized prompts (legacy) just leaves the layers empty."""
         st = self._state
         if st is None or st.prompts is None or st.anchor_frame_idx is None:
             return
@@ -386,6 +441,11 @@ class ReviewGUI:
             n_pos = int((labs == 1).sum())
             print(f"[gui] loaded original seed: {n_pos} positive + {len(labs) - n_pos} "
                   f"negative point(s) at anchor frame {af} (edit these, then 'R')")
+        if self._box is not None and st.prompts.box_sam is not None:
+            rect = _xyxy_to_rect(np.asarray(st.prompts.box_sam, dtype=float), af)
+            self._box.add_rectangles(rect)
+            print(f"[gui] loaded original box (xyxy) "
+                  f"{np.asarray(st.prompts.box_sam).astype(int).tolist()} at frame {af}")
 
     def _skeleton_points(self) -> np.ndarray:
         """This chain's CATMAID nodes as (frame_idx, y_sam, x_sam) for context.
@@ -426,8 +486,26 @@ class ReviewGUI:
         labs = np.array([_LABEL_TO_SAM.get(str(s), 1) for s in lab_strs], dtype=int)
         return pipeline.Prompts(points_sam=pts_xy, labels=labs)
 
+    def _box_for_frame(self, frame_idx: int) -> Optional[np.ndarray]:
+        """The human-drawn box on ``frame_idx`` as xyxy in _sam (or _pcrop) data coords,
+        or None. Last rectangle wins (a redraw replaces). The coords match the prompt
+        round-trip, so it feeds straight into image_predict on the displayed frame."""
+        if self._box is None:
+            return None
+        return _box_on_frame(self._box.data, int(frame_idx))
+
     def _current_frame(self) -> int:
         return int(self.viewer.dims.current_step[0])
+
+    def activate_box_draw(self, *_) -> None:
+        """Make the box layer the active layer in add_rectangle mode, so the next drag
+        draws a bounding box on the current frame (the 'B' key / 'draw box' button)."""
+        if self._box is None:
+            print("[gui] no chain open; nothing to draw a box on")
+            return
+        self.viewer.layers.selection.active = self._box
+        self._box.mode = "add_rectangle"
+        print("[gui] box draw mode: drag a rectangle on this frame, then 'R' to re-predict")
 
     # -- view helpers ----------------------------------------------------------
     def _load_hires_stack(self, frame_to_z: dict, t: int):
@@ -514,11 +592,11 @@ class ReviewGUI:
 
     def rerun_image_phase(self, *_) -> None:
         """Re-run SAM2 image mode on the CURRENT frame from the human's prompt points
-        and write the result into the **mask** layer. This is a *preview* step: it
-        turns your clicks into a mask you can eyeball (and tweak by painting) before
-        committing. ``resume propagation`` then seeds that mask directly: no bounding
-        box is involved (the box seed was dropped; SAM2 propagates the mask itself,
-        the more-informative seed, box vs mask).
+        and/or drawn box, writing the result into the **mask** layer. This is a *preview*
+        step: it turns your clicks/box into a mask you can eyeball (and tweak by painting)
+        before committing. ``resume propagation`` then seeds that mask directly: the box
+        shapes only this image-phase mask, it is NOT itself the propagation seed (SAM2
+        propagates the mask, the more-informative seed, box vs mask).
 
         Uses the legacy full-frame _sam image path (the displayed frame IS the _sam
         frame the human clicked on). Crop re-predict is not implemented (see header).
@@ -527,8 +605,9 @@ class ReviewGUI:
             return
         frame_idx = self._current_frame()
         prompts = self._prompts_for_frame(frame_idx)
-        if not (prompts.labels == 1).any():
-            print("[gui] need at least one positive point on this frame to re-predict")
+        prompts.box_sam = self._box_for_frame(frame_idx)       # human-drawn box, or None
+        if not (prompts.labels == 1).any() and prompts.box_sam is None:
+            print("[gui] need at least one positive point or a box on this frame to re-predict")
             return
         self.ctx.ensure_predictors(need_image=True, need_video=False)
 
@@ -536,8 +615,10 @@ class ReviewGUI:
         mask, score, _ = pipeline.image_predict(self.ctx.image_predictor, em_sam, prompts)
         self.ctx.image_predictor.reset_predictor()
         self._set_frame_mask(frame_idx, mask)                  # into the mask layer + segments
-        print(f"[gui] re-predicted frame {frame_idx}: {int(mask.sum())} px, score {score:.3f} "
-              f", tweak by painting if needed, then 'resume propagation' to re-track")
+        seed = (f"{int((prompts.labels == 1).sum())}+/{int((prompts.labels == 0).sum())}- pts"
+                + ("" if prompts.box_sam is None else " + box"))
+        print(f"[gui] re-predicted frame {frame_idx} ({seed}): {int(mask.sum())} px, "
+              f"score {score:.3f}, tweak by painting if needed, then 'resume propagation'")
         self._zoom_to_mask(frame_idx)
         self._refresh_info()
 
@@ -681,26 +762,28 @@ class ReviewGUI:
         """Cycle to the next/prev CHAIN that still needs a human (different chain, vs
         next/prev *flagged FRAME*, which moves between frames within the open chain).
 
-        Includes ``in_review`` chains (the fix for "can't return to an unfinished
-        chain"): opening a chain marks it in_review, so excluding those made the queue
-        look empty as soon as you'd visited each once. Only terminal dispositions
-        (approved / rejected / corrected) drop a chain out. Wraps around, and is
-        relative to the chain currently open."""
+        Cycles the SAME list the picker shows, per the mode toggle: the pending
+        review queue in 'flagged only' mode, or every on-disk chain in 'everything'
+        mode. In flagged mode this keeps ``in_review`` chains visible (the fix for
+        "can't return to an unfinished chain"): opening a chain marks it in_review, so
+        excluding those made the queue look empty as soon as you'd visited each once.
+        Only terminal dispositions (approved / rejected / corrected) drop a chain out
+        of the flagged list. Wraps around, relative to the chain currently open."""
         self.queue.refresh()
-        pend = self.queue.pending(include_in_review=True)   # keep unfinished chains visible
-        if not pend:
-            print("[gui] queue empty, every flagged chain has been dispositioned "
-                  "(approved/rejected/corrected)")
+        chains = self._mode_chains()                        # mode-aware (see _mode_chains)
+        if not chains:
+            print("[gui] no chains to cycle "
+                  f"({self._mode_combo.value}); switch mode or refresh")
             return
         cur = (self.neuron, self.chain_idx)
-        if cur in pend:
-            i = (pend.index(cur) + direction) % len(pend)
+        if cur in chains:
+            i = (chains.index(cur) + direction) % len(chains)
         else:
-            i = 0 if direction > 0 else len(pend) - 1
-        if pend[i] == cur and len(pend) == 1:
-            print(f"[gui] {cur[0]} chain {cur[1]:02d} is the only chain left in the queue")
+            i = 0 if direction > 0 else len(chains) - 1
+        if chains[i] == cur and len(chains) == 1:
+            print(f"[gui] {cur[0]} chain {cur[1]:02d} is the only chain in this list")
             return
-        self.open_chain(*pend[i])
+        self.open_chain(*chains[i])
 
     # =====================================================================
     # Label logging
@@ -836,10 +919,16 @@ class ReviewGUI:
 
         self._info = Label(value="(no chain open)")
 
-        # queue picker
-        pend = self.queue.pending()
-        choices = [f"{n}/chain_{i:02d}" for (n, i) in pend] or ["(queue empty)"]
-        self._picker = ComboBox(label="chain", choices=choices)
+        # chain picker: a mode toggle + two cascading selectors (neuron, then chain).
+        # 'flagged only' lists the review queue (today's behaviour); 'everything' lists
+        # every chain on disk so the reviewer can open un-flagged chains while proofing.
+        # The mode is the single source of truth: it also drives next/prev CHAIN below.
+        self._mode_combo = ComboBox(label="show", choices=_MODE_CHOICES, value=_MODE_FLAGGED)
+        self._mode_combo.changed.connect(lambda *_: self._on_mode_change())
+        self._neuron_combo = ComboBox(label="neuron", choices=[])
+        self._neuron_combo.changed.connect(lambda *_: self._on_neuron_change())
+        # chain choices are (label, idx) tuples, so .value is the int chain_idx directly
+        self._chain_combo = ComboBox(label="chain", choices=[])
         open_btn = PushButton(text="open selected chain")
         open_btn.changed.connect(lambda *_: self._open_from_picker())
         prev_q = PushButton(text="⇇ prev CHAIN")                    # cycle, incl. unfinished
@@ -848,6 +937,7 @@ class ReviewGUI:
         next_q.changed.connect(self.open_next_in_queue)
         refresh = PushButton(text="↻ refresh queue")
         refresh.changed.connect(lambda *_: self._refresh_picker())
+        self._populate_selectors()                                  # fill from the default mode
 
         # within-chain frame nav (different from next CHAIN above)
         prevf = PushButton(text="◀ prev flagged FRAME ( , )")      # same chain, prev queued frame
@@ -855,9 +945,11 @@ class ReviewGUI:
         nextf = PushButton(text="next flagged FRAME ( . ) ▶")      # same chain, next queued frame
         nextf.changed.connect(self.next_flagged)
 
-        # prompt label toggle (positive / negative) + reset to saved seed
+        # prompt label toggle (positive / negative) + box draw + reset to saved seed
         self._prompt_mode = ComboBox(label="new point", choices=_PROMPT_LABELS, value="positive")
         self._prompt_mode.changed.connect(self._set_prompt_label)
+        box_btn = PushButton(text="▭ draw box (B)")
+        box_btn.changed.connect(self.activate_box_draw)
         reset_btn = PushButton(text="⟲ reset prompts to original")
         reset_btn.changed.connect(self.reset_prompts)
 
@@ -898,9 +990,10 @@ class ReviewGUI:
 
         panel = Container(widgets=[
             self._reviewer_edit,
-            Label(value=", queue (chains), "), self._picker, open_btn, prev_q, next_q, refresh,
+            Label(value=", chains, "), self._mode_combo, self._neuron_combo, self._chain_combo,
+            open_btn, prev_q, next_q, refresh,
             Label(value=", frames (this chain), "), prevf, nextf,
-            Label(value=", prompts, "), self._prompt_mode, reset_btn,
+            Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
             Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
             Label(value=", correct, "), rerun, resume,
             Label(value=", label / disposition, "), self._err_mode,
@@ -923,6 +1016,9 @@ class ReviewGUI:
 
         @v.bind_key("n", overwrite=True)
         def _neg(_v): self._set_prompt_label("negative")
+
+        @v.bind_key("b", overwrite=True)
+        def _box(_v): self.activate_box_draw()
 
         @v.bind_key("r", overwrite=True)
         def _rerun(_v): self.rerun_image_phase()
@@ -969,18 +1065,94 @@ class ReviewGUI:
                 except Exception as e:
                     print(f"[gui] point-size set skipped: {e}")
 
-    def _open_from_picker(self) -> None:
-        sel = self._picker.value
-        if not sel or "/" not in sel:
+    # -- picker: mode + cascading (neuron, chain) selectors --------------------
+    @property
+    def _show_all(self) -> bool:
+        """True when the picker is in 'everything' mode (every on-disk chain), False
+        in 'flagged only' mode (the review queue). Drives both selectors and nav."""
+        return getattr(self, "_mode_combo", None) is not None \
+            and self._mode_combo.value == _MODE_EVERYTHING
+
+    def _mode_chains(self) -> list:
+        """The chain list for the current mode, as (neuron, chain_idx): the full
+        on-disk set in 'everything' mode, else the pending review queue (incl.
+        in_review, so an unfinished chain stays reachable). The single source the
+        selectors and next/prev CHAIN both read."""
+        if self._show_all:
+            return self.queue.all_chains()
+        return self.queue.pending(include_in_review=True)
+
+    def _populate_selectors(self, *, select: Optional[tuple] = None) -> None:
+        """(Re)fill the neuron + chain selectors from the current mode. ``select``
+        is an optional (neuron, chain_idx) to land on; otherwise the open chain, else
+        the first available. The ``_populating`` guard stops the neuron->chain cascade
+        from re-entering while we set choices programmatically."""
+        if getattr(self, "_neuron_combo", None) is None:
             return
-        neuron, chain = sel.split("/chain_")
-        self.open_chain(neuron, int(chain))
+        self._populating = True
+        try:
+            chains = self._mode_chains()
+            neurons = sorted({n for (n, _) in chains})
+            want = select or ((self.neuron, self.chain_idx)
+                              if self.neuron is not None else None)
+            self._neuron_combo.choices = neurons
+            if neurons:
+                self._neuron_combo.value = (want[0] if want and want[0] in neurons
+                                            else neurons[0])
+        finally:
+            self._populating = False
+        self._populate_chains(select_idx=want[1] if want else None)
+
+    def _populate_chains(self, *, select_idx: Optional[int] = None) -> None:
+        """Fill the chain selector for the neuron now selected, as (label, idx) tuples
+        with a status badge (e.g. 'chain_03 [flagged]'). ``select_idx`` lands on a
+        chain when present."""
+        if getattr(self, "_chain_combo", None) is None:
+            return
+        neuron = self._neuron_combo.value
+        idxs = sorted(i for (n, i) in self._mode_chains() if n == neuron)
+        choices = [(f"chain_{i:02d} [{self.queue.chain_status(neuron, i)}]", i) for i in idxs]
+        self._populating = True
+        try:
+            self._chain_combo.choices = choices
+            if idxs:
+                self._chain_combo.value = select_idx if select_idx in idxs else idxs[0]
+        finally:
+            self._populating = False
+
+    def _on_mode_change(self) -> None:
+        if getattr(self, "_populating", False):
+            return
+        self.queue.refresh()                       # pick up newly-flagged chains too
+        self._populate_selectors()
+        print(f"[gui] picker mode: {self._mode_combo.value} "
+              f"({len(self._mode_chains())} chains)")
+
+    def _on_neuron_change(self) -> None:
+        if getattr(self, "_populating", False):
+            return
+        self._populate_chains()
+
+    def _sync_selectors(self) -> None:
+        """Point the selectors at the currently-open chain and re-read its badge
+        (it just became in_review via queue.claim in open_chain). Best-effort."""
+        if self.neuron is None or getattr(self, "_neuron_combo", None) is None:
+            return
+        self._populate_selectors(select=(self.neuron, self.chain_idx))
+
+    def _open_from_picker(self) -> None:
+        neuron = self._neuron_combo.value if self._neuron_combo is not None else None
+        idx = self._chain_combo.value if self._chain_combo is not None else None
+        if not neuron or idx is None:
+            print("[gui] nothing to open (no chain selected)")
+            return
+        self.open_chain(str(neuron), int(idx))
 
     def _refresh_picker(self) -> None:
         self.queue.refresh()
-        pend = self.queue.pending()
-        self._picker.choices = [f"{n}/chain_{i:02d}" for (n, i) in pend] or ["(queue empty)"]
-        print(f"[gui] queue refreshed: {len(pend)} chains pending")
+        self._populate_selectors()
+        print(f"[gui] queue refreshed: {len(self._mode_chains())} chains "
+              f"({self._mode_combo.value})")
 
     def _refresh_info(self) -> None:
         if self.data is None:

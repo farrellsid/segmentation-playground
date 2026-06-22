@@ -207,16 +207,26 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
     `set_image` runs once either way; the only added work is scoring 3 masks on CPU.
     The selection params are only consulted when `multimask=True`.
 
+    A `prompts.box_sam` (xyxy in `image_sam` space) is forwarded as SAM2's `box` seed,
+    so a human-drawn box (GUI) shapes the mask alongside any points. Points are passed
+    as None when there are none, so a box-only seed is valid. This is a no-op for the
+    batch, whose box_sam is None here (box_from_mask runs AFTER this call).
+
     Lift from: 'Image Prediction' cell.
-    not implemented: the GUI refinement loop wraps this call (re-predict on each point edit).
+    The GUI refinement loop wraps this call (re-predict on each point/box edit).
     """
     import torch
 
+    pts = np.asarray(prompts.points_sam, dtype=float)
+    labs = np.asarray(prompts.labels, dtype=int)
+    has_pts = len(pts) > 0
+    box = None if prompts.box_sam is None else np.asarray(prompts.box_sam, dtype=float)
     with torch.inference_mode():
         image_predictor.set_image(image_sam)
         masks, scores, logits = image_predictor.predict(
-            point_coords=np.asarray(prompts.points_sam, dtype=float),
-            point_labels=np.asarray(prompts.labels, dtype=int),
+            point_coords=pts if has_pts else None,
+            point_labels=labs if has_pts else None,
+            box=box,
             multimask_output=multimask,
         )
     if not multimask:
