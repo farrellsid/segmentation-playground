@@ -1,7 +1,8 @@
 # Tier-2 crop sizing: bigger buffer, collapse default, and a GUI recrop plan
 
 Date: 2026-06-22
-Status: Part A approved and ready to implement; Part B (GUI recrop) is a plan only
+Status: Part A landed; Part B Phase 1 (grow-crop recrop) landed; Part B Phase 2
+(draw-on-full-frame re-centering) still planned
 
 ## Problem
 

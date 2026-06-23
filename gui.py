@@ -680,6 +680,44 @@ class ReviewGUI:
         print("[gui] resume complete, masks + qc.csv + state.json updated, chain marked corrected")
         self._refresh_info()
 
+    def recrop_chain(self, *_) -> None:
+        """Re-run this tier-2 chain in a WIDER crop window. Grows the current crop_window
+        by the 'grow crop' amount (_tif px per side, clipped to the frame) and re-runs the
+        whole chain in it via the standard run path (override_crop_window), for a window
+        that auto-sized too small and still clips the cell. Heavy and blocking, like resume:
+        it re-preps the _pcrop frames and re-propagates. Tier-2 only, a _sam chain has no
+        crop window to grow (re-run it with chain_crop=True in the batch first)."""
+        from dataclasses import replace
+        if self.data is None:
+            return
+        if self._cw is None:
+            print("[gui] recrop is for a tier-2 (_pcrop) chain; this chain is _sam. Re-run "
+                  "it with chain_crop=True in the batch to make it a crop chain first")
+            return
+        grow = int(self._grow_spin.value)
+        if grow <= 0:
+            print("[gui] set 'grow crop (tif px)' > 0 to widen the window")
+            return
+        self.ctx.ensure_predictors(need_image=True, need_video=True)
+        # full-res frame dims to clip the grown window; one scale-1 read, cheap vs the re-run
+        anchor_z = self.data.frame_to_z.get(self.data.anchor_idx)
+        _img, full_hw = pipeline.load_frame_sam(int(anchor_z), scale=1)
+        cw_new = pipeline.grow_crop_window(self._cw, grow_tif=grow, image_hw_tif=full_hw,
+                                           max_px=self.ctx.cfg.chain_crop_max_px)
+        print(f"[gui] recrop {self.neuron} chain {self.chain_idx:02d}: {self._cw.size_tif} -> "
+              f"{cw_new.size_tif} _tif (grow {grow}/side), re-running the chain (this is slow)...")
+        cfg = replace(self.ctx.cfg, chain_crop=True, chain_crop_from_mask=False)
+        state = pipeline.ChainState(neuron=self.neuron, chain_idx=self.chain_idx, config=cfg)
+        self._close_session()                  # the old _pcrop session is stale
+        pipeline.run_chain(
+            state, image_predictor=self.ctx.image_predictor,
+            video_predictor=self.ctx.video_predictor, annotate_df=self.ctx.annotate_df,
+            chain=self.chain, override_crop_window=cw_new)
+        self.queue.set_status(self.neuron, self.chain_idx, review_queue.CORRECTED,
+                              reviewer=self.reviewer)
+        print("[gui] recrop complete; reopening the chain in the new window")
+        self.open_chain(self.neuron, self.chain_idx)
+
     def approve_chain(self, *_) -> None:
         """Mark the chain's auto masks acceptable as-is. Logs the queued frames as
         verdict='ok' + a uniform sample of un-flagged frames (the silent-error
@@ -915,7 +953,7 @@ class ReviewGUI:
     # =====================================================================
     def _build_widgets(self) -> None:
         from magicgui.widgets import (Container, PushButton, ComboBox, Label, LineEdit,
-                                      FloatSpinBox, CheckBox)
+                                      FloatSpinBox, SpinBox, CheckBox)
 
         self._info = Label(value="(no chain open)")
 
@@ -969,14 +1007,16 @@ class ReviewGUI:
         rerun.changed.connect(self.rerun_image_phase)
         resume = PushButton(text="resume propagation (G)")
         resume.changed.connect(self.resume_propagation)
+        # tier-2 recrop: grow this chain's crop window by N _tif px/side and re-run it
+        # (for a window that auto-sized too small). Only meaningful on a tier-2 chain.
+        self._grow_spin = SpinBox(label="grow crop (tif px)", value=512, min=0, max=8192, step=64)
+        recrop = PushButton(text="⤢ recrop chain (C)")
+        recrop.changed.connect(self.recrop_chain)
 
-        # per-frame labels + the error type used by 'mark wrong' and 'reject'
+        # the error type used by 'mark wrong' (W key) and 'reject'. The per-frame
+        # mark ok/wrong buttons were dropped to declutter the dock; the W/O keys remain.
         self._err_mode = ComboBox(label="error type", choices=list(labels_mod.ERROR_TYPES),
                                   value="other")
-        mark_wrong = PushButton(text="mark FRAME wrong (W)")
-        mark_wrong.changed.connect(self.mark_frame_wrong)
-        mark_ok = PushButton(text="mark FRAME ok (O)")
-        mark_ok.changed.connect(self.mark_frame_ok)
 
         # chain dispositions
         approve = PushButton(text="✓ approve CHAIN (A)")
@@ -995,12 +1035,17 @@ class ReviewGUI:
             Label(value=", frames (this chain), "), prevf, nextf,
             Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
             Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
-            Label(value=", correct, "), rerun, resume,
-            Label(value=", label / disposition, "), self._err_mode,
-            mark_wrong, mark_ok, approve, reject,
+            Label(value=", correct, "), rerun, resume, self._grow_spin, recrop,
+            Label(value=", disposition, "), self._err_mode, approve, reject,
             self._info,
         ], labels=True)
-        self.viewer.window.add_dock_widget(panel, area="right", name="review")
+        # Wrap in a scroll area so a tall panel never buries buttons below the fold
+        # (napari's dock does not scroll on its own); see the no-dock-scroll note in docs.
+        from qtpy.QtWidgets import QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(panel.native)
+        self.viewer.window.add_dock_widget(scroll, area="right", name="review")
 
     def _bind_keys(self) -> None:
         v = self.viewer
@@ -1025,6 +1070,9 @@ class ReviewGUI:
 
         @v.bind_key("g", overwrite=True)
         def _resume(_v): self.resume_propagation()
+
+        @v.bind_key("c", overwrite=True)
+        def _recrop(_v): self.recrop_chain()
 
         @v.bind_key("z", overwrite=True)
         def _zoom(_v): self._zoom_to_mask(self._current_frame(), pad=self.zoom_pad)

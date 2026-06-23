@@ -333,13 +333,13 @@ M4.5's entire premise is "M4 collects labels." Make the labels *unbiased* and th
     overlay gif/mp4 is stale and should regenerate after a GUI resume. *(old §9.2)*
 10b. **GUI recrop for a too-small tier-2 window.** When a tier-2 crop still clips the cell after the
     generous default pad (`chain_crop_pad_tif=512`, 2026-06) and the node-centred collapse default,
-    let the reviewer recrop from the GUI. Plan (see the
-    `2026-06-22-tier2-crop-sizing-design.md` spec): thread an `override_crop_window` through
-    `run_chain_once` / the anchor phase (skip sizing when set), then the GUI builds a window and
-    re-runs through that path. Phase 1: a "grow crop by N `_tif` px" button (grows the current
-    `crop_window`, clipped). Phase 2: draw a rectangle on the full-res frame for a re-centred window
-    (reuses the box-prompt layer). Re-runs `prepare_chain_crop_frames` + anchor + propagate + save, so
-    the library/driver boundary stays intact. *(planned; sizing defaults landed 2026-06)*
+    the reviewer can recrop from the GUI. **Phase 1 landed (2026-06):** `run_chain` takes an
+    `override_crop_window`; the GUI's "grow crop by N `_tif` px" spinbox + recrop button (`C`) grow
+    the chain's current `crop_window` (`pipeline.grow_crop_window`, clipped) and re-run the chain
+    through that path (re-prep + anchor + propagate + save), keeping the library/driver boundary
+    intact. **Phase 2 (planned):** draw a rectangle on the full-res frame for a re-centred (not just
+    grown) window, reusing the box-prompt layer. Caveat: recrop re-reads frames via the target-worm
+    tif store, so a cross-worm review (e.g. GT) would need the ReviewContext to carry its frame_store.
 
 ### C. Error detection / learned QC, the M4.5 accuracy core
 The acknowledged weakest part of the system, and arguably the highest-leverage milestone. The notes

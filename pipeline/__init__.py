@@ -53,6 +53,7 @@ from .config import PipelineConfig
 from .crop import (
     chain_crop_window,
     chain_masks_in_sam,
+    grow_crop_window,
     mask_union_box_px,
     node_crop_window,
     prepare_chain_crop_frames,
@@ -126,6 +127,7 @@ __all__ = [
     "chain_masks_in_sam",
     "chain_crop_window",
     "node_crop_window",
+    "grow_crop_window",
     "prepare_chain_crop_frames",
     "propagate",
     "save_masks",

@@ -97,11 +97,14 @@ CHAIN cycle, and `↻ refresh queue` re-reads from disk in whichever mode you're
 | `B` | **draw box**, activate the box layer to drag a bounding box on this frame |
 | `R` | **re-run image phase**, re-predict the anchor mask from the current points and/or box |
 | `G` | **resume propagation**, re-track from the current frame over the correction |
+| `C` | **recrop chain**, re-run a tier-2 chain in a wider crop window (see §5f) |
 | `W` / `O` | mark the current **frame** **w**rong / **o**k (uses the error-type picker) |
 | `A` / `X` | **approve** / **reject** the whole **chain** |
 | `Z` | zoom the camera back onto the mask |
 
-(All also have buttons in the dock.)
+Most actions also have buttons in the dock. The per-frame **mark wrong** / **mark ok**
+are keyboard-only (`W` / `O`); their buttons were dropped to keep the dock compact. The
+dock scrolls, so nothing is buried below the fold.
 
 ---
 
@@ -158,7 +161,18 @@ and logs its frames as `wrong` with that error type. **It does not delete the ma
 original saved seed at the anchor frame. (Prompt-only, it does not undo mask paints;
 use `Ctrl+Z` on the mask layer for those.)
 
-### 5f. Label while you scrub (helps the M4.5 model)
+### 5f. Recrop a too-small tier-2 window
+If a tier-2 chain's crop still clips the cell (the membrane runs off the edge of the
+`_pcrop` view), widen the window and re-run the chain. Set **grow crop (tif px)** (the
+amount added per side, default 512) and hit **recrop chain** (`C`). This grows the
+chain's current crop window, clips it to the frame, and re-runs the whole chain in the
+new window: it re-prepares the cropped frames, re-seeds the anchor, re-propagates, and
+rewrites `masks/` + `qc.csv` + `state.json`, then reopens the chain so you see the
+result. It is slow (it re-reads every frame at full resolution) and blocks until done,
+like resume. Recrop is for tier-2 chains only; a plain `_sam` chain has no crop window
+to grow (re-run it with `chain_crop=True` in the batch first).
+
+### 5g. Label while you scrub (helps the M4.5 model)
 While walking frames, **mark FRAME wrong** (`W`) / **mark FRAME ok** (`O`) records a
 per-frame verdict for the current frame using the selected error type. Marking a
 *non-flagged* frame wrong is especially valuable, it's a "silent error" the rule

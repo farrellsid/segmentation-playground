@@ -273,6 +273,25 @@ def node_crop_window(node_xy_tif, *, size_tif: int, image_hw_tif: tuple[int, int
         crop_scale=cs, sam_scale=int(sam_scale))
 
 
+def grow_crop_window(cw: "alignment.CropWindow", *, grow_tif: int,
+                     image_hw_tif: tuple[int, int], max_px: int) -> "alignment.CropWindow":
+    """Grow an existing CropWindow by ``grow_tif`` _tif px per side, clipped to the frame.
+
+    The GUI recrop's Phase-1 lever: when an auto-sized tier-2 window still clips the cell,
+    widen it without re-deriving from the skeleton/mask. The window's _tif box is expanded
+    on all four sides and handed to CropWindow.around_box (which clips to the frame); the
+    crop_scale is re-derived adaptively so the wider window stays under ``max_px`` input px
+    (it can only stay equal or get coarser, never finer). sam_scale is preserved.
+    """
+    x0, y0 = cw.origin_tif
+    w, h = cw.size_tif
+    box = (x0 - grow_tif, y0 - grow_tif, x0 + w + grow_tif, y0 + h + grow_tif)
+    longest = max(w + 2 * grow_tif, h + 2 * grow_tif, 1)
+    cs = max(int(cw.crop_scale), int(np.ceil(float(longest) / float(max_px))))
+    return alignment.CropWindow.around_box(
+        box, pad_tif=0, image_hw_tif=image_hw_tif, crop_scale=cs, sam_scale=cw.sam_scale)
+
+
 def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
                               cw: "alignment.CropWindow", *,
                               frames_root: Optional[Path],

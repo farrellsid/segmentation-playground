@@ -35,7 +35,8 @@ from .state import ChainState, Prompts, _anchor_score_to_dict, load_state
 def run_chain(state: ChainState, *, image_predictor, video_predictor,
               annotate_df: pd.DataFrame, chain: dict,
               on_video_phase: Optional[Callable[[], None]] = None,
-              frame_store: Optional[FrameStore] = None) -> ChainState:
+              frame_store: Optional[FrameStore] = None,
+              override_crop_window=None) -> ChainState:
     """Run one chain end-to-end by composing the phases above.
 
     No new behavior vs. the notebook -> this just makes the call order explicit and
@@ -55,6 +56,11 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     per-slice PNG store) to run the same pipeline on another worm. The skeleton->image
     transform is *not* threaded here, it's baked into annotate_df's x_tif/y_tif by the
     caller (catmaid_to_tif for the target worm; the per-section registration for GT).
+
+    `override_crop_window` (an alignment.CropWindow) forces the tier-2 window instead of
+    sizing it from the skeleton/mask. The GUI recrop passes a grown/redrawn window here to
+    re-run a chain whose auto-sized crop was still too small; it implies chain_crop and
+    supersedes chain_crop_from_mask. None (the default) keeps the normal sizing.
     """
     cfg = state.config
     fs = frame_store or TifFrameStore()
@@ -111,7 +117,13 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
             # crop_window) stores _pcrop masks whose bbox is the wrong space, so decline.
             extra_box_tif = None
             collapsed = False     # masks exist but all empty -> node-centred window below
-            if cfg.chain_crop_from_mask:
+            if override_crop_window is not None:
+                # a caller-supplied window (the GUI recrop) wins over all sizing: re-run
+                # the chain verbatim in this window. cfg.chain_crop_from_mask is ignored.
+                cw_chain_l = override_crop_window
+                print(f"    [recrop] override crop window {cw_chain_l.size_tif[0]}x"
+                      f"{cw_chain_l.size_tif[1]}px @ crop_scale {cw_chain_l.crop_scale}")
+            elif cfg.chain_crop_from_mask:
                 chain_dir = Path(cfg.output_root) / state.neuron / f"chain_{state.chain_idx:02d}"
                 sp = chain_dir / "state.json"
                 prior = load_state(sp) if sp.exists() else None
@@ -138,7 +150,9 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
                         print(f"    [chain_crop_from_mask] _sam mask bbox -> _tif "
                               f"{tuple(int(v) for v in extra_box_tif)} "
                               f"(union w/ skeleton, excl {len(queued_z)} queued frame(s))")
-            if collapsed:
+            if override_crop_window is not None:
+                pass                                   # already set above
+            elif collapsed:
                 arow = annotate_df[annotate_df["node_id"].astype(str) == str(state.anchor_node_id)]
                 node_xy = (float(arow["x_tif"].iloc[0]), float(arow["y_tif"].iloc[0]))
                 cw_chain_l = node_crop_window(

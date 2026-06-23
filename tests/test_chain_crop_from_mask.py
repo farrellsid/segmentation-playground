@@ -186,6 +186,37 @@ def test_node_crop_window_clamps_to_small_frame():
 
 
 # ---------------------------------------------------------------------------
+# grow_crop_window (the GUI recrop Phase-1 lever)
+# ---------------------------------------------------------------------------
+
+def _cw_at(origin=(2000.0, 2000.0), size=(1000, 800), crop_scale=2, sam_scale=8):
+    from sam2_utils.alignment import CropWindow
+    return CropWindow(origin_tif=origin, size_tif=size, crop_scale=crop_scale, sam_scale=sam_scale)
+
+
+def test_grow_crop_window_widens_each_side():
+    cw = pipeline.grow_crop_window(_cw_at(), grow_tif=500, image_hw_tif=(8000, 8000),
+                                   max_px=100000)
+    assert cw.origin_tif == (1500.0, 1500.0)          # 2000 - 500 each axis
+    assert cw.size_tif == (2000, 1800)                # +1000 each dim
+    assert cw.crop_scale == 2 and cw.sam_scale == 8   # scale preserved (no cap hit)
+
+
+def test_grow_crop_window_clips_to_frame():
+    # grow near the top-left corner: origin floors at 0
+    cw = pipeline.grow_crop_window(_cw_at(origin=(100.0, 100.0)), grow_tif=500,
+                                   image_hw_tif=(2000, 2000), max_px=100000)
+    assert cw.origin_tif == (0.0, 0.0)
+
+
+def test_grow_crop_window_bumps_scale_over_max_px():
+    cw = pipeline.grow_crop_window(_cw_at(), grow_tif=2000, image_hw_tif=(20000, 20000),
+                                   max_px=1536)
+    # longest grown dim = 1000 + 2*2000 = 5000 _tif; 5000/1536 -> ceil 4
+    assert cw.crop_scale == 4
+
+
+# ---------------------------------------------------------------------------
 # tier-2 fallback diagnostics survive serialization (the observability fix)
 # ---------------------------------------------------------------------------
 
