@@ -311,6 +311,72 @@ def window_from_sam_box(box_sam, *, sam_scale: int, image_hw_tif: tuple[int, int
         box_tif, pad_tif=0, image_hw_tif=image_hw_tif, crop_scale=cs, sam_scale=int(sam_scale))
 
 
+def _neuron_skeleton_box_tif(chains, annotate_df) -> tuple[float, float, float, float]:
+    """Union (x0, y0, x1, y1) bbox in _tif px over the nodes of ALL a neuron's chains."""
+    ids = set()
+    for ch in chains:
+        ids.update(str(n) for n in ch["nodes"])
+    sub = annotate_df[annotate_df["node_id"].astype(str).isin(ids)]
+    xs = sub["x_tif"].to_numpy(dtype=float)
+    ys = sub["y_tif"].to_numpy(dtype=float)
+    return float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
+
+
+def neuron_crop_window(chains, annotate_df, *, cfg: "PipelineConfig",
+                       image_hw_tif: tuple[int, int]) -> "alignment.CropWindow":
+    """A single CropWindow covering a whole neuron's skeleton bbox (over all its chains),
+    padded by cfg.chain_crop_pad_tif, at an adaptive crop_scale bumped coarser if the
+    padded extent's longest edge would exceed cfg.chain_crop_max_px.
+
+    The unified canvas (`_ncrop`) for the neuron-review GUI: every branch (_sam or
+    tier-2 _pcrop) remaps into this one grid, so a neuron's mixed-space branches share one
+    space. Resolution adapts to the neuron's extent (a sprawling neuron approaches _sam,
+    a compact one is sharper); never worse than the full-frame _sam fallback."""
+    box_tif = _neuron_skeleton_box_tif(chains, annotate_df)
+    H_tif, W_tif = int(image_hw_tif[0]), int(image_hw_tif[1])
+    pad = int(cfg.chain_crop_pad_tif)
+    cx = 0.5 * (box_tif[0] + box_tif[2])
+    cy = 0.5 * (box_tif[1] + box_tif[3])
+    w_tif = min(W_tif, (box_tif[2] - box_tif[0]) + 2 * pad)
+    h_tif = min(H_tif, (box_tif[3] - box_tif[1]) + 2 * pad)
+    exp_box = (cx - w_tif / 2.0, cy - h_tif / 2.0, cx + w_tif / 2.0, cy + h_tif / 2.0)
+    longest = max(w_tif, h_tif, 1.0)
+    crop_scale = max(int(cfg.chain_crop_scale),
+                     int(np.ceil(longest / float(cfg.chain_crop_max_px))))
+    return alignment.CropWindow.around_box(
+        exp_box, pad_tif=0, image_hw_tif=image_hw_tif,
+        crop_scale=crop_scale, sam_scale=cfg.scale)
+
+
+def remap_mask_to_window(mask, *, src_origin_tif, src_size_tif,
+                         dst_cw: "alignment.CropWindow") -> np.ndarray:
+    """Place a bool ``mask`` (in some source crop space) into ``dst_cw``'s grid.
+
+    The mask occupies the _tif rectangle [src_origin_tif, src_origin_tif + src_size_tif].
+    It is resized to that rectangle's size in dst crop px (src_size_tif / dst.crop_scale)
+    and pasted at the rectangle's dst origin ((src_origin - dst_origin) / dst.crop_scale),
+    clipped to the window. Nearest-neighbour, like chain_masks_in_sam. The general remap
+    behind the neuron view; chain_masks_in_sam stays the dedicated native->_sam case."""
+    import cv2
+    dh, dw = dst_cw.crop_hw
+    out = np.zeros((dh, dw), dtype=bool)
+    m = np.asarray(mask).astype(np.uint8)
+    if not m.size:
+        return out
+    s = float(dst_cw.crop_scale)
+    tw = max(1, int(round(src_size_tif[0] / s)))
+    th = max(1, int(round(src_size_tif[1] / s)))
+    rm = cv2.resize(m, (tw, th), interpolation=cv2.INTER_NEAREST).astype(bool)
+    x0 = int(round((src_origin_tif[0] - dst_cw.origin_tif[0]) / s))
+    y0 = int(round((src_origin_tif[1] - dst_cw.origin_tif[1]) / s))
+    dx0, dy0 = max(0, x0), max(0, y0)
+    dx1, dy1 = min(dw, x0 + tw), min(dh, y0 + th)
+    if dx1 <= dx0 or dy1 <= dy0:
+        return out
+    out[dy0:dy1, dx0:dx1] = rm[dy0 - y0:dy1 - y0, dx0 - x0:dx1 - x0]
+    return out
+
+
 def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
                               cw: "alignment.CropWindow", *,
                               frames_root: Optional[Path],
