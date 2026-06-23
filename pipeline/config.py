@@ -86,7 +86,12 @@ class PipelineConfig:
     # window is unique) -> one full-res imread per frame per chain; a windowed/memmap
     # read is the documented later optimisation.
     chain_crop: bool = False
-    chain_crop_pad_tif: int = 64       # padding around the skeleton xy-extent, _tif px
+    chain_crop_pad_tif: int = 512      # padding around the skeleton/mask xy-extent, _tif px.
+                                       # Generous on purpose: windows sized from the first-pass
+                                       # mask (or skeleton) that looked fine often clip the cell
+                                       # in practice, so every tier-2 window gets 512/side of
+                                       # slack. crop_scale bumps coarser if the wider extent
+                                       # would exceed chain_crop_max_px (coverage over resolution).
     chain_crop_scale: int = 2          # target read downscale (1 = full-res)
     chain_crop_max_px: int = 1536      # cap on the crop's longest input edge (bounds VRAM)
     # FLOOR on the crop's _tif extent. A low-motion chain (neurite barely moves in xy)
@@ -96,6 +101,16 @@ class PipelineConfig:
     # track. 1024 _tif px -> ~512 px input at crop_scale 2, still ~4x the neurite
     # resolution of the scale-8 full frame.
     chain_crop_min_tif: int = 1024
+
+    # Collapse fallback for chain_crop_from_mask. When the first pass produced masks but
+    # they COLLAPSED (no usable foreground to size a window from), size from the skeleton
+    # bbox is a guess that can land small and off-centre. Instead drop a fixed
+    # chain_crop_collapse_size_tif-square window centred on the anchor NODE, a predictable
+    # window regardless of how the (untrustworthy) skeleton wanders. 1024 _tif px -> ~512
+    # input px at crop_scale 2, matching chain_crop_min_tif. 0 disables (keep skeleton
+    # sizing). Only consulted when masks exist but are empty; a chain with no prior masks
+    # at all still sizes from the skeleton.
+    chain_crop_collapse_size_tif: int = 1024
 
     # Tier-2 crop sizing from the _sam mask, not the skeleton (default OFF).
     # The skeleton-bbox window (chain_crop_window/_chain_skeleton_box_tif)

@@ -12,6 +12,7 @@ import pandas as pd
 from .crop import (
     chain_crop_window,
     mask_union_box_px,
+    node_crop_window,
     prepare_chain_crop_frames,
     prepare_video_frames,
     _prior_queued_z,
@@ -109,20 +110,27 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
             # when the prior masks are _sam, a prior tier-2 (state.json has a
             # crop_window) stores _pcrop masks whose bbox is the wrong space, so decline.
             extra_box_tif = None
+            collapsed = False     # masks exist but all empty -> node-centred window below
             if cfg.chain_crop_from_mask:
                 chain_dir = Path(cfg.output_root) / state.neuron / f"chain_{state.chain_idx:02d}"
                 sp = chain_dir / "state.json"
                 prior = load_state(sp) if sp.exists() else None
+                masks_dir = chain_dir / "masks"
                 if prior is not None and getattr(prior, "crop_window", None):
                     print("    [chain_crop_from_mask] prior masks are _pcrop (tier-2); "
                           "sizing from skeleton bbox")
+                elif not masks_dir.exists():
+                    print("    [chain_crop_from_mask] no prior masks; sizing from skeleton bbox")
                 else:
                     queued_z = _prior_queued_z(chain_dir / "qc.csv")
-                    box_px = (mask_union_box_px((chain_dir / "masks"), exclude_z=queued_z)
-                              if (chain_dir / "masks").exists() else None)
+                    box_px = mask_union_box_px(masks_dir, exclude_z=queued_z)
                     if box_px is None:
-                        print("    [chain_crop_from_mask] no usable _sam mask; "
-                              "sizing from skeleton bbox")
+                        # masks exist but collapsed (no usable foreground) -> a node-centred
+                        # default window (below) beats a small/off-centre skeleton guess.
+                        collapsed = cfg.chain_crop_collapse_size_tif > 0
+                        print("    [chain_crop_from_mask] first-pass mask collapsed; "
+                              + (f"node-centred {cfg.chain_crop_collapse_size_tif}px _tif window"
+                                 if collapsed else "sizing from skeleton bbox"))
                     else:
                         x0, y0, x1, y1 = box_px       # _sam px -> _tif (+1 far corner = pixel extent)
                         extra_box_tif = (x0 * cfg.scale, y0 * cfg.scale,
@@ -130,8 +138,15 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
                         print(f"    [chain_crop_from_mask] _sam mask bbox -> _tif "
                               f"{tuple(int(v) for v in extra_box_tif)} "
                               f"(union w/ skeleton, excl {len(queued_z)} queued frame(s))")
-            cw_chain_l = chain_crop_window(chain, annotate_df, cfg=cfg, image_hw_tif=full_hw,
-                                           extra_box_tif=extra_box_tif)
+            if collapsed:
+                arow = annotate_df[annotate_df["node_id"].astype(str) == str(state.anchor_node_id)]
+                node_xy = (float(arow["x_tif"].iloc[0]), float(arow["y_tif"].iloc[0]))
+                cw_chain_l = node_crop_window(
+                    node_xy, size_tif=cfg.chain_crop_collapse_size_tif, image_hw_tif=full_hw,
+                    crop_scale=cfg.chain_crop_scale, max_px=cfg.chain_crop_max_px, sam_scale=cfg.scale)
+            else:
+                cw_chain_l = chain_crop_window(chain, annotate_df, cfg=cfg, image_hw_tif=full_hw,
+                                               extra_box_tif=extra_box_tif)
             state.crop_window = cw_chain_l.to_dict()
             print(f"    full-res {full_hw[1]}x{full_hw[0]} -> _pcrop window "
                   f"{cw_chain_l.size_tif[0]}x{cw_chain_l.size_tif[1]}px @ crop_scale "

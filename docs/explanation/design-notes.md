@@ -331,6 +331,15 @@ M4.5's entire premise is "M4 collects labels." Make the labels *unbiased* and th
    clobbering the good side. *(old §9.2)*
 10. **Export artifacts after a revision:** MP4 generation is broken (gif works); a corrected chain's
     overlay gif/mp4 is stale and should regenerate after a GUI resume. *(old §9.2)*
+10b. **GUI recrop for a too-small tier-2 window.** When a tier-2 crop still clips the cell after the
+    generous default pad (`chain_crop_pad_tif=512`, 2026-06) and the node-centred collapse default,
+    let the reviewer recrop from the GUI. Plan (see the
+    `2026-06-22-tier2-crop-sizing-design.md` spec): thread an `override_crop_window` through
+    `run_chain_once` / the anchor phase (skip sizing when set), then the GUI builds a window and
+    re-runs through that path. Phase 1: a "grow crop by N `_tif` px" button (grows the current
+    `crop_window`, clipped). Phase 2: draw a rectangle on the full-res frame for a re-centred window
+    (reuses the box-prompt layer). Re-runs `prepare_chain_crop_frames` + anchor + propagate + save, so
+    the library/driver boundary stays intact. *(planned; sizing defaults landed 2026-06)*
 
 ### C. Error detection / learned QC, the M4.5 accuracy core
 The acknowledged weakest part of the system, and arguably the highest-leverage milestone. The notes

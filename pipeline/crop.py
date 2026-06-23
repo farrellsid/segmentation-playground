@@ -256,6 +256,23 @@ def chain_crop_window(chain: dict, annotate_df: pd.DataFrame, *, cfg: "PipelineC
         crop_scale=crop_scale, sam_scale=cfg.scale)
 
 
+def node_crop_window(node_xy_tif, *, size_tif: int, image_hw_tif: tuple[int, int],
+                     crop_scale: int, max_px: int, sam_scale: int) -> "alignment.CropWindow":
+    """A fixed ``size_tif``-square CropWindow centred on a node (``node_xy_tif`` in _tif
+    px), clipped to the frame, at an adaptive crop_scale.
+
+    The tier-2 COLLAPSE fallback: when the first pass left no usable mask to size a window
+    from, a predictable window on the anchor node beats a skeleton-only guess that can land
+    small and off-centre. ``crop_scale`` starts at the target and is bumped coarser if
+    ``size_tif`` would exceed ``max_px`` input px (the same guard as chain_crop_window), so
+    a large collapse window stays bounded. Centring + clipping reuse CropWindow.around_node.
+    """
+    cs = max(int(crop_scale), int(np.ceil(float(size_tif) / float(max_px))))
+    return alignment.CropWindow.around_node(
+        node_xy_tif, size_tif=int(size_tif), image_hw_tif=image_hw_tif,
+        crop_scale=cs, sam_scale=int(sam_scale))
+
+
 def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
                               cw: "alignment.CropWindow", *,
                               frames_root: Optional[Path],

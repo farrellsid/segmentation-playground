@@ -28,8 +28,15 @@ single-chain run.
   high-res crop around the node. Off falls back to the full-frame path.
 - Per-chain crop, tier-2 (default off, auto-on for flagged chains): `chain_crop`,
   `chain_crop_pad_tif`, `chain_crop_scale`, `chain_crop_max_px`, `chain_crop_min_tif`,
-  `chain_crop_fallback`, `chain_crop_min_image_score`, `chain_crop_from_mask`. See
-  [ADR 0009](../adr/0009-tier2-crop-fallback.md).
+  `chain_crop_collapse_size_tif`, `chain_crop_fallback`, `chain_crop_min_image_score`,
+  `chain_crop_from_mask`. See [ADR 0009](../adr/0009-tier2-crop-fallback.md).
+  `chain_crop_pad_tif` defaults to 512 `_tif` px: windows sized from the first-pass mask
+  (or the skeleton) that looked fine often clip the cell, so every tier-2 window gets a
+  generous margin (`crop_scale` bumps coarser if the wider extent exceeds
+  `chain_crop_max_px`). `chain_crop_collapse_size_tif` (default 1024 `_tif` px, 0 to
+  disable) is the collapse fallback for `chain_crop_from_mask`: when the first pass left
+  masks but they collapsed to no usable foreground, the window becomes a fixed square of
+  this size centred on the anchor node instead of a skeleton-only guess.
 - Multimask anchor (default off): `multimask_anchor` asks SAM2 for its three candidate anchor masks and
   auto-selects one by `(contains the positive node, plausible area, single connected component, SAM
   IoU)`. `multimask_exclude_neg` (default off, only consulted when `multimask_anchor` is on) adds an

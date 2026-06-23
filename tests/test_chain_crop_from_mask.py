@@ -151,6 +151,41 @@ def test_none_extra_box_reproduces_skeleton_sizing():
 
 
 # ---------------------------------------------------------------------------
+# node_crop_window (the collapse fallback)
+# ---------------------------------------------------------------------------
+
+def test_node_crop_window_centered_full_size():
+    cw = pipeline.node_crop_window((2000.0, 2000.0), size_tif=1024, image_hw_tif=(4000, 4000),
+                                   crop_scale=2, max_px=1536, sam_scale=8)
+    assert cw.size_tif == (1024, 1024)
+    assert cw.origin_tif == (1488.0, 1488.0)        # 2000 - 512, centred on the node
+    assert cw.crop_scale == 2                         # 1024/1536 < 1, no bump
+    assert cw.sam_scale == 8
+
+
+def test_node_crop_window_slides_inside_at_edge():
+    # a node near the corner keeps the full size and slides inside the frame
+    cw = pipeline.node_crop_window((100.0, 100.0), size_tif=1024, image_hw_tif=(4000, 4000),
+                                   crop_scale=2, max_px=1536, sam_scale=8)
+    assert cw.size_tif == (1024, 1024)
+    assert cw.origin_tif == (0.0, 0.0)
+
+
+def test_node_crop_window_bumps_scale_when_over_max_px():
+    # size 4000 _tif / max 1536 input -> crop_scale ceil(2.6) = 3
+    cw = pipeline.node_crop_window((2500.0, 2500.0), size_tif=4000, image_hw_tif=(6000, 6000),
+                                   crop_scale=2, max_px=1536, sam_scale=8)
+    assert cw.crop_scale == 3
+    assert cw.size_tif == (4000, 4000)
+
+
+def test_node_crop_window_clamps_to_small_frame():
+    cw = pipeline.node_crop_window((250.0, 250.0), size_tif=1024, image_hw_tif=(500, 500),
+                                   crop_scale=2, max_px=1536, sam_scale=8)
+    assert cw.size_tif == (500, 500)                  # window can't exceed the frame
+
+
+# ---------------------------------------------------------------------------
 # tier-2 fallback diagnostics survive serialization (the observability fix)
 # ---------------------------------------------------------------------------
 
