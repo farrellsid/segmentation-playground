@@ -41,6 +41,12 @@ def test_rect_to_xyxy_is_corner_order_independent():
     assert np.allclose(gui._rect_to_xyxy(verts), [10, 20, 110, 70])
 
 
+def test_rect_to_xyxy_handles_2d_vertices():
+    # the recrop-picker layer is 2D (y, x); the last two columns are still (y, x)
+    verts = np.array([[20, 10], [20, 110], [70, 110], [70, 10]], float)
+    assert np.allclose(gui._rect_to_xyxy(verts), [10, 20, 110, 70])
+
+
 # ---------------------------------------------------------------------------
 # _box_on_frame: frame filtering, last-wins, empty
 # ---------------------------------------------------------------------------

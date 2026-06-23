@@ -337,9 +337,11 @@ M4.5's entire premise is "M4 collects labels." Make the labels *unbiased* and th
     `override_crop_window`; the GUI's "grow crop by N `_tif` px" spinbox + recrop button (`C`) grow
     the chain's current `crop_window` (`pipeline.grow_crop_window`, clipped) and re-run the chain
     through that path (re-prep + anchor + propagate + save), keeping the library/driver boundary
-    intact. **Phase 2 (planned):** draw a rectangle on the full-res frame for a re-centred (not just
-    grown) window, reusing the box-prompt layer. Caveat: recrop re-reads frames via the target-worm
-    tif store, so a cross-worm review (e.g. GT) would need the ReviewContext to carry its frame_store.
+    intact. **Phase 2 landed (2026-06):** "pick recrop region" (`F`) swaps the view to the full
+    `_sam` frame with a draggable rectangle (starting at the current window), and confirm builds the
+    window via `pipeline.window_from_sam_box` and re-runs, so the reviewer can re-centre, not just
+    grow. Caveat: recrop re-reads frames via the target-worm tif store, so a cross-worm review (e.g.
+    GT) would need the ReviewContext to carry its frame_store.
 
 ### C. Error detection / learned QC, the M4.5 accuracy core
 The acknowledged weakest part of the system, and arguably the highest-leverage milestone. The notes

@@ -109,11 +109,12 @@ _BOX_EDGE_COLOR = "#1f77b4"   # blue, distinct from the green/red prompt points
 
 
 def _rect_to_xyxy(verts) -> np.ndarray:
-    """A rectangle's (N, 3) vertices (t, y, x) -> (x0, y0, x1, y1) in data coords.
-    Axis-aligned: takes the min/max of the y and x columns, so it is correct for a
-    box drawn in any corner order (and for a rotated box, its bounding extent)."""
+    """A rectangle's vertices -> (x0, y0, x1, y1) in data coords. The last two columns
+    are (y, x), so this handles both the 3D prompt-box layer ((N, 3) = t, y, x) and the
+    2D recrop-picker layer ((N, 2) = y, x). Axis-aligned: takes the min/max of the y and
+    x columns, correct for any corner order (and a rotated box's bounding extent)."""
     v = np.asarray(verts, dtype=float)
-    ys, xs = v[:, 1], v[:, 2]
+    ys, xs = v[:, -2], v[:, -1]
     return np.array([xs.min(), ys.min(), xs.max(), ys.max()], dtype=float)
 
 
@@ -300,6 +301,8 @@ class ReviewGUI:
         self._img = self._mask = self._skel = self._prompts = self._box = None
         self._lscale = (1.0, 1.0, 1.0)   # _sam->EM world scale of the current chain's layers
         self._populating = False         # re-entrancy guard for the neuron->chain cascade
+        self._recrop_picking = False     # True while the full-frame recrop region picker is open
+        self._recrop_full_hw = None      # (H, W) _tif of the frame shown in the picker
 
         self._build_widgets()
         self._bind_keys()
@@ -601,7 +604,7 @@ class ReviewGUI:
         Uses the legacy full-frame _sam image path (the displayed frame IS the _sam
         frame the human clicked on). Crop re-predict is not implemented (see header).
         """
-        if self.data is None:
+        if self.data is None or self._recrop_picking:
             return
         frame_idx = self._current_frame()
         prompts = self._prompts_for_frame(frame_idx)
@@ -638,7 +641,7 @@ class ReviewGUI:
 
         Then save masks, re-run QC, persist state, and mark the chain CORRECTED.
         """
-        if self.data is None:
+        if self.data is None or self._recrop_picking:
             return
         self.ctx.ensure_predictors(need_image=False, need_video=True)
         frame_idx = self._current_frame()
@@ -687,25 +690,38 @@ class ReviewGUI:
         that auto-sized too small and still clips the cell. Heavy and blocking, like resume:
         it re-preps the _pcrop frames and re-propagates. Tier-2 only, a _sam chain has no
         crop window to grow (re-run it with chain_crop=True in the batch first)."""
-        from dataclasses import replace
-        if self.data is None:
+        if self.data is None or self._recrop_picking:
             return
         if self._cw is None:
             print("[gui] recrop is for a tier-2 (_pcrop) chain; this chain is _sam. Re-run "
-                  "it with chain_crop=True in the batch to make it a crop chain first")
+                  "it with chain_crop=True in the batch to make it a crop chain first, or use "
+                  "'pick recrop region' to draw a window on the full frame")
             return
         grow = int(self._grow_spin.value)
         if grow <= 0:
             print("[gui] set 'grow crop (tif px)' > 0 to widen the window")
             return
-        self.ctx.ensure_predictors(need_image=True, need_video=True)
-        # full-res frame dims to clip the grown window; one scale-1 read, cheap vs the re-run
-        anchor_z = self.data.frame_to_z.get(self.data.anchor_idx)
-        _img, full_hw = pipeline.load_frame_sam(int(anchor_z), scale=1)
+        full_hw = self._full_frame_hw()
         cw_new = pipeline.grow_crop_window(self._cw, grow_tif=grow, image_hw_tif=full_hw,
                                            max_px=self.ctx.cfg.chain_crop_max_px)
-        print(f"[gui] recrop {self.neuron} chain {self.chain_idx:02d}: {self._cw.size_tif} -> "
-              f"{cw_new.size_tif} _tif (grow {grow}/side), re-running the chain (this is slow)...")
+        self._recrop_to_window(cw_new, f"grow {grow}/side")
+
+    def _full_frame_hw(self) -> tuple:
+        """(H, W) of the full-res _tif frame at the anchor z (one scale-1 read; cheap
+        relative to the re-run that follows)."""
+        anchor_z = self.data.frame_to_z.get(self.data.anchor_idx)
+        _img, full_hw = pipeline.load_frame_sam(int(anchor_z), scale=1)
+        return full_hw
+
+    def _recrop_to_window(self, cw_new, label: str) -> None:
+        """Re-run the open chain in ``cw_new`` (an alignment.CropWindow) via the standard
+        run path, then reopen it. Shared by grow-recrop and the region picker. Heavy and
+        blocking: re-preps the _pcrop frames + re-propagates."""
+        from dataclasses import replace
+        old = self._cw.size_tif if self._cw is not None else "(_sam)"
+        print(f"[gui] recrop {self.neuron} chain {self.chain_idx:02d}: {old} -> "
+              f"{cw_new.size_tif} _tif ({label}), re-running the chain (this is slow)...")
+        self.ctx.ensure_predictors(need_image=True, need_video=True)
         cfg = replace(self.ctx.cfg, chain_crop=True, chain_crop_from_mask=False)
         state = pipeline.ChainState(neuron=self.neuron, chain_idx=self.chain_idx, config=cfg)
         self._close_session()                  # the old _pcrop session is stale
@@ -716,6 +732,63 @@ class ReviewGUI:
         self.queue.set_status(self.neuron, self.chain_idx, review_queue.CORRECTED,
                               reviewer=self.reviewer)
         print("[gui] recrop complete; reopening the chain in the new window")
+        self.open_chain(self.neuron, self.chain_idx)
+
+    # -- recrop region picker (Phase 2: draw the window on the full frame) -----
+    def enter_recrop_picker(self, *_) -> None:
+        """Show the full _sam anchor frame and a draggable rectangle for a NEW crop window,
+        so the reviewer can re-centre (not just grow) the tier-2 crop. The rectangle starts
+        at the chain's current window (or a node-centred default for a _sam chain). Adjust
+        it, then 'confirm recrop' re-runs the chain in that window; 'cancel recrop' reopens
+        the chain unchanged. Everything here is _sam, so there is no crop/full-frame mixing."""
+        if self.data is None or self._recrop_picking:
+            return
+        anchor_z = self.data.frame_to_z.get(self.data.anchor_idx)
+        em_sam, full_hw = pipeline.load_frame_sam(int(anchor_z), scale=self.ctx.cfg.scale)
+        self._recrop_full_hw = full_hw
+        s = float(self.ctx.cfg.scale)
+        if self._cw is not None:                       # current window -> _sam rectangle
+            ox, oy = self._cw.origin_tif
+            w, h = self._cw.size_tif
+            x0, y0, x1, y1 = ox / s, oy / s, (ox + w) / s, (oy + h) / s
+        else:                                          # _sam chain: default to the skeleton bbox
+            sx0, sy0, sx1, sy1 = pipeline._chain_skeleton_box_tif(self.chain, self.ctx.annotate_df)
+            x0, y0, x1, y1 = sx0 / s, sy0 / s, sx1 / s, sy1 / s
+        rect = np.array([[y0, x0], [y0, x1], [y1, x1], [y1, x0]], dtype=float)   # (y, x) 2D
+        self.viewer.layers.clear()
+        self.viewer.add_image(em_sam, name="full frame (_sam)", rgb=em_sam.ndim == 3)
+        layer = self.viewer.add_shapes(
+            [rect], shape_type="rectangle", name="recrop region", ndim=2,
+            edge_color=_BOX_EDGE_COLOR, face_color="transparent", edge_width=2.0, opacity=0.9)
+        layer.mode = "select"
+        self._recrop_picking = True
+        self.viewer.reset_view()
+        print("[gui] recrop picker: drag/resize the blue box to the new window, then "
+              "'confirm recrop'. 'cancel recrop' leaves the chain unchanged.")
+        self._refresh_info()
+
+    def confirm_recrop(self, *_) -> None:
+        """Read the picker rectangle (_sam), build a window, and re-run the chain in it."""
+        if not self._recrop_picking:
+            print("[gui] not in the recrop picker (use 'pick recrop region' first)")
+            return
+        layer = next((ly for ly in self.viewer.layers if ly.name == "recrop region"), None)
+        if layer is None or not len(layer.data):
+            print("[gui] no recrop rectangle drawn; cancel or draw one")
+            return
+        box_sam = _rect_to_xyxy(layer.data[-1])        # last rectangle, (x0,y0,x1,y1) _sam
+        cw_new = pipeline.window_from_sam_box(
+            box_sam, sam_scale=self.ctx.cfg.scale, image_hw_tif=self._recrop_full_hw,
+            crop_scale=self.ctx.cfg.chain_crop_scale, max_px=self.ctx.cfg.chain_crop_max_px)
+        self._recrop_picking = False                    # leave picker; _recrop_to_window reopens
+        self._recrop_to_window(cw_new, "picked region")
+
+    def cancel_recrop(self, *_) -> None:
+        """Leave the recrop picker without changing the chain (reopen it as it was)."""
+        if not self._recrop_picking:
+            return
+        self._recrop_picking = False
+        print("[gui] recrop cancelled")
         self.open_chain(self.neuron, self.chain_idx)
 
     def approve_chain(self, *_) -> None:
@@ -1012,6 +1085,13 @@ class ReviewGUI:
         self._grow_spin = SpinBox(label="grow crop (tif px)", value=512, min=0, max=8192, step=64)
         recrop = PushButton(text="⤢ recrop chain (C)")
         recrop.changed.connect(self.recrop_chain)
+        # recrop region picker (Phase 2): draw the new window on the full _sam frame
+        pick_region = PushButton(text="▣ pick recrop region (F)")
+        pick_region.changed.connect(self.enter_recrop_picker)
+        confirm_recrop = PushButton(text="✓ confirm recrop")
+        confirm_recrop.changed.connect(self.confirm_recrop)
+        cancel_recrop = PushButton(text="✗ cancel recrop")
+        cancel_recrop.changed.connect(self.cancel_recrop)
 
         # the error type used by 'mark wrong' (W key) and 'reject'. The per-frame
         # mark ok/wrong buttons were dropped to declutter the dock; the W/O keys remain.
@@ -1035,7 +1115,9 @@ class ReviewGUI:
             Label(value=", frames (this chain), "), prevf, nextf,
             Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
             Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
-            Label(value=", correct, "), rerun, resume, self._grow_spin, recrop,
+            Label(value=", correct, "), rerun, resume,
+            Label(value=", recrop, "), self._grow_spin, recrop,
+            pick_region, confirm_recrop, cancel_recrop,
             Label(value=", disposition, "), self._err_mode, approve, reject,
             self._info,
         ], labels=True)
@@ -1073,6 +1155,9 @@ class ReviewGUI:
 
         @v.bind_key("c", overwrite=True)
         def _recrop(_v): self.recrop_chain()
+
+        @v.bind_key("f", overwrite=True)
+        def _pickregion(_v): self.enter_recrop_picker()
 
         @v.bind_key("z", overwrite=True)
         def _zoom(_v): self._zoom_to_mask(self._current_frame(), pad=self.zoom_pad)

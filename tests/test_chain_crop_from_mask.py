@@ -217,6 +217,29 @@ def test_grow_crop_window_bumps_scale_over_max_px():
 
 
 # ---------------------------------------------------------------------------
+# window_from_sam_box (the GUI recrop picker, Phase 2)
+# ---------------------------------------------------------------------------
+
+def test_window_from_sam_box_scales_sam_to_tif():
+    # a box in _sam px at sam_scale 8 -> _tif window 8x larger
+    cw = pipeline.window_from_sam_box((100.0, 50.0, 300.0, 250.0), sam_scale=8,
+                                      image_hw_tif=(8000, 8000), crop_scale=2, max_px=100000)
+    assert cw.origin_tif == (800.0, 400.0)            # 100*8, 50*8
+    assert cw.size_tif == (1600, 1600)                # (300-100)*8, (250-50)*8
+    assert cw.crop_scale == 2 and cw.sam_scale == 8
+
+
+def test_window_from_sam_box_bumps_scale_and_clips():
+    # a wide box near the edge: clipped to the frame, crop_scale bumped under max_px
+    cw = pipeline.window_from_sam_box((0.0, 0.0, 400.0, 100.0), sam_scale=8,
+                                      image_hw_tif=(1000, 2000), crop_scale=2, max_px=1536)
+    assert cw.origin_tif == (0.0, 0.0)
+    # box _tif = 3200 x 800; width clips to frame W=2000; longest 3200/1536 -> ceil 3
+    assert cw.size_tif[0] == 2000
+    assert cw.crop_scale == 3
+
+
+# ---------------------------------------------------------------------------
 # tier-2 fallback diagnostics survive serialization (the observability fix)
 # ---------------------------------------------------------------------------
 

@@ -292,6 +292,25 @@ def grow_crop_window(cw: "alignment.CropWindow", *, grow_tif: int,
         box, pad_tif=0, image_hw_tif=image_hw_tif, crop_scale=cs, sam_scale=cw.sam_scale)
 
 
+def window_from_sam_box(box_sam, *, sam_scale: int, image_hw_tif: tuple[int, int],
+                        crop_scale: int, max_px: int) -> "alignment.CropWindow":
+    """Build a tier-2 CropWindow from an xyxy box in _sam px, clipped to the frame.
+
+    The GUI recrop picker's Phase-2 lever: the reviewer draws a rectangle on the full
+    `_sam` frame, and this turns it into a re-centred (not just grown) window. The box is
+    scaled _sam -> _tif, the crop_scale is re-derived adaptively so the window stays under
+    ``max_px`` input px, and around_box clips it to the frame. ``crop_scale`` is the target
+    (floor); ``sam_scale`` is the pipeline SCALE used both to read the drawn box and to map
+    crop results back to _sam.
+    """
+    x0, y0, x1, y1 = (float(v) for v in box_sam)
+    box_tif = (x0 * sam_scale, y0 * sam_scale, x1 * sam_scale, y1 * sam_scale)
+    longest = max(box_tif[2] - box_tif[0], box_tif[3] - box_tif[1], 1.0)
+    cs = max(int(crop_scale), int(np.ceil(longest / float(max_px))))
+    return alignment.CropWindow.around_box(
+        box_tif, pad_tif=0, image_hw_tif=image_hw_tif, crop_scale=cs, sam_scale=int(sam_scale))
+
+
 def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
                               cw: "alignment.CropWindow", *,
                               frames_root: Optional[Path],

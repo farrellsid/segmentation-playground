@@ -98,6 +98,7 @@ CHAIN cycle, and `↻ refresh queue` re-reads from disk in whichever mode you're
 | `R` | **re-run image phase**, re-predict the anchor mask from the current points and/or box |
 | `G` | **resume propagation**, re-track from the current frame over the correction |
 | `C` | **recrop chain**, re-run a tier-2 chain in a wider crop window (see §5f) |
+| `F` | **pick recrop region**, draw the new crop window on the full frame (see §5f) |
 | `W` / `O` | mark the current **frame** **w**rong / **o**k (uses the error-type picker) |
 | `A` / `X` | **approve** / **reject** the whole **chain** |
 | `Z` | zoom the camera back onto the mask |
@@ -163,14 +164,22 @@ use `Ctrl+Z` on the mask layer for those.)
 
 ### 5f. Recrop a too-small tier-2 window
 If a tier-2 chain's crop still clips the cell (the membrane runs off the edge of the
-`_pcrop` view), widen the window and re-run the chain. Set **grow crop (tif px)** (the
-amount added per side, default 512) and hit **recrop chain** (`C`). This grows the
-chain's current crop window, clips it to the frame, and re-runs the whole chain in the
-new window: it re-prepares the cropped frames, re-seeds the anchor, re-propagates, and
-rewrites `masks/` + `qc.csv` + `state.json`, then reopens the chain so you see the
+`_pcrop` view), widen the window and re-run the chain. Two ways:
+
+- **Grow** (quick): set **grow crop (tif px)** (the amount added per side, default 512)
+  and hit **recrop chain** (`C`). This grows the chain's current crop window, clips it to
+  the frame, and re-runs.
+- **Pick region** (re-centre): hit **pick recrop region** (`F`). The view switches to the
+  full `_sam` frame with a blue rectangle at the current window. Drag and resize it to the
+  region you want (anywhere on the frame, so you can re-centre, not just grow), then
+  **confirm recrop**. **cancel recrop** leaves the chain unchanged.
+
+Either way the re-run re-prepares the cropped frames, re-seeds the anchor, re-propagates,
+and rewrites `masks/` + `qc.csv` + `state.json`, then reopens the chain so you see the
 result. It is slow (it re-reads every frame at full resolution) and blocks until done,
-like resume. Recrop is for tier-2 chains only; a plain `_sam` chain has no crop window
-to grow (re-run it with `chain_crop=True` in the batch first).
+like resume. Grow needs a tier-2 chain (a `_sam` chain has no window to grow); pick-region
+works on any open chain (its default rectangle is the chain's skeleton bbox for a `_sam`
+chain).
 
 ### 5g. Label while you scrub (helps the M4.5 model)
 While walking frames, **mark FRAME wrong** (`W`) / **mark FRAME ok** (`O`) records a
