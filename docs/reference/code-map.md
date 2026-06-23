@@ -15,7 +15,8 @@ as few files as possible.
 | A filesystem path, model checkpoint, affine constant, or CATMAID setting | `sam2_utils/config.py` | Central constants. Import-light: no torch or cv2 at module load. |
 | Any coordinate transform (`_tif` / `_sam` / `_crop` / `_pcrop` / `_cm`, z maps, nm to px, crop windows) | `sam2_utils/alignment.py` | The single home for space conversions. Do not write `/ scale` inline anywhere else. |
 | How the headless batch runs, resumes, or builds the triage queue | `batch.py` | The headless driver. Builds predictors once, runs every chain, writes the manifest. |
-| The review GUI (layers, keys, correction tools) | `gui.py` | The napari driver. Composes `review`, `review_queue`, `labels`, and `pipeline`. |
+| The review GUI (layers, keys, correction tools) | `gui.py` | The napari driver, per-CHAIN paradigm. Composes `review`, `review_queue`, `labels`, and `pipeline`. |
+| The neuron-level review GUI (whole neuron on one crop canvas) | `gui_neuron.py` | The second paradigm: opens a whole neuron, branches as labels in one Labels layer on a per-neuron `_ncrop` crop. Imports shared pieces from `gui.py`. See the 2026-06-23 spec/plan under `docs/superpowers/`. |
 | The work queue or review-status ledger the GUI reads and writes | `sam2_utils/review_queue.py` | Owns `_review.csv`, separate from the batch's `_manifest.csv`. |
 | The per-frame label store (the training data the GUI collects) | `sam2_utils/labels.py` | One flat row per labelled frame in `_labels.csv`. Pure pandas. |
 | A QC signal or its threshold | `sam2_utils/qc.py` + the `qc_*` knobs on `PipelineConfig` | Metrics live in `qc.py`; thresholds live on the config so a run tunes them in one place. |
@@ -46,6 +47,7 @@ The filesystem is the database. A run writes two separate trees. See
 ## Dependency direction
 
 The library does not import the drivers. `pipeline.py` and `sam2_utils/` import only each other
-and third-party packages. The drivers (`batch.py`, `gui.py`, `run_aval.py`) and `eval/` import the
-library, never the reverse. If you add an import that points from the core out to a driver, you have
+and third-party packages. The drivers (`batch.py`, `gui.py`, `gui_neuron.py`, `run_aval.py`) and
+`eval/` import the library, never the reverse. (`gui_neuron.py` also imports `gui.py`, which is
+driver to driver, allowed.) If you add an import that points from the core out to a driver, you have
 introduced a cycle. See [../explanation/architecture.md](../explanation/architecture.md).
