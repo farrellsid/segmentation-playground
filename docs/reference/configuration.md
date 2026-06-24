@@ -49,8 +49,14 @@ single-chain run.
   Records a verdict; does not branch yet.
 - QC thresholds: `qc_area_ratio_bounds`, `qc_temporal_iou_min`, `qc_pred_iou_min`,
   `qc_skeleton_dilation_px`, `qc_triage_min_signals`. See [qc-signals.md](qc-signals.md).
-- Mask post-processing (default off): `postproc_open_px`, `postproc_close_px`,
-  `postproc_keep_largest_cc`, `postproc_fill_holes`.
+- Mask post-processing (master toggle `postprocess_masks`, default off): the morphological
+  baseline `postproc_open_px`, `postproc_close_px`, `postproc_keep_largest_cc`,
+  `postproc_fill_holes`, plus the size-aware ops `postproc_remove_islands_min_size`
+  (keep all components above a size floor, not just the largest),
+  `postproc_fill_small_holes_area` (fill only small holes, keep large cavities), and
+  `postproc_smooth_radius` (disk close-then-open to smooth frayed edges). The size-aware
+  ops run only when their value is > 0, so they leave the baseline unchanged by default.
+  `batch.py --postprocess` / `--no-postprocess` flips the master toggle for an A/B run.
 
 ## Presets
 

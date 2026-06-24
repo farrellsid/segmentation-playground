@@ -705,12 +705,18 @@ def main() -> None:
                     help="override the preset gif mode")
     ap.add_argument("--no-tier2", action="store_true",
                     help="disable the tier-2 second pass entirely (overrides the preset)")
+    ap.add_argument("--postprocess", dest="postprocess", action="store_true", default=None,
+                    help="force mask post-processing ON (overrides the preset; A/B with --no-postprocess)")
+    ap.add_argument("--no-postprocess", dest="postprocess", action="store_false",
+                    help="force mask post-processing OFF (overrides the preset)")
     args = ap.parse_args()
 
     p = presets.get_preset(args.preset)
     pipe = dict(p["pipeline"])
     if args.model_size:
         pipe["model_size"] = args.model_size
+    if args.postprocess is not None:
+        pipe["postprocess_masks"] = args.postprocess
     cfg = PipelineConfig(**pipe,
                          output_root=args.output_root or p["output_root"],
                          frames_root=args.frames_root or p["frames_root"])

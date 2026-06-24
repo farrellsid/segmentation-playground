@@ -193,11 +193,23 @@ class PipelineConfig:
     # mask post-processing -> deterministic, no model. Runs before
     # save+QC so QC scores the delivered mask. Off = baseline. Kernels are in
     # scale-8 _sam px; keep <= the neurite half-width.
-    postprocess_masks: bool = False
+    postprocess_masks: bool = False    # MASTER toggle for the whole post-process stage.
+                                       # Off = baseline (raw masks). Flip this to A/B the
+                                       # outputs with vs without cleanup.
     postproc_open_px: int = 1
     postproc_close_px: int = 1
     postproc_keep_largest_cc: bool = True
     postproc_fill_holes: bool = True
+    # Size-aware cleanup (gated by the master toggle above; each runs only when > 0, so the
+    # defaults of 0 leave the baseline postproc unchanged). These are the granular ops:
+    #   remove_islands_min_size: drop detached components smaller than N px, KEEPING all
+    #     larger ones (unlike keep_largest_cc, so a real second cross-section survives).
+    #   fill_small_holes_area: fill interior holes smaller than N px, leaving large cavities.
+    #   smooth_radius: morphological close-then-open with a disk of N px to smooth a
+    #     frayed/netty boundary. Keep small or thin neurites erode. All in scale-8 _sam px.
+    postproc_remove_islands_min_size: int = 0
+    postproc_fill_small_holes_area: int = 0
+    postproc_smooth_radius: int = 0
 
     # which per-frame severity enters the human triage queue. A frame is
     # queued when flag_count >= this. 2 = intervene-level (>=2 corroborating signals),
