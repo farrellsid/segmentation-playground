@@ -43,12 +43,17 @@ Corrections always act on the **active branch** (the selected label), in the `_n
 canvas:
 
 - Select the branch via the `neuron` layer's label control (or paint with that label).
-- Place positive/negative points, or press `B` and drag a box.
+  On switch, the view jumps to that branch's anchor and pre-loads its saved seed
+  (positive node + negative neighbors + box), and the yellow `skeleton` layer shows the
+  neuron's CATMAID nodes for context.
+- Set new points positive/negative (`p` / `n`), or press `B` and drag a box. `,` / `.`
+  step through the frames the active branch occupies; `Z` centers on it; **reset prompts**
+  restores the saved seed.
 - `R` (**re-run image phase**): re-predict the active branch on the current frame from
   its points/box; the result replaces that branch's pixels on that frame.
-- `G` (**resume propagation**): re-track the active branch over the neuron frames from
-  the current frame (both directions), then save just that branch. Its masks are saved in
-  the `_ncrop` space and its `crop_window` becomes the neuron window.
+- `G` (**resume propagation**): re-track the active branch over **its own z-range**
+  (both directions), then save just that branch. Its masks are saved in the `_ncrop`
+  space and its `crop_window` becomes the neuron window.
 
 Other branches are never touched by a correction.
 
@@ -56,9 +61,18 @@ Other branches are never touched by a correction.
 
 | Key | Action |
 |---|---|
+| `,` / `.` | prev / next frame the active branch occupies |
+| `p` / `n` | set new points positive / negative |
+| `B` | activate the box layer to drag a bounding box |
 | `R` | re-run image phase on the active branch |
 | `G` | resume propagation on the active branch |
-| `B` | activate the box layer to drag a bounding box |
+| `Z` | center on the active branch |
+
+## Export
+
+The **export overlay** button writes the neuron overlay (EM with each branch in its own
+color) to the neuron's output dir, as **mp4**, a **png** sequence, or **gif** (the
+*export format* combo).
 
 ## Disposition
 

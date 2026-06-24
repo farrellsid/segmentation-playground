@@ -734,6 +734,25 @@ class ReviewGUI:
         print("[gui] recrop complete; reopening the chain in the new window")
         self.open_chain(self.neuron, self.chain_idx)
 
+    def save_masks_now(self, *_) -> None:
+        """Persist the CURRENT mask layer to disk now, without re-propagating, so manual
+        paint edits aren't lost. Reads the displayed mask layer (the authoritative state),
+        writes masks/, and syncs in-memory segments. Does NOT re-run QC (that happens on
+        resume); use this for a quick save of hand-painted corrections."""
+        if self.data is None or self._mask is None or self._recrop_picking:
+            return
+        obj = self.data.obj_id
+        vol = self._mask.data
+        segments = {fi: {obj: (vol[fi] == obj)}
+                    for fi in range(vol.shape[0]) if (vol[fi] == obj).any()}
+        chain_dir = self.ctx.output_root / self.neuron / f"chain_{self.chain_idx:02d}"
+        pipeline.save_masks(segments, self.data.frame_to_z, chain_dir / "masks",
+                            obj_id=obj, mask_space_downscale=self.ctx.cfg.save_downscale)
+        self.data.video_segments = segments        # keep in-memory state in sync
+        print(f"[gui] saved {len(segments)} mask frames to {chain_dir / 'masks'} "
+              f"(no QC/propagation; 'G' re-runs QC)")
+        self._refresh_info()
+
     # -- recrop region picker (Phase 2: draw the window on the full frame) -----
     def enter_recrop_picker(self, *_) -> None:
         """Show the full _sam anchor frame and a draggable rectangle for a NEW crop window,
@@ -1080,6 +1099,8 @@ class ReviewGUI:
         rerun.changed.connect(self.rerun_image_phase)
         resume = PushButton(text="resume propagation (G)")
         resume.changed.connect(self.resume_propagation)
+        save_btn = PushButton(text="💾 save masks (S)")
+        save_btn.changed.connect(self.save_masks_now)
         # tier-2 recrop: grow this chain's crop window by N _tif px/side and re-run it
         # (for a window that auto-sized too small). Only meaningful on a tier-2 chain.
         self._grow_spin = SpinBox(label="grow crop (tif px)", value=512, min=0, max=8192, step=64)
@@ -1115,7 +1136,7 @@ class ReviewGUI:
             Label(value=", frames (this chain), "), prevf, nextf,
             Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
             Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
-            Label(value=", correct, "), rerun, resume,
+            Label(value=", correct, "), rerun, resume, save_btn,
             Label(value=", recrop, "), self._grow_spin, recrop,
             pick_region, confirm_recrop, cancel_recrop,
             Label(value=", disposition, "), self._err_mode, approve, reject,
@@ -1152,6 +1173,9 @@ class ReviewGUI:
 
         @v.bind_key("g", overwrite=True)
         def _resume(_v): self.resume_propagation()
+
+        @v.bind_key("s", overwrite=True)
+        def _save(_v): self.save_masks_now()
 
         @v.bind_key("c", overwrite=True)
         def _recrop(_v): self.recrop_chain()

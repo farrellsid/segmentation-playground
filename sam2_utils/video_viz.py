@@ -279,3 +279,19 @@ def to_mp4(video_segments, frames_dir, out_path, obj_id=None,
         vw.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     vw.release()
     return out_path
+
+
+def to_png_seq(video_segments, frames_dir, out_dir, obj_id=None,
+               preview_scale=1, alpha=0.5):
+    """Write one overlay PNG per frame into ``out_dir`` (``frame_<idx:05d>.png``), the
+    same EM + colored-mask compositing as to_mp4/to_gif. ``obj_id=None`` overlays every
+    object in its own color (one per branch). Returns out_dir. No ffmpeg needed."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for idx, frame in _frames_iter(video_segments, frames_dir, obj_id, preview_scale, alpha):
+        cv2.imwrite(str(out_dir / f"frame_{idx:05d}.png"), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        n += 1
+    if not n:
+        raise ValueError("nothing to write")
+    return str(out_dir)

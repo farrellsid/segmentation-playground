@@ -238,6 +238,10 @@ class NeuronReviewGUI:
         rerun.changed.connect(self.rerun_image_phase)
         resume = PushButton(text="resume propagation (G)")
         resume.changed.connect(self.resume_propagation)
+        # export
+        self._export_fmt = ComboBox(label="export format", choices=["mp4", "png", "gif"], value="mp4")
+        export_btn = PushButton(text="⤓ export overlay")
+        export_btn.changed.connect(self.export_overlay)
         # disposition
         approve = PushButton(text="✓ approve NEURON")
         approve.changed.connect(self.approve_neuron)
@@ -249,6 +253,7 @@ class NeuronReviewGUI:
             Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
             Label(value=", view, "), self._size_spin, zoom_btn,
             Label(value=", correct active branch, "), rerun, resume,
+            Label(value=", export, "), self._export_fmt, export_btn,
             Label(value=", neuron, "), approve, reject,
             self._info,
         ], labels=True)
@@ -585,6 +590,38 @@ class NeuronReviewGUI:
             self.queue.set_status(self.neuron, i, review_queue.REJECTED, reviewer=self.reviewer)
         print(f"[gui_neuron] {self.neuron} rejected ({len(self.chain_idxs)} branches)")
         self._refresh_info()
+
+    # -- export ----------------------------------------------------------------
+    def export_overlay(self, *_) -> None:
+        """Write the neuron overlay (EM + each branch in its own color) to the neuron's
+        output dir, as mp4, gif, or a PNG sequence (the 'export format' combo). Reuses
+        video_viz; obj_id=None overlays every branch label."""
+        if self.neuron is None or self._neuron is None:
+            return
+        from sam2_utils import video_viz
+        vol = self._neuron.data
+        segments = {fi: {int(lab): (vol[fi] == lab) for lab in np.unique(vol[fi]) if lab}
+                    for fi in range(vol.shape[0]) if vol[fi].any()}
+        if not segments:
+            print("[gui_neuron] nothing to export")
+            return
+        out_dir = self.ctx.output_root / self.neuron
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base = out_dir / f"{self.neuron}_overlay"
+        fmt = str(self._export_fmt.value)
+        try:
+            if fmt == "mp4":
+                p = video_viz.to_mp4(segments, self.frames_dir, f"{base}.mp4",
+                                     obj_id=None, preview_scale=1)
+            elif fmt == "gif":
+                p = video_viz.to_gif(segments, self.frames_dir, f"{base}.gif",
+                                     obj_id=None, preview_scale=1)
+            else:
+                p = video_viz.to_png_seq(segments, self.frames_dir, f"{base}_png",
+                                         obj_id=None, preview_scale=1)
+            print(f"[gui_neuron] exported overlay ({fmt}) -> {p}")
+        except Exception as e:                    # noqa: BLE001 - report, don't crash the GUI
+            print(f"[gui_neuron] export failed: {e}")
 
 
 def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,

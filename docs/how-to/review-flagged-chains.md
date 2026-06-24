@@ -97,6 +97,7 @@ CHAIN cycle, and `↻ refresh queue` re-reads from disk in whichever mode you're
 | `B` | **draw box**, activate the box layer to drag a bounding box on this frame |
 | `R` | **re-run image phase**, re-predict the anchor mask from the current points and/or box |
 | `G` | **resume propagation**, re-track from the current frame over the correction |
+| `S` | **save masks**, persist the current mask layer to disk now (no QC/propagation) |
 | `C` | **recrop chain**, re-run a tier-2 chain in a wider crop window (see §5f) |
 | `F` | **pick recrop region**, draw the new crop window on the full frame (see §5f) |
 | `W` / `O` | mark the current **frame** **w**rong / **o**k (uses the error-type picker) |
