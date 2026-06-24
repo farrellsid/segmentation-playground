@@ -89,3 +89,57 @@ def postprocess_mask(mask_sam: np.ndarray, *, open_px: int = 1, close_px: int = 
     if fill_holes:
         m = ndimage.binary_fill_holes(m)
     return m
+
+
+def _as_bool_2d(mask: np.ndarray) -> np.ndarray:
+    """Coerce a mask to a 2D bool array, squeezing SAM2's (1, H, W) channel axis."""
+    m = np.asarray(mask)
+    if m.ndim == 3:
+        m = m[0]
+    return m.astype(bool)
+
+
+def remove_small_islands(mask: np.ndarray, *, min_size: int = 64,
+                         connectivity: int = 2) -> np.ndarray:
+    """Drop connected components smaller than ``min_size`` px, keeping ALL larger ones.
+
+    Unlike ``postprocess_mask``'s ``keep_largest_cc`` (which keeps a single component), this
+    keeps every component at or above the size floor, so a legitimate second cross-section of
+    the cell survives while detached specks are removed. ``connectivity`` 2 is 8-neighbour.
+    Empty in (or ``min_size`` <= 1) -> empty/unchanged out."""
+    from skimage.morphology import remove_small_objects
+    m = _as_bool_2d(mask)
+    if not m.any() or int(min_size) <= 1:
+        return m
+    # skimage 0.26's max_size removes components <= its value, so max_size = min_size - 1
+    # reproduces "remove components smaller than min_size" (keep >= min_size).
+    return remove_small_objects(m, max_size=int(min_size) - 1, connectivity=int(connectivity))
+
+
+def fill_small_holes(mask: np.ndarray, *, area_threshold: int = 64,
+                     connectivity: int = 1) -> np.ndarray:
+    """Fill background holes smaller than ``area_threshold`` px inside the mask, leaving
+    larger holes intact.
+
+    Unlike ``postprocess_mask``'s ``fill_holes`` (which fills every hole), a genuine large
+    cavity is preserved. Empty in (or ``area_threshold`` <= 1) -> unchanged out."""
+    from skimage.morphology import remove_small_holes
+    m = _as_bool_2d(mask)
+    if not m.any() or int(area_threshold) <= 1:
+        return m
+    # max_size fills holes <= its value, so max_size = area_threshold - 1 fills holes
+    # strictly smaller than area_threshold.
+    return remove_small_holes(m, max_size=int(area_threshold) - 1, connectivity=int(connectivity))
+
+
+def smooth_edges(mask: np.ndarray, *, radius: int = 2) -> np.ndarray:
+    """Smooth a frayed / netty mask boundary by a morphological closing then opening with a
+    disk of ``radius`` px: the closing bridges thin gaps in the mesh, the opening shaves thin
+    protrusions. Topology-light, but keep ``radius`` small or thin neurites erode away.
+    ``radius`` <= 0 or empty in -> returned unchanged."""
+    from skimage.morphology import closing, disk, opening
+    m = _as_bool_2d(mask)
+    if radius <= 0 or not m.any():
+        return m
+    footprint = disk(int(radius))
+    return opening(closing(m, footprint), footprint).astype(bool)

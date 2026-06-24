@@ -75,7 +75,13 @@ from .frames import (
     _parse_file_z,
     _read_tif_window,
 )
-from .masks import postprocess_mask, save_masks
+from .masks import (
+    fill_small_holes,
+    postprocess_mask,
+    remove_small_islands,
+    save_masks,
+    smooth_edges,
+)
 from .orchestrator import run_chain
 from .predict import (
     anchor_crop_predict,
@@ -139,6 +145,9 @@ __all__ = [
     "propagate",
     "save_masks",
     "postprocess_mask",
+    "remove_small_islands",
+    "fill_small_holes",
+    "smooth_edges",
     "run_qc",
     "save_state",
     "load_state",

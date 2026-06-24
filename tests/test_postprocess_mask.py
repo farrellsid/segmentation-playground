@@ -45,6 +45,67 @@ def test_empty_in_empty_out():
     assert not pipeline.postprocess_mask(np.zeros((32, 32), bool)).any()
 
 
+# ---------------------------------------------------------------------------
+# remove_small_islands: drop specks, keep ALL large components
+# ---------------------------------------------------------------------------
+
+def test_remove_small_islands_drops_specks_keeps_blob():
+    m = np.zeros((64, 64), bool)
+    m[10:40, 10:40] = True          # 900 px blob
+    m[50:52, 50:52] = True          # 4 px speck
+    out = pipeline.remove_small_islands(m, min_size=50)
+    assert out[20, 20] and not out[51, 51]
+
+
+def test_remove_small_islands_keeps_multiple_large():
+    m = np.zeros((64, 64), bool)
+    m[5:25, 5:25] = True            # 400 px
+    m[40:60, 40:60] = True          # 400 px (a legit second component)
+    out = pipeline.remove_small_islands(m, min_size=50)
+    assert out[10, 10] and out[50, 50]
+
+
+def test_remove_small_islands_squeeze_and_empty():
+    m3 = np.zeros((1, 32, 32), bool)
+    m3[0, 10:20, 10:20] = True
+    out = pipeline.remove_small_islands(m3, min_size=4)
+    assert out.ndim == 2 and out.any()
+    assert not pipeline.remove_small_islands(np.zeros((16, 16), bool), min_size=4).any()
+
+
+# ---------------------------------------------------------------------------
+# fill_small_holes: fill small holes, keep a large cavity
+# ---------------------------------------------------------------------------
+
+def test_fill_small_holes_fills_small_keeps_large():
+    m = np.ones((60, 60), bool)
+    m[10:12, 10:12] = False         # 4 px hole
+    m[30:50, 30:50] = False         # 400 px hole
+    out = pipeline.fill_small_holes(m, area_threshold=10)
+    assert out[10, 10]              # small hole filled
+    assert not out[40, 40]          # large hole preserved
+
+
+# ---------------------------------------------------------------------------
+# smooth_edges: shave thin protrusions
+# ---------------------------------------------------------------------------
+
+def test_smooth_edges_removes_thin_spike_keeps_body():
+    m = np.zeros((64, 64), bool)
+    m[20:44, 20:44] = True          # solid body
+    m[31:33, 44:60] = True          # a thin 2px-tall spike off the side
+    out = pipeline.smooth_edges(m, radius=2)
+    assert out[30, 30]              # body survives
+    assert not out[31, 55]          # thin spike shaved
+
+
+def test_smooth_edges_empty_and_solid():
+    assert not pipeline.smooth_edges(np.zeros((16, 16), bool), radius=2).any()
+    solid = np.zeros((64, 64), bool)
+    solid[10:54, 10:54] = True
+    assert pipeline.smooth_edges(solid, radius=2).any()
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
