@@ -81,6 +81,76 @@ def build_prompts(anchor_node_id: int, catmaid_z: int, annotate_df: pd.DataFrame
                    labels=np.array(labels, dtype=int))
 
 
+def neighbor_chains(target_chain, annotate_df, chains, *, scale,
+                    k=3, crop_window=None, frame_hw_sam=None):
+    """The k nearest OTHER chains with a node inside the target's propagation window
+    on a shared z-slice, nearest first. Pure (no torch, no SAM2): the seeds are built
+    later by the GUI via the normal anchor path.
+
+    A neighbor can only contend with the target where both have foreground on the same
+    slice, so a chain is kept only if it has a node (a) on a z the target also occupies
+    and (b) inside the propagation frame. Distance is measured in _sam px between the
+    neighbor node and the nearest target node on that shared z.
+
+    Window: tier-2 passes `crop_window` (an alignment.CropWindow), so nodes map _tif ->
+    _pcrop and the window is the crop extent. The _sam path passes `frame_hw_sam` (the
+    (H, W) of the scale-`scale` frame), so nodes map _tif -> _sam by /scale and the
+    window is the whole frame. Exactly one of the two should be given.
+
+    Returns up to k dicts: {chain, chain_idx, cell_name, min_dist_sam, anchor_node_id,
+    anchor_catmaid_z}. anchor_node_id is the in-window neighbor node closest (in _sam) to
+    a target node on a shared z; that node's z is anchor_catmaid_z.
+    """
+    target_name = target_chain.get("cell_name")
+    target_node_ids = {str(n) for n in target_chain["nodes"]}
+
+    # target nodes -> {z: [(x_sam, y_sam), ...]}, in the propagation space.
+    def _to_space(xy_tif):
+        if crop_window is not None:
+            return crop_window.tif_to_crop(xy_tif)        # _tif -> _pcrop
+        return alignment.tif_to_sam(xy_tif, scale)        # _tif -> _sam
+
+    def _in_window(xy_space):
+        x, y = float(xy_space[0]), float(xy_space[1])
+        if crop_window is not None:
+            h, w = crop_window.crop_hw
+        else:
+            h, w = (int(frame_hw_sam[0]), int(frame_hw_sam[1]))
+        return (0 <= x < w) and (0 <= y < h)
+
+    tdf = annotate_df[annotate_df["node_id"].astype(str).isin(target_node_ids)]
+    target_by_z: dict[int, list] = {}
+    for _, r in tdf.iterrows():
+        xy = _to_space((float(r["x_tif"]), float(r["y_tif"])))
+        target_by_z.setdefault(int(r["z"]), []).append((float(xy[0]), float(xy[1])))
+    target_zs = set(target_by_z)
+
+    out = []
+    for idx, ch in enumerate(chains):
+        if ch is target_chain or ch.get("cell_name") == target_name:
+            continue                                       # skip the target neuron
+        cdf = annotate_df[annotate_df["node_id"].astype(str).isin({str(n) for n in ch["nodes"]})]
+        best = None                                        # (dist, node_id, z)
+        for _, r in cdf.iterrows():
+            z = int(r["z"])
+            if z not in target_zs:
+                continue                                   # no shared slice -> cannot contend
+            xy = _to_space((float(r["x_tif"]), float(r["y_tif"])))
+            if not _in_window(xy):
+                continue                                   # outside the propagation frame
+            for (tx, ty) in target_by_z[z]:
+                d = float(np.hypot(xy[0] - tx, xy[1] - ty))
+                if best is None or d < best[0]:
+                    best = (d, int(r["node_id"]), z)
+        if best is not None:
+            out.append({"chain": ch, "chain_idx": idx, "cell_name": ch.get("cell_name"),
+                        "min_dist_sam": best[0], "anchor_node_id": best[1],
+                        "anchor_catmaid_z": best[2]})
+
+    out.sort(key=lambda o: o["min_dist_sam"])
+    return out[:k]
+
+
 def _point_in_mask(mask: np.ndarray, x: float, y: float, radius: int) -> bool:
     """True if any foreground pixel lies within `radius` of (x, y).
 
