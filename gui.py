@@ -1033,6 +1033,52 @@ class ReviewGUI:
                 self.ctx.video_predictor, self.data.frames_dir, obj_id=self.data.obj_id)
         return self.session
 
+    def _seed_neighbor(self, nb: dict):
+        """Build a (box + point) seed for one neighbor chain in THIS chain's propagation
+        space, via the same anchor path the target uses. Returns
+        (anchor_frame_idx, Prompts, obj_id) or None if the neighbor mask is empty.
+
+        nb is a pipeline.neighbor_chains entry plus an injected "obj_id". The neighbor is
+        seeded on its own in-window anchor node/z (nb["anchor_node_id"] / ["anchor_catmaid_z"]),
+        mapped onto the chain's frame index via self.data.frame_to_z."""
+        cfg = self.ctx.cfg
+        z = int(nb["anchor_catmaid_z"])
+        z_to_frame = {int(zz): int(fi) for fi, zz in self.data.frame_to_z.items()}
+        if z not in z_to_frame:
+            return None                          # neighbor's anchor z is not a frame we propagate
+        frame_idx = z_to_frame[z]
+
+        prompts = pipeline.build_prompts(
+            nb["anchor_node_id"], z, self.ctx.annotate_df, scale=cfg.scale,
+            k_max_neg=cfg.k_max_neg, neg_radius=cfg.neg_radius)
+
+        if self._cw is not None:                 # tier-2: predict in the SAME _pcrop window
+            image_full, full_hw = pipeline.load_frame_sam(z, scale=1)
+            mask, _score, _cw, prompts_anchor = pipeline.anchor_crop_predict(
+                self.ctx.image_predictor, image_full, full_hw, nb["anchor_node_id"],
+                prompts, self.ctx.annotate_df, scale=cfg.scale,
+                crop_size_tif=cfg.crop_size_tif, crop_scale=self._cw.crop_scale, cw=self._cw,
+                multimask=cfg.multimask_anchor)
+            box = pipeline.box_from_mask(mask, margin=cfg.box_margin,
+                                         image_hw_sam=mask.shape[:2])
+            if box is None:
+                return None
+            seed = pipeline.Prompts(
+                points_sam=np.asarray(prompts_anchor.points_sam, dtype=float),
+                labels=np.asarray(prompts_anchor.labels, dtype=int),
+                box_sam=np.asarray(box, dtype=np.float32))
+        else:                                    # _sam path
+            image_sam, _full_hw = pipeline.load_frame_sam(z, scale=cfg.scale)
+            mask, _score, _logits = pipeline.image_predict(
+                self.ctx.image_predictor, image_sam, prompts, multimask=cfg.multimask_anchor)
+            box = pipeline.box_from_mask(mask, margin=cfg.box_margin,
+                                         image_hw_sam=mask.shape[:2])
+            if box is None:
+                return None
+            prompts.box_sam = np.asarray(box, dtype=np.float32)
+            seed = prompts
+        return frame_idx, seed, int(nb["obj_id"])
+
     def _close_session(self) -> None:
         if self.session is not None:
             try:
