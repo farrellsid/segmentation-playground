@@ -683,6 +683,132 @@ class ReviewGUI:
         print("[gui] resume complete, masks + qc.csv + state.json updated, chain marked corrected")
         self._refresh_info()
 
+    def coprop_neighbors(self, *_) -> None:
+        """Co-propagate the open chain WITH its CATMAID neighbors and overlay the target
+        mask with the non-overlap constraint OFF (a matched target-alone control) vs ON.
+
+        The only variable between the two runs is the constraint, so any difference in the
+        target mask is the neighbor-competition effect. Adds new layers; the existing 'mask'
+        layer and every existing flow are left untouched.
+        """
+        if self.data is None or self._recrop_picking:
+            return
+        self.ctx.ensure_predictors(need_image=True, need_video=True)
+
+        target_obj = self.data.obj_id
+        k = int(self._k_spin.value)
+        frame_hw_sam = None
+        if self._cw is None:
+            any_mask = next(iter(self.data.video_segments.values()))[target_obj]
+            any_mask = any_mask[0] if np.asarray(any_mask).ndim == 3 else any_mask
+            frame_hw_sam = np.asarray(any_mask).shape
+
+        # candidates: manual override (the Select) wins; else nearest-k auto.
+        cands = pipeline.neighbor_chains(
+            self.chain, self.ctx.annotate_df, self.ctx.chains, scale=self.ctx.cfg.scale,
+            k=max(k, 12), crop_window=self._cw, frame_hw_sam=frame_hw_sam)
+        self._neighbor_select.choices = [f"{c['chain_idx']}:{c['cell_name']}" for c in cands]
+        chosen_keys = list(self._neighbor_select.value or [])
+        if chosen_keys:
+            cands = [c for c in cands if f"{c['chain_idx']}:{c['cell_name']}" in chosen_keys]
+        else:
+            cands = cands[:k]
+        if not cands:
+            print("[gui] no in-window neighbor chains found for this chain")
+            return
+
+        # assign neighbor obj_ids that do not collide with the target's.
+        seeds = []
+        next_id = max(target_obj + 1, 2)
+        for c in cands:
+            c = dict(c, obj_id=next_id)
+            s = self._seed_neighbor(c)
+            if s is not None:
+                seeds.append(s)
+                next_id += 1
+        print(f"[gui] co-prop: target obj {target_obj} + {len(seeds)} neighbor(s) "
+              f"{[c['cell_name'] for c in cands][:len(seeds)]}")
+
+        # the target's own seed: reuse the chain's saved seed at its anchor frame.
+        # Guard against a missing or empty _state (Required addition M2).
+        if self._state is not None and self._state.prompts is not None:
+            target_seed = (self.data.anchor_idx, self._state.prompts, target_obj)
+        else:
+            fallback_prompts = self._prompts_for_frame(self.data.anchor_idx)
+            if not len(fallback_prompts.labels):
+                print("[gui] co-prop: no saved state and no displayed prompts at the anchor "
+                      "frame; add at least one positive point prompt then retry")
+                return
+            target_seed = (self.data.anchor_idx, fallback_prompts, target_obj)
+
+        # release the image embedding before the video predictor takes over,
+        # matching the image->video handoff pattern in pipeline/orchestrator.py run_chain.
+        self.ctx.image_predictor.reset_predictor()
+
+        def _run(non_overlap_mem_enc: bool):
+            sess = pipeline.MultiObjectPropagationSession(
+                self.ctx.video_predictor, self.data.frames_dir,
+                non_overlap=non_overlap_mem_enc, non_overlap_mem_enc=non_overlap_mem_enc)
+            try:
+                fi, pr, oid = target_seed
+                sess.seed(oid, pr, int(fi))
+                for (nfi, npr, noid) in seeds:
+                    sess.seed(noid, npr, int(nfi))
+                sess.run_bidirectional()
+                return sess.video_segments
+            finally:
+                sess.close()
+
+        off = _run(False)    # neighbors present but no coupling == target alone
+        on = _run(True)      # treatment: non-overlap fed back into memory
+
+        t = max(self.data.video_segments) + 1
+        H, W = self._target_hw()
+        alone = _label_stack_from_segments(off, self.data.frame_to_z, target_obj, t, (H, W))
+        withn = _label_stack_from_segments(on, self.data.frame_to_z, target_obj, t, (H, W))
+        nbr = self._neighbor_label_stack(on, [s[2] for s in seeds], t, (H, W))
+        diff = self._diff_stack(alone, withn, target_obj, t, (H, W))
+
+        s = self._lscale
+        for name in ("mask (alone)", "mask (w/ neighbors)", "neighbors", "diff"):
+            if name in self.viewer.layers:
+                self.viewer.layers.remove(name)
+        self.viewer.add_labels(alone, name="mask (alone)", opacity=0.5, scale=s, visible=False)
+        self.viewer.add_labels(withn, name="mask (w/ neighbors)", opacity=0.5, scale=s)
+        self.viewer.add_labels(nbr, name="neighbors", opacity=0.4, scale=s)
+        self.viewer.add_labels(diff, name="diff", opacity=0.7, scale=s)
+        print("[gui] co-prop done. Toggle 'mask (alone)' vs 'mask (w/ neighbors)'; "
+              "'diff' shows target pixels lost (1) and gained (2) under the constraint. "
+              "Screenshot to document. Nothing on disk was changed.")
+
+    def _target_hw(self):
+        any_mask = next(iter(self.data.video_segments.values()))[self.data.obj_id]
+        any_mask = any_mask[0] if np.asarray(any_mask).ndim == 3 else any_mask
+        return np.asarray(any_mask).shape
+
+    def _neighbor_label_stack(self, segments, neighbor_obj_ids, t, hw):
+        """(T,H,W) uint8: each neighbor obj_id painted with its own label so they show in
+        distinct colors. Background 0."""
+        H, W = hw
+        out = np.zeros((t, H, W), dtype=np.uint8)
+        for fi, seg in segments.items():
+            if not (0 <= fi < t):
+                continue
+            for oid in neighbor_obj_ids:
+                if oid in seg:
+                    out[fi][np.asarray(seg[oid]).astype(bool)] = oid
+        return out
+
+    def _diff_stack(self, alone, withn, obj_id, t, hw):
+        """(T,H,W) uint8: 1 where the target had a pixel ALONE but lost it under the
+        constraint (bleed carved out), 2 where it GAINED one. The visual read of the test."""
+        a = (alone == obj_id)
+        b = (withn == obj_id)
+        out = np.zeros_like(alone, dtype=np.uint8)
+        out[a & ~b] = 1     # lost (carved-out bleed)
+        out[b & ~a] = 2     # gained
+        return out
+
     def recrop_chain(self, *_) -> None:
         """Re-run this tier-2 chain in a WIDER crop window. Grows the current crop_window
         by the 'grow crop' amount (_tif px per side, clipped to the frame) and re-runs the
@@ -1091,7 +1217,7 @@ class ReviewGUI:
     # =====================================================================
     def _build_widgets(self) -> None:
         from magicgui.widgets import (Container, PushButton, ComboBox, Label, LineEdit,
-                                      FloatSpinBox, SpinBox, CheckBox)
+                                      FloatSpinBox, SpinBox, CheckBox, Select)
 
         self._info = Label(value="(no chain open)")
 
@@ -1160,6 +1286,12 @@ class ReviewGUI:
         cancel_recrop = PushButton(text="✗ cancel recrop")
         cancel_recrop.changed.connect(self.cancel_recrop)
 
+        # co-propagate with CATMAID neighbors (the neighbor-competition experiment).
+        self._k_spin = SpinBox(label="neighbor count (k)", value=3, min=0, max=12)
+        self._neighbor_select = Select(label="neighbors (override)", choices=[])
+        coprop_btn = PushButton(text="⧉ co-propagate neighbors (M)")
+        coprop_btn.changed.connect(self.coprop_neighbors)
+
         # the error type used by 'mark wrong' (W key) and 'reject'. The per-frame
         # mark ok/wrong buttons were dropped to declutter the dock; the W/O keys remain.
         self._err_mode = ComboBox(label="error type", choices=list(labels_mod.ERROR_TYPES),
@@ -1185,6 +1317,7 @@ class ReviewGUI:
             Label(value=", correct, "), rerun, resume, save_btn,
             Label(value=", recrop, "), self._grow_spin, recrop,
             pick_region, confirm_recrop, cancel_recrop,
+            Label(value=", neighbors, "), self._k_spin, self._neighbor_select, coprop_btn,
             Label(value=", disposition, "), self._err_mode, approve, reject,
             self._info,
         ], labels=True)
@@ -1243,6 +1376,10 @@ class ReviewGUI:
 
         @v.bind_key("x", overwrite=True)
         def _reject(_v): self.reject_chain()
+
+        @v.bind_key("m", overwrite=True)
+        def _m(_v):
+            self.coprop_neighbors()
 
     def _set_prompt_label(self, value=None) -> None:
         """Flip what a freshly-clicked prompt point is labelled (positive/negative).
