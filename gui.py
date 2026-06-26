@@ -699,7 +699,15 @@ class ReviewGUI:
         k = int(self._k_spin.value)
         frame_hw_sam = None
         if self._cw is None:
-            any_mask = next(iter(self.data.video_segments.values()))[target_obj]
+            _seg_with_target = next(
+                (seg for seg in self.data.video_segments.values() if target_obj in seg),
+                None,
+            )
+            if _seg_with_target is None:
+                print(f"[gui] co-prop: no stored frame contains target obj {target_obj}; "
+                      "cannot determine frame size -- aborting")
+                return
+            any_mask = _seg_with_target[target_obj]
             any_mask = any_mask[0] if np.asarray(any_mask).ndim == 3 else any_mask
             frame_hw_sam = np.asarray(any_mask).shape
 
@@ -719,15 +727,17 @@ class ReviewGUI:
 
         # assign neighbor obj_ids that do not collide with the target's.
         seeds = []
+        seeded_names = []
         next_id = max(target_obj + 1, 2)
         for c in cands:
             c = dict(c, obj_id=next_id)
             s = self._seed_neighbor(c)
             if s is not None:
                 seeds.append(s)
+                seeded_names.append(c['cell_name'])
                 next_id += 1
         print(f"[gui] co-prop: target obj {target_obj} + {len(seeds)} neighbor(s) "
-              f"{[c['cell_name'] for c in cands][:len(seeds)]}")
+              f"{seeded_names}")
 
         # the target's own seed: reuse the chain's saved seed at its anchor frame.
         # Guard against a missing or empty _state (Required addition M2).
@@ -782,7 +792,16 @@ class ReviewGUI:
               "Screenshot to document. Nothing on disk was changed.")
 
     def _target_hw(self):
-        any_mask = next(iter(self.data.video_segments.values()))[self.data.obj_id]
+        obj_id = self.data.obj_id
+        _seg = next(
+            (seg for seg in self.data.video_segments.values() if obj_id in seg),
+            None,
+        )
+        if _seg is None:
+            raise ValueError(
+                f"[gui] _target_hw: no stored frame contains target obj {obj_id}"
+            )
+        any_mask = _seg[obj_id]
         any_mask = any_mask[0] if np.asarray(any_mask).ndim == 3 else any_mask
         return np.asarray(any_mask).shape
 
