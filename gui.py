@@ -705,7 +705,7 @@ class ReviewGUI:
             )
             if _seg_with_target is None:
                 print(f"[gui] co-prop: no stored frame contains target obj {target_obj}; "
-                      "cannot determine frame size -- aborting")
+                      "cannot determine frame size, aborting")
                 return
             any_mask = _seg_with_target[target_obj]
             any_mask = any_mask[0] if np.asarray(any_mask).ndim == 3 else any_mask
