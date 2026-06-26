@@ -251,6 +251,94 @@ class PropagationSession:
         self.close()
 
 
+class MultiObjectPropagationSession:
+    """Co-propagate SEVERAL objects in ONE inference_state to test the neighbor effect.
+
+    SAM2 tracks each object's memory independently; the only coupling is the per-pixel
+    non-overlap argmax (_apply_non_overlapping_constraints). This session seeds N objects
+    (a target + its neighbors) and toggles that argmax so the OFF run is a matched
+    target-alone control and the ON run is the treatment, the only difference being the
+    constraint.
+
+    Two SAM2 flags, both plain attributes on the predictor (so we set them at runtime and
+    RESTORE them on close, never leaving a shared predictor mutated, the same discipline as
+    the IoU hook):
+      non_overlap            -> video_predictor.non_overlap_masks (OUTPUT masks only)
+      non_overlap_mem_enc    -> video_predictor.non_overlap_masks_for_mem_enc (fed back into
+                                memory, so it changes the propagation trajectory; the variant
+                                that can actually improve tracking).
+
+    Single-object PropagationSession is unchanged; this is a separate, additive path.
+    """
+
+    def __init__(self, video_predictor, frames_dir: str, *,
+                 non_overlap: bool = False, non_overlap_mem_enc: bool = False,
+                 offload_video_to_cpu: bool = True):
+        self.vp = video_predictor
+        self.obj_ids: list[int] = []
+        # save the originals so close() can restore them.
+        self._orig_no = getattr(video_predictor, "non_overlap_masks", False)
+        self._orig_no_mem = getattr(video_predictor, "non_overlap_masks_for_mem_enc", False)
+        video_predictor.non_overlap_masks = bool(non_overlap)
+        video_predictor.non_overlap_masks_for_mem_enc = bool(non_overlap_mem_enc)
+
+        self.inference_state = video_predictor.init_state(
+            video_path=frames_dir, offload_video_to_cpu=offload_video_to_cpu)
+        video_predictor.reset_state(self.inference_state)
+
+        self.video_segments: dict[int, dict[int, np.ndarray]] = {}
+        self._closed = False
+
+    def seed(self, obj_id: int, prompts: Prompts, anchor_frame_idx: int, *,
+             seed_box: bool = True, seed_points: bool = True,
+             seed_negatives: bool = False) -> None:
+        """Seed one object's anchor frame (box + positive point by default), same prompt
+        handling as PropagationSession.seed but for an explicit obj_id."""
+        pts = np.asarray(prompts.points_sam, dtype=np.float32)
+        labels = np.asarray(prompts.labels, dtype=np.int32)
+        keep = np.ones(len(labels), dtype=bool)
+        if not seed_points:
+            keep &= labels != 1
+        if not seed_negatives:
+            keep &= labels != 0
+        pts, labels = pts[keep], labels[keep]
+        box = (np.asarray(prompts.box_sam, dtype=np.float32)
+               if (seed_box and prompts.box_sam is not None) else None)
+        if box is None and len(pts) == 0:
+            raise ValueError("empty seed: enable at least one of box / points")
+        self.vp.add_new_points_or_box(
+            inference_state=self.inference_state, frame_idx=int(anchor_frame_idx),
+            obj_id=int(obj_id), box=box, points=pts, labels=labels)
+        if obj_id not in self.obj_ids:
+            self.obj_ids.append(int(obj_id))
+
+    def _drain(self, *, reverse: bool) -> None:
+        for f, obj_ids, mask_logits in self.vp.propagate_in_video(
+                self.inference_state, reverse=reverse):
+            fi = int(f)
+            per_obj = self.video_segments.setdefault(fi, {})
+            for i, oid in enumerate(obj_ids):
+                per_obj[int(oid)] = (mask_logits[i].cpu().numpy() > 0.0)
+
+    def run_bidirectional(self) -> None:
+        """Forward then reverse over ALL seeded objects (one shared memory)."""
+        self._drain(reverse=False)
+        self._drain(reverse=True)
+
+    def close(self) -> None:
+        """Restore both predictor flags. Idempotent."""
+        if not self._closed:
+            self.vp.non_overlap_masks = self._orig_no
+            self.vp.non_overlap_masks_for_mem_enc = self._orig_no_mem
+            self._closed = True
+
+    def __enter__(self) -> "MultiObjectPropagationSession":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
 def propagate(video_predictor, frames_dir: str, prompts: Prompts,
               anchor_frame_idx: int, *, obj_id: int, seed_negatives: bool = False,
               seed_box: bool = True, seed_points: bool = True, seed_mask: bool = False,

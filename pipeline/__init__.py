@@ -97,7 +97,7 @@ from .predict import (
     _positive_point,
     _select_anchor_mask,
 )
-from .propagate import FrameResult, PropagationSession, propagate, _attach_iou_hook
+from .propagate import FrameResult, MultiObjectPropagationSession, PropagationSession, propagate, _attach_iou_hook
 from .qc import run_qc
 from .state import (
     AnchorScore,
@@ -124,6 +124,7 @@ __all__ = [
     "AnchorScore",
     "FrameResult",
     "PropagationSession",
+    "MultiObjectPropagationSession",
     # functions
     "run_chain",
     "select_anchor",
