@@ -23,12 +23,48 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-06, multi-instance co-propagation experiment hook](#r-2026-06-coprop)
 - [2026-06, review tooling + post-processing pass](#r-2026-06)
 - [old §2, Milestone-by-milestone build narrative (M1 → M4 review-testing pass)](#old-2)
 - [old §5, Known issues: full resolution stories](#old-5)
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-06-coprop"></a>
+## 2026-06, multi-instance co-propagation experiment hook
+
+A gated, read-only test of the PI's hypothesis: does segmenting a chain's CATMAID
+neighbors alongside it sharpen the target mask? Built into the per-chain GUI, it writes
+nothing to disk. See the design at
+[superpowers/specs/2026-06-26-multi-instance-coprop-design.md](superpowers/specs/2026-06-26-multi-instance-coprop-design.md).
+
+- **Mechanism the test respects.** SAM2 tracks each object independently: a neighbor's
+  memory never feeds into the target's propagation. The only coupling is the per-pixel
+  non-overlap argmax (`_apply_non_overlapping_constraints`), which keeps the
+  highest-scoring object at each location and suppresses the rest. So that argmax is the
+  one path by which seeding neighbors can change the target mask, which is what the A/B
+  isolates.
+- **OFF/ON A/B in one session.** Each test seeds the target plus its neighbor chains as
+  separate SAM2 objects and propagates twice: once with the non-overlap constraint off,
+  once with it on. The off run is the matched target-alone control, since with the
+  constraint off the target mask is the same whether or not neighbors are tracked, so the
+  two runs differ only by the argmax.
+- **New library piece, `MultiObjectPropagationSession`.** Seeds multiple objects in one
+  shared `inference_state` and runs propagation under a chosen non-overlap setting,
+  setting and restoring the predictor's non-overlap attributes around the run (both flag
+  variants) so the session leaves no global state behind.
+- **`neighbor_chains` finder.** Returns the nearest `k` neighbor chains to a target by
+  anchor distance, with the per-chain metadata the GUI needs to seed each one along its
+  own anchor path.
+- **GUI action (`M`).** A gated `co-propagate neighbors` button and the `M` key in
+  `gui.py` run the experiment on the open chain: a selectable `k` (default 3) plus a
+  manual Select override for picking exact neighbors. It adds four napari layers,
+  `mask (alone)`, `mask (w/ neighbors)`, `neighbors`, and `diff` (target pixels lost = 1,
+  gained = 2), and writes nothing to disk. See
+  [review-flagged-chains.md](how-to/review-flagged-chains.md) §5h.
 
 ---
 

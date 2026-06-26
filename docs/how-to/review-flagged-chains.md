@@ -103,6 +103,7 @@ CHAIN cycle, and `↻ refresh queue` re-reads from disk in whichever mode you're
 | `W` / `O` | mark the current **frame** **w**rong / **o**k (uses the error-type picker) |
 | `A` / `X` | **approve** / **reject** the whole **chain** |
 | `Z` | zoom the camera back onto the mask |
+| `M` | **co-propagate neighbors**, run the neighbor A/B experiment on this chain (see §5h). Writes nothing to disk. |
 
 Most actions also have buttons in the dock. The per-frame **mark wrong** / **mark ok**
 are keyboard-only (`W` / `O`); their buttons were dropped to keep the dock compact. The
@@ -187,6 +188,42 @@ While walking frames, **mark FRAME wrong** (`W`) / **mark FRAME ok** (`O`) recor
 per-frame verdict for the current frame using the selected error type. Marking a
 *non-flagged* frame wrong is especially valuable, it's a "silent error" the rule
 missed, which the queue alone can never surface.
+
+### 5h. Co-propagate with neighbors (experiment, `M`)
+This is a visual A/B test of one hypothesis: does segmenting a chain's CATMAID
+neighbors alongside it improve the target mask? It is gated and read-only. Nothing it
+does touches disk, so use it to look, not to correct.
+
+SAM2 tracks each object independently, so a neighbor's mask never feeds into the
+target's propagation directly. The only coupling is a per-pixel non-overlap argmax that
+keeps the highest-scoring object at each location and suppresses the rest. So that
+argmax is the only thing that can change the target mask when neighbors are present.
+
+Press `M` (or **co-propagate neighbors** in the dock). The action finds the nearest `k`
+neighbor chains by anchor distance, seeds them as extra SAM2 objects next to the target,
+and propagates once with the non-overlap constraint **off**, then once with it **on**, in
+one shared session. The off run is the matched target-alone control: with the constraint
+off the target mask is the same whether or not neighbors are tracked, so the two runs
+differ only by the argmax.
+
+Knobs:
+
+- **k** (spin box, default 3) sets how many nearest neighbor chains to seed.
+- The **Select** list is a manual override: add or remove specific chains to seed exactly
+  the neighbors you want instead of the nearest `k`.
+
+The action adds four napari layers and writes none of them to disk:
+
+- **mask (alone)**, the target from the constraint-off run.
+- **mask (w/ neighbors)**, the target from the constraint-on run.
+- **neighbors**, the seeded neighbor masks, for context.
+- **diff**, the per-pixel change to the target: `1` where the target lost a pixel, `2`
+  where it gained one.
+
+Read **diff** to judge the hypothesis on this chain: lost pixels (`1`) are bleed the
+neighbors carved back out, gained pixels (`2`) are territory the target won on the
+contested boundary. To go back to normal review, close or hide the four layers; the
+chain's own masks are untouched.
 
 ---
 
