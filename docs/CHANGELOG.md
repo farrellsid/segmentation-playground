@@ -23,11 +23,46 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-06, review tooling + post-processing pass](#r-2026-06)
 - [old §2, Milestone-by-milestone build narrative (M1 → M4 review-testing pass)](#old-2)
 - [old §5, Known issues: full resolution stories](#old-5)
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-06"></a>
+## 2026-06, review tooling + post-processing pass
+
+A round of review-GUI and mask-cleanup work on top of the M4 review tool.
+
+- **Per-chain GUI (`gui.py`) upgrades.** The single queue picker became a mode toggle
+  (flagged-only / everything) plus cascading neuron then chain selectors, so any chain on
+  disk is openable, not just flagged ones (`ReviewQueue.all_chains` / `chain_status`).
+  Added image-phase box prompts (a drawn box seeds the `R` re-predict alongside points;
+  `image_predict` now forwards `box_sam`). Added tier-2 recrop: grow the crop by N tif px
+  (`C`) or draw a re-centered window on the full frame (`F`), both re-running the chain via
+  a new `run_chain` `override_crop_window`. Added save-masks-now (`S`) to persist the mask
+  layer without re-propagating. Dropped the per-frame mark-ok/wrong buttons (keys stay) and
+  wrapped the dock in a scroll area so nothing is buried.
+- **Tier-2 crop sizing.** `chain_crop_pad_tif` default raised 64 -> 512 (windows that
+  looked fine clipped the cell in practice). Added a collapse fallback: when the first pass
+  left no usable mask, size a fixed `chain_crop_collapse_size_tif` (1024) window on the
+  anchor node (`node_crop_window`) instead of a skeleton-only guess. See
+  [0009](adr/0009-tier2-crop-fallback.md).
+- **Neuron-level review GUI (`gui_neuron.py`), a second paradigm.** Opens a whole neuron on
+  one per-neuron crop (`_ncrop`); branches stay separate SAM2 objects shown as one
+  multi-color Labels layer; corrections act on the active branch over a z-scoped view; the
+  skeleton and the branch's saved seed are shown; neuron-level approve/reject; overlay
+  export to mp4 / png / gif. New library support: `neuron_crop_window`,
+  `remap_mask_to_window`, `video_viz.to_png_seq`. See
+  [0014](adr/0014-neuron-level-review-gui.md) and the 2026-06-23 spec/plan under
+  `docs/superpowers/`.
+- **Size-aware mask post-processing.** `remove_small_islands`, `fill_small_holes`,
+  `smooth_edges` in `masks.py`, wired under the `postprocess_masks` master toggle with new
+  per-op knobs (off by default), and `batch.py --postprocess` / `--no-postprocess` for an
+  A/B run. See [configuration.md](reference/configuration.md).
 
 ---
 

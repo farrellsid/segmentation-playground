@@ -13,6 +13,7 @@ module. Do not write `/ scale` or `+/- FILE_Z_OFFSET` inline anywhere else.
 | `_sam` | SAM2 input and on-disk mask grid | `_tif / scale` (scale is 8). The space SAM2 propagates in and the canonical space masks are stored in. |
 | `_crop` | High-res anchor crop | A window around the anchor node, run at higher resolution for the one-frame seed. |
 | `_pcrop` | Per-chain tier-2 crop | A window sized to a whole chain's extent, propagated at higher resolution. |
+| `_ncrop` | Per-neuron crop | A window sized to a whole neuron's skeleton extent (all its chains), used by the neuron-review GUI (`gui_neuron.py`) as one shared canvas every branch remaps into. Same `CropWindow` math as `_pcrop`, just sized to the neuron; the adaptive `crop_scale` makes a sprawling neuron coarser (toward `_sam`) and a compact one sharper. |
 
 There is also CATMAID nanometers (the raw node units before the divide to `_cm`), and the z-axis
 maps between file-z and CATMAID-z, which differ by `FILE_Z_OFFSET`.

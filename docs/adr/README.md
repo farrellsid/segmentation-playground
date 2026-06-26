@@ -33,3 +33,4 @@ For the running build history (what changed and when), see [../CHANGELOG.md](../
 | [0011](0011-flat-layout-over-src.md) | Flat layout over src layout | Accepted |
 | [0012](0012-node-anchored-multimask-selection.md) | Node-anchored multimask selection | Accepted |
 | [0013](0013-pipeline-package-split.md) | The pipeline core is a package split by concern | Accepted |
+| [0014](0014-neuron-level-review-gui.md) | Neuron-level review as a second GUI paradigm | Accepted |

@@ -30,8 +30,10 @@ its own.
 
 The drivers call the library. `run_aval.py` runs a single chain. `batch.py` builds the predictors
 once and runs every chain headless, recording status to a manifest. `gui.py` opens flagged chains in
-napari for human correction. `eval/` scores predictions against ground truth. Each driver depends on
-the library; the library never depends on a driver.
+napari for human correction (per-chain), and `gui_neuron.py` is a second review paradigm that opens a
+whole neuron at once (branches as one multi-color object on a per-neuron crop). `eval/` scores
+predictions against ground truth. Each driver depends on the library; the library never depends on a
+driver (and `gui_neuron.py` reuses `gui.py`'s shared pieces, driver-to-driver).
 
 ## Container view
 
@@ -115,8 +117,11 @@ viable path. The human is a scarce resource spent only on flagged frames.
 pipeline is far faster than hand-painting slice by slice. Accuracy gains are optimizations, judged by
 whether they shrink the triage queue, not by chasing fully automatic correctness.
 
-**One triage queue, one review tool.** A bad anchor and a mid-propagation drift are the same problem:
-a flagged frame that needs a prompt edit. There is one GUI, not two.
+**One triage queue, one correction model.** A bad anchor and a mid-propagation drift are the same
+problem: a flagged frame that needs a prompt edit, so the per-chain GUI does not split into separate
+marking and intervention tools. A later, separate paradigm (`gui_neuron.py`) reviews a whole neuron at
+once on a per-neuron crop, but the underlying correction primitives (re-predict, resume, the prompt and
+box layers) are the same; the branches it shows are still tracked as independent SAM2 objects.
 
 **Checkpoint everything per chain.** Resume on crash. Never recompute a finished chain.
 

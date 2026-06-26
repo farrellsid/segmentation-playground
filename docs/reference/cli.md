@@ -24,7 +24,10 @@ The headless batch over many chains, with resume.
 | `--clean` | Wipe prior outputs first (scope-aware). |
 | `--model-size <size>` | Override the model (tiny, small, base_plus, large). |
 | `--output-root <dir>` | Override the output tree. |
+| `--frames-root <dir>` | Override the frame cache/view root. |
+| `--gif-mode <off\|flagged\|all>` | Override the preset's overlay-gif policy. |
 | `--no-tier2` | Disable the tier-2 auto second-pass on flagged chains. |
+| `--postprocess` / `--no-postprocess` | Force mask post-processing on/off (overrides the preset). Use the pair to A/B outputs with vs without cleanup; see [configuration.md](configuration.md). |
 
 See [../how-to/run-a-batch.md](../how-to/run-a-batch.md).
 
@@ -42,6 +45,18 @@ The napari review and correction GUI.
 | `--hires-em` | Load the full-resolution EM as the background. |
 
 See [../how-to/review-flagged-chains.md](../how-to/review-flagged-chains.md).
+
+## gui_neuron.py
+
+The napari NEURON-level review GUI (second paradigm): opens a whole neuron, its branches
+as one multi-color object on a per-neuron crop canvas. See
+[../how-to/review-a-neuron.md](../how-to/review-a-neuron.md).
+
+| Flag | Effect |
+|------|--------|
+| `--neuron <name>` | Open straight onto one neuron. |
+| `--output-root <dir>` | Which output tree to review. |
+| `--reviewer <name>` | Stamp labels with a reviewer name. |
 
 ## eval.score_batch
 
