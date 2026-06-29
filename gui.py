@@ -832,7 +832,10 @@ class ReviewGUI:
                 continue
             for oid in neighbor_obj_ids:
                 if oid in seg:
-                    out[fi][np.asarray(seg[oid]).astype(bool)] = oid
+                    m = np.asarray(seg[oid])
+                    m = m[0] if m.ndim == 3 else m   # SAM2 logits carry a leading (1,H,W) dim
+                    if m.shape == (H, W):
+                        out[fi][m.astype(bool)] = oid
         return out
 
     def _diff_stack(self, alone, withn, obj_id, t, hw):
