@@ -141,7 +141,12 @@ def neighbor_chains(target_chain, annotate_df, chains, *, scale,
             for (tx, ty) in target_by_z[z]:
                 d = float(np.hypot(xy[0] - tx, xy[1] - ty))
                 if best is None or d < best[0]:
-                    best = (d, int(r["node_id"]), z)
+                    # node ids are mixed: real nodes are ints, virtual nodes are
+                    # strings like 'v_25425535_1448'. Keep strings verbatim (int() would
+                    # raise) and normalize numerics to int; downstream lookups match on str.
+                    nid = r["node_id"]
+                    nid = nid if isinstance(nid, str) else int(nid)
+                    best = (d, nid, z)
         if best is not None:
             out.append({"chain": ch, "chain_idx": idx, "cell_name": ch.get("cell_name"),
                         "min_dist_sam": best[0], "anchor_node_id": best[1],

@@ -92,6 +92,23 @@ def test_crop_window_maps_into_pcrop_and_filters():
     assert [o["cell_name"] for o in out] == ["B"]    # C is outside the crop window
 
 
+def test_virtual_node_string_id_does_not_crash_and_is_returned_verbatim():
+    # CATMAID virtual nodes have string ids like 'v_25425535_1448'. The neighbor's
+    # nearest in-window node here is such a string, so anchor_node_id must come back as
+    # that string (no int() cast), which is what build_prompts/anchor_crop_predict expect.
+    df = _df([
+        (1, "A", 0, 100, 100),
+        ("v_25425535_1448", "B", 0, 108, 100),
+    ])
+    chains = [{"cell_name": "A", "nodes": [1]},
+              {"cell_name": "B", "nodes": ["v_25425535_1448"]}]
+    out = pipeline.neighbor_chains(chains[0], df, chains, scale=1, k=2,
+                                   frame_hw_sam=(1000, 1000))
+    assert len(out) == 1
+    assert out[0]["cell_name"] == "B"
+    assert out[0]["anchor_node_id"] == "v_25425535_1448"   # verbatim, not int-cast
+
+
 # ---------------------------------------------------------------------------
 # chain_containing_node: resolve a chain by an anchor node id (naming-agnostic)
 # ---------------------------------------------------------------------------
