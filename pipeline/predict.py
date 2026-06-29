@@ -151,6 +151,24 @@ def neighbor_chains(target_chain, annotate_df, chains, *, scale,
     return out[:k]
 
 
+def chain_containing_node(chains, node_id):
+    """The chain dict whose `nodes` contains `node_id`, or None. Pure.
+
+    Returns the exact object from `chains` (so identity checks against it hold).
+    Node ids are matched as strings, so an int query finds a string ("v_..." virtual)
+    node and vice versa. This resolves a chain from a stored anchor node when the
+    on-disk neuron folder name does not match the chains.json cell_name (the name-only
+    `find_chain` returns None then), which is unambiguous since a node belongs to one chain.
+    """
+    if node_id is None:
+        return None
+    key = str(node_id)
+    for ch in chains:
+        if key in {str(n) for n in ch["nodes"]}:
+            return ch
+    return None
+
+
 def _point_in_mask(mask: np.ndarray, x: float, y: float, radius: int) -> bool:
     """True if any foreground pixel lies within `radius` of (x, y).
 

@@ -693,6 +693,23 @@ class ReviewGUI:
         """
         if self.data is None or self._recrop_picking:
             return
+
+        # Resolve the CATMAID chain. self.chain (set in open_chain via find_chain) is
+        # None when the on-disk neuron folder name does not match the chains.json
+        # cell_name (e.g. an "AVAL - Original" output folder vs cell_name "AVAL"), since
+        # find_chain matches the name exactly. Fall back to the stored anchor node, which
+        # belongs to exactly one chain, so the lookup is unambiguous and naming-agnostic.
+        target_chain = self.chain
+        if target_chain is None and self._state is not None:
+            target_chain = pipeline.chain_containing_node(
+                self.ctx.chains, self._state.anchor_node_id)
+            if target_chain is not None:
+                print(f"[gui] co-prop: resolved chain by anchor node "
+                      f"{self._state.anchor_node_id} -> cell_name {target_chain.get('cell_name')}")
+        if target_chain is None:
+            print("[gui] co-prop: could not resolve this chain in chains.json "
+                  "(no matching cell_name and no anchor node to fall back on); cannot find neighbors")
+            return
         self.ctx.ensure_predictors(need_image=True, need_video=True)
 
         target_obj = self.data.obj_id
@@ -713,7 +730,7 @@ class ReviewGUI:
 
         # candidates: manual override (the Select) wins; else nearest-k auto.
         cands = pipeline.neighbor_chains(
-            self.chain, self.ctx.annotate_df, self.ctx.chains, scale=self.ctx.cfg.scale,
+            target_chain, self.ctx.annotate_df, self.ctx.chains, scale=self.ctx.cfg.scale,
             k=max(k, 12), crop_window=self._cw, frame_hw_sam=frame_hw_sam)
         self._neighbor_select.choices = [f"{c['chain_idx']}:{c['cell_name']}" for c in cands]
         chosen_keys = list(self._neighbor_select.value or [])

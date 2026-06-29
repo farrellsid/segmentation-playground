@@ -92,6 +92,31 @@ def test_crop_window_maps_into_pcrop_and_filters():
     assert [o["cell_name"] for o in out] == ["B"]    # C is outside the crop window
 
 
+# ---------------------------------------------------------------------------
+# chain_containing_node: resolve a chain by an anchor node id (naming-agnostic)
+# ---------------------------------------------------------------------------
+
+def test_chain_containing_node_returns_the_owning_chain_by_identity():
+    chains = [{"cell_name": "A", "nodes": [1, 2]},
+              {"cell_name": "B", "nodes": [3, 4]}]
+    got = pipeline.chain_containing_node(chains, 4)
+    assert got is chains[1]                       # the exact object, so identity checks work
+
+
+def test_chain_containing_node_matches_int_and_str_node_forms():
+    # CATMAID node ids appear as ints and as virtual-node strings; match either form.
+    chains = [{"cell_name": "A", "nodes": [25535448, "v_25535450_1", 25535456]}]
+    assert pipeline.chain_containing_node(chains, 25535456) is chains[0]   # int query
+    assert pipeline.chain_containing_node(chains, "25535448") is chains[0]  # str query
+    assert pipeline.chain_containing_node(chains, "v_25535450_1") is chains[0]
+
+
+def test_chain_containing_node_returns_none_when_absent():
+    chains = [{"cell_name": "A", "nodes": [1, 2]}]
+    assert pipeline.chain_containing_node(chains, 99) is None
+    assert pipeline.chain_containing_node(chains, None) is None
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
