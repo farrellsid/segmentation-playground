@@ -743,18 +743,19 @@ class ReviewGUI:
             return
 
         # assign neighbor obj_ids that do not collide with the target's.
+        seed_mode = "point" if "point" in self._neighbor_seed_mode.value else "full"
         seeds = []
         seeded_names = []
         next_id = max(target_obj + 1, 2)
         for c in cands:
             c = dict(c, obj_id=next_id)
-            s = self._seed_neighbor(c)
+            s = self._seed_neighbor(c, mode=seed_mode)
             if s is not None:
                 seeds.append(s)
                 seeded_names.append(c['cell_name'])
                 next_id += 1
         print(f"[gui] co-prop: target obj {target_obj} + {len(seeds)} neighbor(s) "
-              f"{seeded_names}")
+              f"{seeded_names} (neighbor seed: {seed_mode})")
 
         # the target's own seed: reuse the chain's saved seed at its anchor frame.
         # Guard against a missing or empty _state (Required addition M2).
@@ -772,10 +773,10 @@ class ReviewGUI:
         # matching the image->video handoff pattern in pipeline/orchestrator.py run_chain.
         self.ctx.image_predictor.reset_predictor()
 
-        def _run(non_overlap_mem_enc: bool):
+        def _run(out_no: bool, mem_no: bool):
             sess = pipeline.MultiObjectPropagationSession(
                 self.ctx.video_predictor, self.data.frames_dir,
-                non_overlap=non_overlap_mem_enc, non_overlap_mem_enc=non_overlap_mem_enc)
+                non_overlap=out_no, non_overlap_mem_enc=mem_no)
             try:
                 fi, pr, oid = target_seed
                 sess.seed(oid, pr, int(fi))
@@ -786,8 +787,15 @@ class ReviewGUI:
             finally:
                 sess.close()
 
-        off = _run(False)    # neighbors present but no coupling == target alone
-        on = _run(True)      # treatment: non-overlap fed back into memory
+        # ON variant: "memory" feeds the non-overlap argmax back into each object's memory
+        # (changes the propagation trajectory, the strongest test, but can destabilize the
+        # target if a neighbor mask is poor); "output only" applies the argmax to the output
+        # masks but NOT to memory, so the target's memory cannot be corrupted across frames.
+        mem_variant = "memory" in self._nonoverlap_mode.value
+        off = _run(False, False)            # neighbors present but no coupling == target alone
+        on = _run(True, mem_variant)        # treatment
+        print(f"[gui] co-prop: non-overlap variant = "
+              f"{'memory (mem-enc)' if mem_variant else 'output only'}")
 
         t = max(self.data.video_segments) + 1
         H, W = self._target_hw()
@@ -1198,20 +1206,39 @@ class ReviewGUI:
                 self.ctx.video_predictor, self.data.frames_dir, obj_id=self.data.obj_id)
         return self.session
 
-    def _seed_neighbor(self, nb: dict):
-        """Build a (box + point) seed for one neighbor chain in THIS chain's propagation
-        space, via the same anchor path the target uses. Returns
-        (anchor_frame_idx, Prompts, obj_id) or None if the neighbor mask is empty.
+    def _seed_neighbor(self, nb: dict, *, mode: str = "full"):
+        """Build a seed for one neighbor chain in THIS chain's propagation space. Returns
+        (anchor_frame_idx, Prompts, obj_id) or None if the neighbor cannot be seeded.
 
         nb is a pipeline.neighbor_chains entry plus an injected "obj_id". The neighbor is
         seeded on its own in-window anchor node/z (nb["anchor_node_id"] / ["anchor_catmaid_z"]),
-        mapped onto the chain's frame index via self.data.frame_to_z."""
+        mapped onto the chain's frame index via self.data.frame_to_z.
+
+        mode="full" (default): the same anchor path the target uses, image-mode predict a
+        mask (with build_prompts negatives) then a bounding box, seeding box + positive point.
+        mode="point": seed a single positive point at the neighbor's node, no negatives and no
+        box. Lighter and avoids an oversized box_from_mask box stealing target pixels under
+        the non-overlap argmax, the test for whether the negatives/box are the culprit."""
         cfg = self.ctx.cfg
         z = int(nb["anchor_catmaid_z"])
         z_to_frame = {int(zz): int(fi) for fi, zz in self.data.frame_to_z.items()}
         if z not in z_to_frame:
             return None                          # neighbor's anchor z is not a frame we propagate
         frame_idx = z_to_frame[z]
+
+        if mode == "point":
+            # single positive point at the neighbor node, mapped _tif -> propagation space.
+            node = self.ctx.annotate_df.loc[
+                self.ctx.annotate_df["node_id"].astype(str) == str(nb["anchor_node_id"])]
+            if node.empty:
+                return None
+            xy_tif = node[["x_tif", "y_tif"]].to_numpy(dtype=float)[0]
+            xy = (self._cw.tif_to_crop(xy_tif) if self._cw is not None
+                  else alignment.tif_to_sam(xy_tif, cfg.scale))
+            seed = pipeline.Prompts(
+                points_sam=np.asarray([xy], dtype=float),
+                labels=np.asarray([1], dtype=int), box_sam=None)
+            return frame_idx, seed, int(nb["obj_id"])
 
         prompts = pipeline.build_prompts(
             nb["anchor_node_id"], z, self.ctx.annotate_df, scale=cfg.scale,
@@ -1328,6 +1355,12 @@ class ReviewGUI:
         # co-propagate with CATMAID neighbors (the neighbor-competition experiment).
         self._k_spin = SpinBox(label="neighbor count (k)", value=3, min=0, max=12)
         self._neighbor_select = Select(label="neighbors (override)", choices=[])
+        self._neighbor_seed_mode = ComboBox(
+            label="neighbor seed", choices=["anchor (box+point)", "point only"],
+            value="anchor (box+point)")
+        self._nonoverlap_mode = ComboBox(
+            label="non-overlap", choices=["memory (mem-enc)", "output only"],
+            value="memory (mem-enc)")
         coprop_btn = PushButton(text="⧉ co-propagate neighbors (M)")
         coprop_btn.changed.connect(self.coprop_neighbors)
 
@@ -1356,7 +1389,8 @@ class ReviewGUI:
             Label(value=", correct, "), rerun, resume, save_btn,
             Label(value=", recrop, "), self._grow_spin, recrop,
             pick_region, confirm_recrop, cancel_recrop,
-            Label(value=", neighbors, "), self._k_spin, self._neighbor_select, coprop_btn,
+            Label(value=", neighbors, "), self._k_spin, self._neighbor_select,
+            self._neighbor_seed_mode, self._nonoverlap_mode, coprop_btn,
             Label(value=", disposition, "), self._err_mode, approve, reject,
             self._info,
         ], labels=True)
