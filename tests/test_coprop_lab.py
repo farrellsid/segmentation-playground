@@ -66,6 +66,17 @@ def test_build_diff_stack_marks_lost_and_gained():
     assert diff[0, 3, 3] == 0        # background
 
 
+def test_load_em_stack_reads_indexed_jpegs(tmp_path):
+    import cv2
+    # two 4x6 BGR frames named like the chain's 0-indexed jpegs ({idx:05d}.jpg)
+    for i in range(2):
+        img = np.full((4, 6, 3), i * 50, dtype=np.uint8)
+        cv2.imwrite(str(tmp_path / f"{i:05d}.jpg"), img)
+    stack = coprop_lab.load_em_stack(str(tmp_path), 2)
+    assert stack.shape == (2, 4, 6, 3)
+    assert stack.dtype == np.uint8
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
