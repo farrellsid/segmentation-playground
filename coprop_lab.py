@@ -403,12 +403,14 @@ class CopropLab:
 def main():
     import argparse
     from sam2_utils import config
-    default_root = str(config.GT_PRED_DIR / "batch_masks_multichain")
+    # default: the sensory-ablated TARGET worm output (the experiment's real subject).
+    # pass --root .../batch_masks_multichain to run against the cross-worm GT chains instead.
+    default_root = str(config.OUTPUT_ROOT)
     p = argparse.ArgumentParser(description="Standalone co-propagation A/B lab (no saving).")
     p.add_argument("--neuron", required=True)
     p.add_argument("--chain", type=int, required=True)
     p.add_argument("--root", default=default_root,
-                   help="output root holding <neuron>/chain_NN (default: the multichain GT eval output)")
+                   help="output root holding <neuron>/chain_NN (default: the target-worm OUTPUT_ROOT)")
     args = p.parse_args()
     CopropLab(args.root, args.neuron, args.chain).run()
 
