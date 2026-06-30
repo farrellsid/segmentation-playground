@@ -241,6 +241,33 @@ class CopropLab:
         self.video_predictor = None
         self.viewer = None
         self._em_world = 1.0        # EM px per mask px (width ratio; 1.0 since EM == propagation space)
+        # auto-prompts: how many of the nearest CATMAID negative nodes to seed (slider).
+        self._neg_avail = self._neg_count()
+        self.n_neg = self._neg_avail        # default: all available negatives
+
+    def _neg_count(self):
+        """Number of negative (neighbor) nodes available in the saved CATMAID prompts."""
+        p = self.lc.target_prompts
+        if p is None:
+            return 0
+        return int((np.asarray(p.labels) == 0).sum())
+
+    def _catmaid_prompt(self, n_neg):
+        """A Prompts of the positive CATMAID node + the n NEAREST negative neighbor nodes
+        (closest to the positive, by distance), no box. Used for the auto-prompts seed."""
+        import pipeline
+        p = self.lc.target_prompts
+        pts = np.asarray(p.points_sam, dtype=float)
+        labels = np.asarray(p.labels, dtype=int)
+        pos = pts[labels == 1]
+        neg = pts[labels == 0]
+        if len(neg) and len(pos):
+            order = np.argsort(np.linalg.norm(neg - pos[0], axis=1))   # nearest first
+            neg = neg[order]
+        neg = neg[:max(0, int(n_neg))]
+        out_pts = np.concatenate([pos, neg], axis=0) if len(neg) else pos
+        out_lab = np.concatenate([np.ones(len(pos), int), np.zeros(len(neg), int)])
+        return pipeline.Prompts(points_sam=out_pts, labels=out_lab, box_sam=None)
 
     # -- predictors (lazy; built once) ----------------------------------------
     def _ensure_predictors(self):
@@ -278,13 +305,18 @@ class CopropLab:
         napari.run()
 
     def _build_dock(self):
-        from magicgui.widgets import ComboBox, PushButton, Label, Container
+        from magicgui.widgets import ComboBox, PushButton, Label, Container, Slider
         seed_cb = ComboBox(label="target seed", choices=["auto-prompts", "current mask"],
                            value=self.target_seed)
         var_cb = ComboBox(label="variant", choices=["output-only", "memory"],
                           value=self.variant)
         seed_cb.changed.connect(lambda v: setattr(self, "target_seed", v))
         var_cb.changed.connect(lambda v: setattr(self, "variant", v))
+
+        # auto-prompts only: how many of the nearest CATMAID negative nodes to seed
+        neg_slider = Slider(label=f"auto neg (n closest, max {self._neg_avail})",
+                            min=0, max=self._neg_avail, value=self.n_neg)
+        neg_slider.changed.connect(lambda v: setattr(self, "n_neg", int(v)))
 
         t1 = PushButton(text="preset: Test 1 (cleanup)")
         t2 = PushButton(text="preset: Test 2 (propagation)")
@@ -297,7 +329,7 @@ class CopropLab:
         run.clicked.connect(lambda: self.run_ab())
         self._status = Label(label="neighbors", value="0 seeded (Alt+click to add)")
 
-        box = Container(widgets=[seed_cb, var_cb, t1, t2, rm, run, self._status])
+        box = Container(widgets=[seed_cb, var_cb, neg_slider, t1, t2, rm, run, self._status])
         self.viewer.window.add_dock_widget(box, name="coprop", area="right")
 
     def _set_preset(self, seed_cb, var_cb, seed, variant):
@@ -348,11 +380,12 @@ class CopropLab:
                 raise ValueError("target paint layer is empty at the anchor frame")
             session.seed_mask(lc.obj_id, tgt, lc.anchor_idx)
         else:
-            # auto-prompts: the CATMAID skeleton prompts only (positive node + negative
-            # neighbor nodes from state.prompts), NOT the box derived later by box_from_mask.
+            # auto-prompts: the CATMAID skeleton prompts only (positive node + the n nearest
+            # negative neighbor nodes, set by the slider), NOT the box from box_from_mask.
             if lc.target_prompts is None:
                 raise ValueError("no saved CATMAID prompts; use the 'current mask' seed instead")
-            session.seed_points_box(lc.obj_id, lc.target_prompts, lc.anchor_idx,
+            prompts = self._catmaid_prompt(self.n_neg)
+            session.seed_points_box(lc.obj_id, prompts, lc.anchor_idx,
                                     seed_box=False, seed_points=True, seed_negatives=True)
         for nb in self.neighbors:
             session.seed_points_box(nb["obj_id"], nb["prompts"], lc.anchor_idx)
