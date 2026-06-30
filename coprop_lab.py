@@ -106,3 +106,87 @@ def load_lab_chain(output_root, neuron, chain_idx):
                     obj_id=int(data.obj_id), frame_to_z=data.frame_to_z,
                     target_prompts=prompts, anchor_mask=anchor_mask,
                     n_frames=t, hw=(H, W), crop_window=cw)
+
+
+class MultiObjectCopropSession:
+    """Co-propagate several objects (target + neighbors) in ONE inference_state.
+
+    SAM2 tracks each object's memory independently; the only coupling is the per-pixel
+    non-overlap argmax. This session seeds N objects and toggles that argmax via the two
+    predictor flags (set at runtime, RESTORED on close so a shared predictor is never left
+    mutated):
+      non_overlap          -> non_overlap_masks (OUTPUT masks only; Test 1 cleanup)
+      non_overlap_mem_enc  -> non_overlap_masks_for_mem_enc (fed back into memory, changes
+                              the trajectory; Test 2 propagation).
+    A no-op with a single object: the constraint needs at least two objects to do anything.
+    """
+
+    def __init__(self, video_predictor, frames_dir, *, non_overlap=False,
+                 non_overlap_mem_enc=False, offload_video_to_cpu=True):
+        self.vp = video_predictor
+        self.obj_ids = []
+        self._orig_no = getattr(video_predictor, "non_overlap_masks", False)
+        self._orig_no_mem = getattr(video_predictor, "non_overlap_masks_for_mem_enc", False)
+        video_predictor.non_overlap_masks = bool(non_overlap)
+        video_predictor.non_overlap_masks_for_mem_enc = bool(non_overlap_mem_enc)
+        self.inference_state = video_predictor.init_state(
+            video_path=str(frames_dir), offload_video_to_cpu=offload_video_to_cpu)
+        video_predictor.reset_state(self.inference_state)
+        self.video_segments = {}
+        self._closed = False
+
+    def seed_points_box(self, obj_id, prompts, anchor_frame_idx, *, seed_box=True,
+                        seed_points=True, seed_negatives=False):
+        """Seed one object from a Prompts (box + positive point by default)."""
+        pts = np.asarray(prompts.points_sam, dtype=np.float32)
+        labels = np.asarray(prompts.labels, dtype=np.int32)
+        keep = np.ones(len(labels), dtype=bool)
+        if not seed_points:
+            keep &= labels != 1
+        if not seed_negatives:
+            keep &= labels != 0
+        pts, labels = pts[keep], labels[keep]
+        box = (np.asarray(prompts.box_sam, dtype=np.float32)
+               if (seed_box and prompts.box_sam is not None) else None)
+        if box is None and len(pts) == 0:
+            raise ValueError("empty seed: enable at least one of box / points")
+        # SAM2 requires clear_old_points=True when a box is present (box must precede points).
+        self.vp.add_new_points_or_box(
+            inference_state=self.inference_state, frame_idx=int(anchor_frame_idx),
+            obj_id=int(obj_id), box=box, points=(pts if len(pts) else None),
+            labels=(labels if len(labels) else None))
+        if int(obj_id) not in self.obj_ids:
+            self.obj_ids.append(int(obj_id))
+
+    def seed_mask(self, obj_id, mask, anchor_frame_idx):
+        """Seed one object from a 2D bool mask (the correct-seed path, Test 2)."""
+        self.vp.add_new_mask(
+            inference_state=self.inference_state, frame_idx=int(anchor_frame_idx),
+            obj_id=int(obj_id), mask=np.asarray(mask, dtype=bool))
+        if int(obj_id) not in self.obj_ids:
+            self.obj_ids.append(int(obj_id))
+
+    def _drain(self, *, reverse):
+        for f, obj_ids, mask_logits in self.vp.propagate_in_video(
+                self.inference_state, reverse=reverse):
+            fi = int(f)
+            per_obj = self.video_segments.setdefault(fi, {})
+            for i, oid in enumerate(obj_ids):
+                per_obj[int(oid)] = (mask_logits[i].cpu().numpy() > 0.0)
+
+    def run_bidirectional(self):
+        """Forward then reverse over all seeded objects (one shared memory)."""
+        self._drain(reverse=False)
+        self._drain(reverse=True)
+
+    def close(self):
+        if not self._closed:
+            self.vp.non_overlap_masks = self._orig_no
+            self.vp.non_overlap_masks_for_mem_enc = self._orig_no_mem
+            self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
