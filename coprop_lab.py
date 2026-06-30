@@ -214,3 +214,204 @@ def predict_neighbor_at(image_predictor, frame_img, xy, *, box_margin=6):
         labels=np.asarray([1], dtype=int),
         box_sam=np.asarray(box, dtype=np.float32))
     return mask.astype(bool), seed
+
+
+class CopropLab:
+    """Standalone napari app for the co-propagation A/B. Saves nothing.
+
+    Controls (in the dock):
+      - target seed:  'auto-prompts' (the saved box+point) or 'current mask' (the paint layer)
+      - variant:      'output-only' (Test 1 cleanup) or 'memory' (Test 2 propagation)
+      - presets:      Test 1 sets (auto-prompts, output-only); Test 2 sets (current mask, memory)
+      - Alt+click the EM to seed a neighbor (image-mode preview shown immediately). Alt keeps
+        seeding separate from painting the target mask.
+      - 'remove last neighbor', 'run A/B'
+    Result layers: target (alone), target (w/ neighbors), neighbors, diff (1=lost, 2=gained).
+    """
+
+    NEIGHBOR_BASE_ID = 2     # target is obj 1; neighbors are 2, 3, ...
+
+    def __init__(self, output_root, neuron, chain_idx):
+        self.lc = load_lab_chain(output_root, neuron, chain_idx)
+        self.neuron, self.chain_idx = neuron, int(chain_idx)
+        self.target_seed = "auto-prompts"
+        self.variant = "output-only"
+        self.neighbors = []         # list of dicts: {"obj_id", "prompts", "mask"}
+        self.image_predictor = None
+        self.video_predictor = None
+        self.viewer = None
+        self._em_world = 1.0        # EM px per mask px (width ratio; 1.0 since EM == propagation space)
+
+    # -- predictors (lazy; built once) ----------------------------------------
+    def _ensure_predictors(self):
+        from sam2_utils.setup import build_predictor
+        if self.video_predictor is None:
+            self.video_predictor, dev = build_predictor(kind="video")
+            self.image_predictor, _ = build_predictor(kind="image", device=dev)
+
+    # -- viewer ---------------------------------------------------------------
+    def run(self):
+        import napari
+        lc = self.lc
+        H, W = lc.hw
+        self._em_world = float(lc.em.shape[2]) / float(W) if W else 1.0
+        s = self._em_world
+        lscale = (1.0, s, s)
+
+        self.viewer = napari.Viewer(title=f"coprop lab: {self.neuron} chain {self.chain_idx:02d}")
+        self._em_layer = self.viewer.add_image(lc.em, name="EM", rgb=True)
+
+        # target paint layer, preloaded with the saved anchor mask at the anchor frame
+        paint = np.zeros((lc.n_frames, H, W), dtype=np.uint8)
+        paint[lc.anchor_idx][lc.anchor_mask] = lc.obj_id
+        self._paint = self.viewer.add_labels(paint, name="target seed (paint)",
+                                             opacity=0.5, scale=lscale)
+        self._neighbors_layer = self.viewer.add_labels(
+            np.zeros((lc.n_frames, H, W), dtype=np.uint8), name="neighbor seeds",
+            opacity=0.5, scale=lscale)
+
+        # global click handler (fires regardless of the selected layer); Alt+click seeds.
+        self.viewer.mouse_drag_callbacks.append(self._on_click)
+
+        self._build_dock()
+        self.viewer.dims.set_current_step(0, int(lc.anchor_idx))
+        napari.run()
+
+    def _build_dock(self):
+        from magicgui.widgets import ComboBox, PushButton, Label, Container
+        seed_cb = ComboBox(label="target seed", choices=["auto-prompts", "current mask"],
+                           value=self.target_seed)
+        var_cb = ComboBox(label="variant", choices=["output-only", "memory"],
+                          value=self.variant)
+        seed_cb.changed.connect(lambda v: setattr(self, "target_seed", v))
+        var_cb.changed.connect(lambda v: setattr(self, "variant", v))
+
+        t1 = PushButton(text="preset: Test 1 (cleanup)")
+        t2 = PushButton(text="preset: Test 2 (propagation)")
+        t1.clicked.connect(lambda: self._set_preset(seed_cb, var_cb, "auto-prompts", "output-only"))
+        t2.clicked.connect(lambda: self._set_preset(seed_cb, var_cb, "current mask", "memory"))
+
+        rm = PushButton(text="remove last neighbor")
+        run = PushButton(text="run A/B")
+        rm.clicked.connect(self._remove_last_neighbor)
+        run.clicked.connect(lambda: self.run_ab())
+        self._status = Label(label="neighbors", value="0 seeded (Alt+click to add)")
+
+        box = Container(widgets=[seed_cb, var_cb, t1, t2, rm, run, self._status])
+        self.viewer.window.add_dock_widget(box, name="coprop", area="right")
+
+    def _set_preset(self, seed_cb, var_cb, seed, variant):
+        seed_cb.value = seed
+        var_cb.value = variant
+        self.target_seed, self.variant = seed, variant
+
+    # -- neighbor seeding by Alt+click ----------------------------------------
+    def _on_click(self, viewer, event):
+        if "Alt" not in getattr(event, "modifiers", ()):
+            return                                   # only Alt+click seeds (leaves paint free)
+        if int(self.viewer.dims.current_step[0]) != int(self.lc.anchor_idx):
+            print("[coprop] Alt+click on the anchor frame to seed a neighbor")
+            return
+        self._ensure_predictors()
+        pos = self._em_layer.world_to_data(event.position)   # (z, y, x) in EM world
+        y, x = float(pos[1]) / self._em_world, float(pos[2]) / self._em_world
+        res = predict_neighbor_at(self.image_predictor, self.lc.em[self.lc.anchor_idx], (x, y))
+        if res is None:
+            print(f"[coprop] empty neighbor mask at ({x:.0f},{y:.0f}); try another spot")
+            return
+        mask, prompts = res
+        obj_id = self.NEIGHBOR_BASE_ID + len(self.neighbors)
+        self.neighbors.append({"obj_id": obj_id, "prompts": prompts, "mask": mask})
+        self._refresh_neighbor_preview()
+        print(f"[coprop] neighbor {obj_id} seeded ({int(mask.sum())} px)")
+
+    def _remove_last_neighbor(self):
+        if self.neighbors:
+            dropped = self.neighbors.pop()
+            self._refresh_neighbor_preview()
+            print(f"[coprop] removed neighbor {dropped['obj_id']}")
+
+    def _refresh_neighbor_preview(self):
+        H, W = self.lc.hw
+        vol = np.zeros((self.lc.n_frames, H, W), dtype=np.uint8)
+        for nb in self.neighbors:
+            vol[self.lc.anchor_idx][nb["mask"]] = nb["obj_id"]
+        self._neighbors_layer.data = vol
+        self._status.value = f"{len(self.neighbors)} seeded (Alt+click to add)"
+
+    # -- the A/B run ----------------------------------------------------------
+    def _seed_all(self, session):
+        lc = self.lc
+        if self.target_seed == "current mask":
+            tgt = (self._paint.data[lc.anchor_idx] == lc.obj_id)
+            if not tgt.any():
+                raise ValueError("target paint layer is empty at the anchor frame")
+            session.seed_mask(lc.obj_id, tgt, lc.anchor_idx)
+        else:
+            if lc.target_prompts is None:
+                raise ValueError("no saved prompts; use the 'current mask' seed instead")
+            session.seed_points_box(lc.obj_id, lc.target_prompts, lc.anchor_idx)
+        for nb in self.neighbors:
+            session.seed_points_box(nb["obj_id"], nb["prompts"], lc.anchor_idx)
+
+    def run_ab(self):
+        if not self.neighbors:
+            print("[coprop] seed at least one neighbor first (the constraint is a no-op "
+                  "with a single object)")
+            return
+        self._ensure_predictors()
+        lc = self.lc
+        mem = (self.variant == "memory")
+
+        print(f"[coprop] baseline pass (neighbors off), seed={self.target_seed}")
+        with MultiObjectCopropSession(self.video_predictor, lc.frames_dir) as sa:
+            self._seed_all(sa)
+            sa.run_bidirectional()
+            seg_a = sa.video_segments
+
+        print(f"[coprop] treatment pass (variant={self.variant})")
+        with MultiObjectCopropSession(self.video_predictor, lc.frames_dir,
+                                      non_overlap=not mem, non_overlap_mem_enc=mem) as sb:
+            self._seed_all(sb)
+            sb.run_bidirectional()
+            seg_b = sb.video_segments
+
+        neigh_ids = [nb["obj_id"] for nb in self.neighbors]
+        alone = label_stack(seg_a, [lc.obj_id], lc.n_frames, lc.hw)
+        withn = label_stack(seg_b, [lc.obj_id], lc.n_frames, lc.hw)
+        neighbors = label_stack(seg_b, neigh_ids, lc.n_frames, lc.hw)
+        diff = build_diff_stack(alone, withn, lc.obj_id)
+
+        s = self._em_world
+        lscale = (1.0, s, s)
+        self._upsert_labels("target (alone)", alone, lscale)
+        self._upsert_labels("target (w/ neighbors)", withn, lscale)
+        self._upsert_labels("neighbors (propagated)", neighbors, lscale)
+        self._upsert_labels("diff (1=lost, 2=gained)", diff, lscale)
+
+        lost, gained = int((diff == 1).sum()), int((diff == 2).sum())
+        print(f"[coprop] diff: lost {lost} px, gained {gained} px "
+              f"(variant={self.variant}; output-only should gain 0)")
+
+    def _upsert_labels(self, name, data, scale):
+        if name in self.viewer.layers:
+            self.viewer.layers[name].data = data
+        else:
+            self.viewer.add_labels(data, name=name, opacity=0.5, scale=scale)
+
+
+def main():
+    import argparse
+    from sam2_utils import config
+    default_root = str(config.GT_PRED_DIR / "batch_masks_multichain")
+    p = argparse.ArgumentParser(description="Standalone co-propagation A/B lab (no saving).")
+    p.add_argument("--neuron", required=True)
+    p.add_argument("--chain", type=int, required=True)
+    p.add_argument("--root", default=default_root,
+                   help="output root holding <neuron>/chain_NN (default: the multichain GT eval output)")
+    args = p.parse_args()
+    CopropLab(args.root, args.neuron, args.chain).run()
+
+
+if __name__ == "__main__":
+    main()
