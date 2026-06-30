@@ -190,3 +190,27 @@ class MultiObjectCopropSession:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def predict_neighbor_at(image_predictor, frame_img, xy, *, box_margin=6):
+    """Image-mode predict a neighbor mask from a single positive click in propagation space.
+
+    Returns (mask bool HxW, Prompts with box + the positive point), or None if SAM2 returns
+    an empty mask. The returned Prompts is ready for MultiObjectCopropSession.seed_points_box.
+    """
+    import pipeline
+    x, y = float(xy[0]), float(xy[1])
+    point_prompts = pipeline.Prompts(
+        points_sam=np.asarray([[x, y]], dtype=float),
+        labels=np.asarray([1], dtype=int), box_sam=None)
+    mask, _score, _logits = pipeline.image_predict(image_predictor, frame_img, point_prompts)
+    if mask is None or not mask.any():
+        return None
+    box = pipeline.box_from_mask(mask, margin=box_margin, image_hw_sam=mask.shape[:2])
+    if box is None:
+        return None
+    seed = pipeline.Prompts(
+        points_sam=np.asarray([[x, y]], dtype=float),
+        labels=np.asarray([1], dtype=int),
+        box_sam=np.asarray(box, dtype=np.float32))
+    return mask.astype(bool), seed
