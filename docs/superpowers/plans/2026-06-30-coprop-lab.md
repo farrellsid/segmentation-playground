@@ -299,7 +299,7 @@ Expected: PASS (if it fails on the jpeg name, inspect a real chain's `frames_dir
 Smoke (needs a real chain on disk; substitute a neuron/chain that exists under the eval or production output root):
 
 ```bash
-py -3 -c "import coprop_lab as c; lc = c.load_lab_chain(r'eval/out_gt_multichain', 'AVAL', 7); print('em', lc.em.shape, 'anchor', lc.anchor_idx, 'obj', lc.obj_id, 'hw', lc.hw, 'mask px', int(lc.anchor_mask.sum()), 'cw', lc.crop_window is not None)"
+py -3 -c "import coprop_lab as c; lc = c.load_lab_chain(r'data/groundtruth/pred_p280/batch_masks_multichain', 'AVAL', 7); print('em', lc.em.shape, 'anchor', lc.anchor_idx, 'obj', lc.obj_id, 'hw', lc.hw, 'mask px', int(lc.anchor_mask.sum()), 'cw', lc.crop_window is not None)"
 ```
 Expected: prints a 4-D `em` shape, an integer anchor frame, `obj 1`, the `(H, W)`, a non-zero anchor-mask pixel count, and whether it is a tier-2 crop chain. Adjust the output root and neuron/chain to one that exists in your tree.
 
@@ -424,7 +424,7 @@ class MultiObjectCopropSession:
 py -3 -c "
 import numpy as np, coprop_lab as c
 from sam2_utils.setup import build_predictor
-lc = c.load_lab_chain(r'eval/out_gt_multichain', 'AVAL', 7)
+lc = c.load_lab_chain(r'data/groundtruth/pred_p280/batch_masks_multichain', 'AVAL', 7)
 vp, dev = build_predictor(kind='video')
 with c.MultiObjectCopropSession(vp, lc.frames_dir) as s:
     s.seed_mask(1, lc.anchor_mask, lc.anchor_idx)
@@ -491,7 +491,7 @@ def predict_neighbor_at(image_predictor, frame_img, xy, *, box_margin=6):
 py -3 -c "
 import coprop_lab as c
 from sam2_utils.setup import build_predictor
-lc = c.load_lab_chain(r'eval/out_gt_multichain', 'AVAL', 7)
+lc = c.load_lab_chain(r'data/groundtruth/pred_p280/batch_masks_multichain', 'AVAL', 7)
 ip, dev = build_predictor(kind='image')
 H, W = lc.hw
 frame = lc.em[lc.anchor_idx]
@@ -714,8 +714,10 @@ def main():
     p = argparse.ArgumentParser(description="Standalone co-propagation A/B lab (no saving).")
     p.add_argument("--neuron", required=True)
     p.add_argument("--chain", type=int, required=True)
-    p.add_argument("--root", default="eval/out_gt_multichain",
-                   help="output root holding <neuron>/chain_NN")
+    from sam2_utils import config
+    default_root = str(config.GT_PRED_DIR / "batch_masks_multichain")
+    p.add_argument("--root", default=default_root,
+                   help="output root holding <neuron>/chain_NN (default: multichain GT eval output)")
     args = p.parse_args()
     CopropLab(args.root, args.neuron, args.chain).run()
 
@@ -732,7 +734,7 @@ Expected: all tests pass (the new napari/magicgui code is import-lazy, so import
 - [ ] **Step 3: Smoke-test the full app on a real chain (needs GPU + display)**
 
 ```bash
-py -3 coprop_lab.py --neuron AVAL --chain 7 --root eval/out_gt_multichain
+py -3 coprop_lab.py --neuron AVAL --chain 7 --root data/groundtruth/pred_p280/batch_masks_multichain
 ```
 Expected: napari opens on the anchor frame with the EM, the preloaded target paint, and the dock. Clicking a neighbor cell shows its mask immediately. "run A/B" with one neighbor and the Test 1 preset prints `gained 0 px` and adds the four result layers; toggling `target (alone)` vs `target (w/ neighbors)` and viewing `diff` shows where the neighbor carved bleed. Switching to Test 2 and re-running shows the memory-variant trajectory change. Adjust `--root`/`--neuron`/`--chain` to a chain that exists.
 
