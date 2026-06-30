@@ -348,9 +348,12 @@ class CopropLab:
                 raise ValueError("target paint layer is empty at the anchor frame")
             session.seed_mask(lc.obj_id, tgt, lc.anchor_idx)
         else:
+            # auto-prompts: the CATMAID skeleton prompts only (positive node + negative
+            # neighbor nodes from state.prompts), NOT the box derived later by box_from_mask.
             if lc.target_prompts is None:
-                raise ValueError("no saved prompts; use the 'current mask' seed instead")
-            session.seed_points_box(lc.obj_id, lc.target_prompts, lc.anchor_idx)
+                raise ValueError("no saved CATMAID prompts; use the 'current mask' seed instead")
+            session.seed_points_box(lc.obj_id, lc.target_prompts, lc.anchor_idx,
+                                    seed_box=False, seed_points=True, seed_negatives=True)
         for nb in self.neighbors:
             session.seed_points_box(nb["obj_id"], nb["prompts"], lc.anchor_idx)
 
@@ -362,12 +365,20 @@ class CopropLab:
         self._ensure_predictors()
         lc = self.lc
         mem = (self.variant == "memory")
+        neigh_ids = [nb["obj_id"] for nb in self.neighbors]
 
         print(f"[coprop] baseline pass (neighbors off), seed={self.target_seed}")
         with MultiObjectCopropSession(self.video_predictor, lc.frames_dir) as sa:
             self._seed_all(sa)
             sa.run_bidirectional()
             seg_a = sa.video_segments
+
+        # Diagnostic: the only way a neighbor can change the target is by contesting (overlapping)
+        # its pixels. If this is 0, the target is unchanged under EITHER variant by construction,
+        # so a 100% IoU A/B is the architecture (separated neighbors), not a coding error.
+        overlap = self._target_neighbor_overlap(seg_a, lc.obj_id, neigh_ids)
+        print(f"[coprop] target<->neighbor overlap across frames (baseline): {overlap} px "
+              f"(0 => neighbors never contest the target => no variant can change it)")
 
         print(f"[coprop] treatment pass (variant={self.variant})")
         with MultiObjectCopropSession(self.video_predictor, lc.frames_dir,
@@ -376,7 +387,6 @@ class CopropLab:
             sb.run_bidirectional()
             seg_b = sb.video_segments
 
-        neigh_ids = [nb["obj_id"] for nb in self.neighbors]
         alone = label_stack(seg_a, [lc.obj_id], lc.n_frames, lc.hw)
         withn = label_stack(seg_b, [lc.obj_id], lc.n_frames, lc.hw)
         neighbors = label_stack(seg_b, neigh_ids, lc.n_frames, lc.hw)
@@ -392,6 +402,23 @@ class CopropLab:
         lost, gained = int((diff == 1).sum()), int((diff == 2).sum())
         print(f"[coprop] diff: lost {lost} px, gained {gained} px "
               f"(variant={self.variant}; output-only should gain 0)")
+
+    @staticmethod
+    def _target_neighbor_overlap(segments, obj_id, neigh_ids):
+        """Total pixels where the target and any neighbor both fire, summed over frames.
+        Computed on the baseline (flags-off) masks, where objects may freely overlap."""
+        def _sq(m):
+            m = np.asarray(m)
+            return m[0] if m.ndim == 3 else m
+        total = 0
+        for seg in segments.values():
+            if obj_id not in seg:
+                continue
+            tg = _sq(seg[obj_id]).astype(bool)
+            for nid in neigh_ids:
+                if nid in seg:
+                    total += int((tg & _sq(seg[nid]).astype(bool)).sum())
+        return total
 
     def _upsert_labels(self, name, data, scale):
         if name in self.viewer.layers:
