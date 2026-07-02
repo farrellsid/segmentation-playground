@@ -11,8 +11,10 @@ from pathlib import Path
 # Filesystem paths
 # =============================================================================
 
-#: Root of the raw EM data (sorted .tif stack).
-WORM_PATH = Path(r"E:\ZhenLab\Data\SAM2_test_NR_raw") # Change this to wherever path may be.
+#: Root of the raw EM data (sorted .tif stack). Override with the SAM2_WORM_PATH env
+#: var (used on the cluster, where the stack lives under project storage); unset, it
+#: falls back to the local Windows default so existing local runs are unaffected.
+WORM_PATH = Path(os.environ.get("SAM2_WORM_PATH", r"E:\ZhenLab\Data\SAM2_test_NR_raw"))
 
 #: Where SAM2 checkpoints are downloaded to. Relative to notebook CWD by default.
 CHECKPOINT_DIR = Path("checkpoints")
