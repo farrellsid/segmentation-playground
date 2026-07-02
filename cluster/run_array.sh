@@ -16,7 +16,7 @@
 #   sbatch cluster/run_array.sh
 
 #SBATCH --job-name=sam2-target
-#SBATCH --account=def-mzhen_gpu    # Narval splits the allocation: _gpu for GPU jobs
+#SBATCH --account=def-mzhen        # bare account; Slurm auto-routes to _gpu via --gres
 #SBATCH --array=0-18%8            # 19 chunks (default chunk-size 7), <= 8 at once; match make_chunks output
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8         # within Narval's per-GPU ratio (<= 12 cores/GPU)
