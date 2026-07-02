@@ -8,7 +8,9 @@ in `sam2_utils/presets.py`.
 
 Paths and constants that change per machine or per dataset, not per run:
 
-- `WORM_PATH`: the raw EM `.tif` stack.
+- `WORM_PATH`: the raw EM `.tif` stack. Overridable with the `SAM2_WORM_PATH` env var (used on the
+  cluster, where the stack lives under project storage); unset, it uses the local default. See
+  [../how-to/run-on-narval.md](../how-to/run-on-narval.md).
 - `DATA_DIR`, `CSV_PATH`, `CHAINS_PATH`, `ROOTS_PATH`: the CATMAID-derived inputs (resolved from the
   repo location).
 - `OUTPUT_ROOT`, `FRAMES_ROOT`: the mask-output and JPEG-scratch roots.

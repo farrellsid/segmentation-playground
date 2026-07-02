@@ -26,6 +26,7 @@ as few files as possible.
 | RAM/VRAM/disk diagnostics for long runs | `sam2_utils/diagnostics.py` | Snapshots and VRAM cleanup. torch is lazy here too. |
 | Ground-truth evaluation (region IoU, VOI, ARAND, ERL, registration) | `eval/` | `score_batch.py`, `metrics.py`, `erl.py`, `registration.py`, `gt_dataset.py`. |
 | The single-chain regression run | `run_aval.py` | Runs one chain end to end. The worked example and reproduction harness. |
+| Running the batch in parallel on the Narval cluster | `cluster/` | Slurm array over `batch.py`: `make_chunks.py` (neurons to chunks), `run_array.sh` (the array job), `merge_shards.py` + `run_merge.sh` (stitch shards). See [../how-to/run-on-narval.md](../how-to/run-on-narval.md). |
 
 ## The four entry points
 
@@ -47,7 +48,7 @@ The filesystem is the database. A run writes two separate trees. See
 ## Dependency direction
 
 The library does not import the drivers. `pipeline.py` and `sam2_utils/` import only each other
-and third-party packages. The drivers (`batch.py`, `gui.py`, `gui_neuron.py`, `run_aval.py`) and
-`eval/` import the library, never the reverse. (`gui_neuron.py` also imports `gui.py`, which is
+and third-party packages. The drivers (`batch.py`, `gui.py`, `gui_neuron.py`, `run_aval.py`), `eval/`, and the `cluster/`
+scripts import the library, never the reverse. (`gui_neuron.py` also imports `gui.py`, which is
 driver to driver, allowed.) If you add an import that points from the core out to a driver, you have
 introduced a cycle. See [../explanation/architecture.md](../explanation/architecture.md).
