@@ -7,7 +7,7 @@
 # CPU-only and quick (symlinks + CSV concat + one triage rebuild), so no GPU.
 
 #SBATCH --job-name=sam2-merge
-#SBATCH --account=def-mzhen
+#SBATCH --account=def-mzhen_cpu    # CPU-only job uses the _cpu allocation
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 #SBATCH --time=0:30:00
