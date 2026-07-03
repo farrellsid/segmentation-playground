@@ -27,7 +27,7 @@ cd segmentation-playground && git checkout repo-reorg
 module load StdEnv/2023 gcc/12.3 python/3.11 cuda/12.2 cudnn/9.2.1.18 opencv/4.13.0 scipy-stack/2026a ipykernel/2026a
 virtualenv --no-download ~/sam2env && source ~/sam2env/bin/activate
 pip install --no-index --upgrade pip
-pip install --no-index torch torchvision scikit-image h5py tqdm   # numpy/scipy/pandas/matplotlib/Pillow/psutil come from the modules
+pip install --no-index torch torchvision scikit-image h5py tqdm requests   # numpy/scipy/pandas/matplotlib/Pillow/psutil come from the modules
 pip install git+https://github.com/facebookresearch/sam2.git       # login node only (compute nodes are offline)
 
 # checkpoint (compute nodes are offline, so fetch it here)

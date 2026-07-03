@@ -29,6 +29,7 @@ Pillow  # PIL
 # Utilities
 tqdm
 psutil
+requests  # sam2_utils.catmaid REST client
 
 # SAM 2 (install separately — not on PyPI)
 # See: https://github.com/facebookresearch/sam2
