@@ -14,6 +14,9 @@ reads the `SAM2_WORM_PATH` env var (see [../reference/configuration.md](../refer
   CCDB and Duo MFA enrolled. Login is `ssh <user>@narval.alliancecan.ca` then a Duo prompt.
 - The raw EM tif stack on project storage, e.g. `~/projects/def-mzhen/<user>/SAM2_test_NR_raw/`.
   Push it once from the local machine with `scp -r <local tif dir> narval:projects/def-mzhen/<user>/`.
+- The `data/` inputs the run reads: `aggregate_data_pv.csv`, `chains.json`, `roots.json`. These are
+  gitignored (`data/*`), so a fresh clone does NOT have them. Push them into the cloned repo's
+  `data/` dir: `scp <local>/data/aggregate_data_pv.csv <local>/data/chains.json <local>/data/roots.json narval:projects/def-mzhen/<user>/segmentation-playground/data/`.
 
 ## One-time setup on the login node
 
