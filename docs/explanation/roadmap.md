@@ -532,6 +532,45 @@ Thresholds are advance/pivot gates, in the §4 ruler spirit.
 
 ---
 
+## 5b. Near-term task queue (July 2026)
+
+The concrete next actions, ordered, with status: DONE, READY (built, awaiting a run or a human
+review), or TODO. This is the tail of the staged plan made actionable; the stage tags map back
+to the plan above.
+
+1. **Review the resolution comparison** (manual eyeball + GT). fullres vs wholeimg_s4 vs
+   tier2forced, plus tier2_s1 once it runs. Decides how much effective resolution actually
+   matters for the neurites, which gates whether tiling is worth building. READY: three variants
+   are extracted locally; open each with `gui.py --output-root <run>_merged --hires-em` (hires is
+   required because the cluster frames were node-local and are gone). *(Stage 1)*
+2. **Run `original_tier2_s1` on Narval**, the cheap resolution win (fills SAM2's 1024 input that
+   `crop_scale=2` under-fills for 86% of chains). READY: preset built, submit commands in the
+   Narval how-to. *(Stage 1)*
+3. **Implement mask-seeding**, anchor-quality-gated. Broad, cheap; seed the video from the anchor
+   mask instead of its bounding box, fall back to the box when the anchor is weak. A/B against
+   the box baseline on GT. TODO, spec `2026-07-07-mask-seeded-propagation`. *(Stage 1 / §4.5)*
+4. **Implement the GUI run-picker** (approach A). Unblocks clean multi-run review and fixes the
+   re-segmentation-scale and hires-EM papercuts. TODO, spec `2026-07-07-gui-run-picker`.
+5. **Start the cheap Stage 4 error detection**: forward/backward propagation consistency and
+   topology stats (self-loop = merge, orphan = error), both training-free. Gates trustworthy A/B
+   for every later change. TODO. *(Stage 4 · §4.2)*
+6. **Scope the target-worm annotation benchmark** (§4.2b): labeling granularity, sampling that
+   avoids selection bias, schema. Gates in-distribution evaluation and the learned detector's
+   training set. TODO. *(Stage 4)*
+7. **Measure branch-junction coverage** on GT: does the per-neuron union under-cover the junction
+   where two chains meet? Gates the branch-junction multi-seed repair idea (multi-point re-image
+   from interior points of each arm's mask, not centroids). TODO. *(Stage 3 · §4.3)*
+8. **Coarse-to-fine tiling**, built only if scale-1 tier-2 (task 2) is not sharp enough by the
+   task-1 review. TODO, spec `2026-07-07-tiled-fullres-propagation`. *(Stage 1/3)*
+9. **Metric robustness**: ERL merge tolerance (Stage 0.4) and the per-section affine edge
+   residual (Stage 0.5). TODO. *(Stage 0)*
+
+`bigimg` (SAM2 `image_size` 2048) is retired as configured: it crashes in SAM2 off-distribution,
+and even fixed its output would be unvalidated; the resolution goal is served by cropping and
+tiling instead. Revisit only with the cluster traceback if the finetuning path stalls.
+
+---
+
 ## 6. Decision points, what would change this plan
 
 - **Large cross-worm domain gap** (Stage 2 finetuning doesn't beat stock SAM2) → shift weight to the

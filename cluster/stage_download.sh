@@ -23,15 +23,20 @@ set -euo pipefail
 OUT=/scratch/$USER/downloads
 mkdir -p "$OUT" cluster/logs
 
-for name in original_fullres original_wholeimg_s4 original_tier2forced original_bigimg; do
-    d=/scratch/$USER/${name}_merged
-    if [ ! -d "$d" ]; then
-        echo "[stage] SKIP (missing, its merge may have had no shards): $d"
+# Auto-discover every merged tree under scratch (so new variants are picked up without
+# editing this script), and skip any that is already tarred (idempotent: re-running only
+# packages newly-merged variants).
+for d in /scratch/$USER/*_merged; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    tb="$OUT/${name}.tar.gz"
+    if [ -f "$tb" ]; then
+        echo "[stage] skip (already tarred): $tb"
         continue
     fi
-    echo "[stage] tarring $d -> $OUT/${name}_merged.tar.gz"
+    echo "[stage] tarring $d -> $tb"
     # -h dereferences the shard symlinks so the archive holds real files.
-    tar -czhf "$OUT/${name}_merged.tar.gz" -C "$(dirname "$d")" "${name}_merged"
+    tar -czhf "$tb" -C "$(dirname "$d")" "$name"
 done
 
 echo "[stage] done. Ready-to-pull tarballs:"

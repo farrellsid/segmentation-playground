@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07, research passes + resolution experiments + specs](#r-2026-07)
 - [2026-06, review tooling + post-processing pass](#r-2026-06)
 - [old §2, Milestone-by-milestone build narrative (M1 → M4 review-testing pass)](#old-2)
 - [old §5, Known issues: full resolution stories](#old-5)
@@ -31,6 +32,39 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-07"></a>
+## 2026-07, research passes, resolution experiments, and design specs
+
+A research and experiment round on top of the M4.5 GT/eval work. No default pipeline behavior
+changed; this was measurement, cluster experiments, and design.
+
+- **Two verified deep-research passes**, both adversarially fact-checked and folded into the
+  roadmap (§4, §5). Error detection plus benchmark design moved Stage 4's cheap training-free
+  pieces forward and added the target-worm annotation-benchmark requirement. Segmentation
+  improvement produced the neurite-targeted-finetune hard rule (an organelle-trained EM model
+  degrades neurites) and confirmed the dense/hybrid path is a learned, evidence-gated last
+  resort, not a drop-in.
+- **Resolution experiments on Narval.** Five target-worm variants added as presets and run as
+  Slurm arrays (`cluster/run_exp.sh` + a per-variant merge + `cluster/stage_download.sh`):
+  `original_fullres` (whole image at scale 1, no tier-2), `original_wholeimg_s4` (a scale-4
+  control), `original_tier2forced` (tier-2 on every chain, fallback floor dropped),
+  `original_bigimg` (SAM2 `image_size` raised to 2048), and `original_tier2_s1` (scale-1 tier-2,
+  built). Findings: (1) `bigimg` crashed on every chain with a SAM2-internal `.view()`/stride
+  error at `image_size` other than 1024, off-distribution for the pretrained weights and not our
+  code, so it is retired as configured; (2) the effective resolution of a crop is
+  `min(crop_tif/crop_scale, 1024) / crop_tif`, so the default `crop_scale=2` feeds the median
+  crop (1560 tif) at about 780 input px, under-filling SAM2's 1024 input for 86% of chains, and
+  `original_tier2_s1` fills it for roughly a third more resolution at no cost; (3) whole-image
+  scale 1 is not high resolution, SAM2 downsamples it to 1024, so the large saved files are a
+  high-resolution rendering of a low-resolution segmentation.
+- **Design specs (not yet implemented)** under `docs/superpowers/specs/2026-07-07-*`: a GUI
+  run-picker that opens runs by their `_run_meta.json` metadata (and fixes re-segmentation scale
+  and hires-EM); mask-seeded propagation (seed the video from the anchor mask, gated on anchor
+  quality, with a saved-mask reuse hook); and coarse-to-fine tiled full-res propagation (reuse a
+  cached coarse pass, tile over its foreground, mask-seed each tile, union). A branch-junction
+  multi-seed idea is in discussion, gated on measuring whether the per-neuron union under-covers
+  junctions.
 
 <a id="r-2026-06"></a>
 ## 2026-06, review tooling + post-processing pass
