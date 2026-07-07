@@ -125,6 +125,28 @@ sources. Caveats are kept inline and honest, many quoted numbers are first-party
 natural video / organelles / medical volumes, **not** C. elegans neurites, which are harder, so
 expect lower absolute numbers.
 
+> **Update (July 2026): two deep-research passes, adversarially verified.** Since the June writeup I
+> ran two literature surveys with claim-level verification, one on error detection + benchmark design,
+> one on improving the segmentation itself. Both confirmed the broad shape below and sharpened it in a
+> few load-bearing ways, folded into the subsections and the staged plan:
+> - **Forward/backward propagation consistency is the best-attested training-free error detector**
+>   (RoboEM cut tracing errors from ~22-24% to 1-4% by keeping only where the two passes agree). We
+>   already propagate bidirectionally, so this is the cheapest QC upgrade available (§4.2, Stage 1).
+> - **Any SAM2 finetune must be neurite-targeted.** An EM finetune trained on *organelles* measurably
+>   *degrades* neurite segmentation (micro_sam, Archit et al. 2024); a neurite specialist improves it.
+>   This is now a hard constraint on Stage 2, not a footnote (§4.7).
+> - **The dense/affinity hedge is not training-free.** FGNet only beats stock SAM2 after EM finetuning
+>   and drops SAM2 propagation entirely (SAM2 as a feature encoder only); Spatial-SAM's learned memory
+>   gives modest gains on blobs only. So the dense path is an evidence-gated last resort, not a co-equal
+>   path (§4.3, §4.7, Stage 3).
+> - **A target-worm annotation benchmark (new §4.2b) is the real gate on trustworthy method comparison.**
+>   The cross-worm GT scores generalization; comparing methods in-distribution needs a benchmark built by
+>   judging the pipeline's own masks on the target worm.
+>
+> Overriding caveat, reinforced by both passes: **no verified source evaluates on thin C. elegans
+> neurites**, so every quoted number is an optimistic ceiling. The clearest proof is within a single
+> method, SAM4EM scores 92.4% Dice on blobby mitochondria but 53.8% on complex synapses.
+
 ### 4.1 Fix the ruler first, ERL + split/merge VOI (Problem 2 · R2)
 
 > **Status (June 2026): the ruler is built** (`eval/`). All three connectomics metrics below are
@@ -164,24 +186,74 @@ This is the prerequisite for trusting everything else. Adopt the connectomics-st
 
 ### 4.2 Learned error detection, model-confidence, and connectome priors (Problem 1 · R1)
 
-Replace the hand-tuned geometric thresholds with signals the field has shown beat them:
+Replace the hand-tuned geometric thresholds with signals the field has shown beat them, ordered here
+by how well the evidence transfers to us (verified July 2026):
 
-- **Learned split/merge classifier** trained on real errors vs ground truth, exactly what my
-  confirmation-marked GT enables. Sources: Guided Proofreading (Haehn et al., arXiv 1704.00848);
-  Error Detection & Correction (Zung/Lee et al., arXiv 1708.02599); recent learned proofreading
-  (Autoproof, arXiv 2509.26585; point-affinity merge transformers, Troidl et al. 2025).
-- **SAM2's own predicted-IoU + occlusion scores** as a confidence signal, calibrated enough to
-  drive SAM2Long's memory-tree search, so good enough to flag frames. (I already populate `pred_iou`.)
-- **Forward/backward propagation-consistency** (RoboEM-style): propagate +z and −z from the anchor;
-  disagreement is a principled merge/drift detector. Cheap and SAM2-compatible. Source: RoboEM,
-  Schmidt/Boergens et al., Nature Methods 2024 (s41592-024-02226-5).
-- **Quality estimation without ground truth** for the *target* worm where I have no labels:
-  In-Context Reverse Classification Accuracy (arXiv 2503.04522); Dice-regression nets (EvanySeg-style).
-- **Connectome-prior checks**, my strongest, cheapest lever, and one neither FFN nor MemBrain had:
-  C. elegans is a stereotyped ~300-neuron connectome with known identities and neighbours. A mask
-  that ends mid-neuropil, bridges two known-distinct cells, or has the wrong branch count violates a
-  strong biological prior. FFN's own discussion proposes exactly this (topology-violation as an
-  efficient proofreading guide). Far more principled than area ratios.
+- **Forward/backward propagation consistency (training-free, do first).** Propagate +z and −z from the
+  anchor and flag frames where the two disagree. This is the strongest published evidence for a
+  training-free merge/drift detector: RoboEM keeps only locations where forward and backward tracings
+  agree, cutting tracing errors from ~22-24% to 1-4% (Schmidt/Boergens et al., Nature Methods 2024,
+  s41592-024-02226-5). We already run both passes, so scoring per-frame +z vs −z mask disagreement is
+  near-zero cost and hits our dominant merge and abrupt-jump modes directly.
+- **Feed the EM image content into QC (the biggest structural gap).** Our QC reads nothing from the raw
+  EM today. The durable connectomics detector design feeds the **EM patch + candidate mask over a large
+  context region** and predicts a split/merge error map, not a mask scored in isolation, and this recurs
+  across two independent primaries: Guided Proofreading (Haehn et al., CVPR 2018, arXiv 1704.00848) and
+  the Zung-Lee error-detection net (NeurIPS 2017, arXiv 1708.02599). Even before a learned model,
+  boundary-vs-membrane agreement is the feature class to start computing.
+- **No-reference quality estimation for the target worm (no labels there).** Reverse Classification
+  Accuracy (Valindria et al., IEEE TMI 2017, arXiv 1702.03407) predicts per-object Dice with no GT and
+  reliably flags failed segmentations; **In-Context RCA** (arXiv 2503.04522, 2025) does the same using
+  SAM2 + DINOv2 retrieval at ~0.4-0.7 s/image, reusing the SAM2 we already run, and we already hold the
+  reference database it needs (the cross-worm dense GT). **EvanySeg** (arXiv 2409.14874, 2024) is the
+  concrete architecture template for a learned per-frame quality head, a ViT scoring an image+mask crop.
+  Two hard caveats: RCA's coverage guarantee relies on calibration/test exchangeability and **degrades
+  under domain shift** (a different worm is exactly that), and EvanySeg's correlation fell from ~0.75 to
+  0.506 on an out-of-distribution model, so any estimator calibrated on the GT worm must be re-calibrated
+  once target-worm labels exist. All numbers are medical, none EM neurites.
+- **SAM2's own predicted-IoU + occlusion scores** as a confidence signal (already populated as
+  `pred_iou`), calibrated enough to drive SAM2Long's memory-tree search, so usable to flag frames.
+- **Connectome-prior checks, my strongest and cheapest lever, and one neither FFN nor MemBrain had.**
+  C. elegans is a stereotyped ~300-neuron connectome with known identities and neighbours. A mask that
+  ends mid-neuropil, bridges two known-distinct cells, or has the wrong branch count violates a strong
+  biological prior. The connectomics-standard cheap version is **topology debugging statistics**: a
+  self-loop/autapse is a probable merge, an orphan fragment a probable error, both flaggable with no
+  reference labels (Plaza & Funke, Frontiers Neural Circuits 2018). Far more principled than area ratios.
+- **Learned split/merge classifier**, trained on real errors vs ground truth, once we have enough
+  labels. The recommended low-data route is to **recycle our accumulating human corrections as labels**
+  rather than run a fresh campaign (Autoproof, arXiv 2509.26585; ConnectomeBench mines proofreader edit
+  histories, arXiv 2511.05542). Honest caveat: both recycle *large* existing corpora, so the "low-data"
+  framing is aspirational, the transferable idea is the mechanism (log corrections as labels), not the
+  reported 80%-cost / 90%-value figures (a self-reported hypothetical from an un-peer-reviewed preprint).
+
+### 4.2b Building the target-worm benchmark, annotation protocol (R1 headline)
+
+The ruler in §4.1 scores against the *cross-worm* dense GT, which measures generalization. To measure
+error detection and method quality *in-distribution* I need a second thing: a benchmark built on the
+**target** worm by having a human judge the pipeline's own predicted masks. The GUI's label store
+already collects the raw material (per-frame verdict + error_type + anchor verdict); this is about
+scaling that into a deliberate benchmark. The verified proofreading literature gives one sharp warning
+and a reusable design:
+
+- **Selection bias is the trap.** If a human only inspects frames QC already flagged, I can estimate
+  precision but never recall, missed errors are invisible. The benchmark must sample **beyond** the
+  flagged set: random/stratified frames plus a deliberately-labelled clean control set, so both
+  false-positive and false-negative rates are measurable.
+- **Unaided novices make segmentations worse.** In a fixed 30-min task, novice proofreaders *raised*
+  edit distance on average; only a tool that guided them to candidate errors helped (Haehn et al.,
+  IEEE VIS/TVCG 2014). So surface candidate errors to the annotator, use expert adjudication, and do not
+  hand someone raw masks to judge cold. This is also third-party support for the auto-QC value prop.
+- **Granularity.** Per-frame correct/wrong verdicts are the most expensive but train a per-frame detector
+  directly; per-chain triage (judge the chain, then localize the first/worst wrong frame or the bad
+  z-interval) is cheaper and still supports ERL. Start with per-chain-then-localize and reserve dense
+  per-frame labelling for a sampled subset.
+- **Reusable eval template:** between-subjects, brief training, fixed time window, scored against expert
+  GT with VI / Rand / edit distance (Haehn 2014). Adapt the counts to our sparse per-frame setting.
+- **Two open problems the literature does not solve for us:** (1) **anchor contamination**, a frame wrong
+  only because the seed/box was wrong is not a propagation error and needs its own label (the label
+  store's `anchor_passed` verdict is the hook, but the attribution scheme is unproven); (2) the
+  quantitative **mapping from a frame-level detector score to neuron-level ERL/VOI**, so a high detector
+  score provably predicts reconstruction quality and human-time saved. Both are ours to settle empirically.
 
 ### 4.3 Branching / merging, consensus, agglomeration, memory-tree, linking (Problem 3 · R4)
 
@@ -192,6 +264,13 @@ The single-arm failure is the field's universal failure mode; there are four com
   error accumulation and recovers after "occlusion/reappearance", exactly what branch points and
   section artifacts look like. Reported +3.0 J&F average (up to +5.3) on long-video benchmarks.
   **Adopt before any custom work.** Source: arXiv 2410.16268 (ICCV 2025); github.com/Mark12Ding/SAM2Long.
+  Two sibling training-free memory drop-ins surfaced in the July research and are worth trialing the
+  same way: **MA-SAM2** (occlusion-resilient, mask-quality-based memory selection; MICCAI 2025,
+  arXiv 2507.09577) and **RevSAM2** (built for 3D volumes, replaces SAM2's FIFO memory queue with a
+  reverse-propagation query selection that keeps only high-quality masks as prompts across the whole
+  stack; arXiv 2409.04298). RevSAM2 is the closest to our existing node-anchored multimask + re-seeding
+  idea. Caveat: all three are validated on natural / surgical / 3D-medical video, not EM neurites, so the
+  1-5 point gains are an optimistic ceiling.
 - **Multi-seed / over-segmentation consensus** (the FFN idea): propagate from multiple anchors /
   both directions / multiple resolutions, keep only what's consistent, accept extra splits to kill
   merges. Source: FFN, Nature Methods 2018.
@@ -225,16 +304,28 @@ The single-arm failure is the field's universal failure mode; there are four com
      supplies *membrane-accurate fragments*, the assignment fixes **bleed and overlap together**. This
      is the R5 dense+agglomeration hedge, expressed as a SAM2-anchored pipeline.
 
-  **Bottleneck (honest):** everything past tier 1 needs a good **membrane/affinity signal**, too coarse
-  at scale-8; at full res it likely means a *trained* affinity predictor (LSD/FGNet-style), which
-  re-introduces the domain-gap/training cost SAM2-propagation was chosen to avoid. A classical
-  EM-gradient watershed may suffice for tiers 1-2; tier 3 realistically implies an affinity model.
+  **Bottleneck (honest, now verified):** everything past tier 1 needs a good **membrane/affinity
+  signal**, too coarse at scale-8; at full res it likely means a *trained* affinity predictor
+  (LSD/FGNet-style), which re-introduces the domain-gap/training cost SAM2-propagation was chosen to
+  avoid. A classical EM-gradient watershed may suffice for tiers 1-2; tier 3 realistically implies an
+  affinity model. The July research confirmed the cost is real: **FGNet is not a training-free drop-in**,
+  it matches SOTA only with SAM2 weights frozen and beats it (+12.5% VOI on AC3/AC4) only after EM
+  finetuning, and its architecture uses SAM2 as a mere feature encoder feeding a *trained* dual-affinity
+  decoder + watershed, dropping SAM2 propagation entirely (arXiv 2511.13063). **Spatial-SAM** (CVPR 2026)
+  replaces SAM2's memory with a learned SDF memory precomputed by a trained 3D U-Net, gains only ~1-3
+  Dice and only on blob-like organelles (mito/nuclei). Both reinforce that this whole tier is a learned,
+  evidence-gated last resort, not a drop-in.
 
 ### 4.4 Thin structures + resolution, topology loss, skeleton crops, refinement (Problem 4 · R7)
 
 - **clDice (soft centerline-Dice) topology-preserving loss**, proven to preserve connectivity up to
   homotopy for tubular structures; the single most relevant loss for thin neurites, to stop
   fragmentation. Train any mask/affinity head with it. Source: Shit et al., CVPR 2021 (arXiv 2003.07311).
+  The July research confirms it as the best-supported lever for the fragmentation/split mode, with two
+  honest limits: it is a *training* loss (relevant only once §4.7 finetuning is on the table, not a
+  drop-in), and it fixes **connectivity, not cross-section under/over-fill** (it is insensitive to
+  boundary shifts within the tube radius and biased toward larger diameters, which motivates cbDice
+  variants). Pair it with soft-Dice; do not expect it to fix bleed.
 - **Skeleton-oriented / centerline-following crops**, use the CATMAID skeleton to keep the neurite
   centered and at higher effective resolution, the principled version of my tier-2/tier-3 crop idea.
   This is also MemBrain's core trick (normalize the input using known geometry to simplify the task;
@@ -249,7 +340,12 @@ The single-arm failure is the field's universal failure mode; there are four com
   instinct and worth confirming.
 - **Re-seed at CATMAID skeleton nodes** along the chain to bound drift.
 - **Prefer box/mask prompts over a single point** where the cross-section is ambiguous (consistent
-  with my own seed-ablation finding that `box_pos` beat `pos_only`).
+  with my own seed-ablation finding that `box_pos` beat `pos_only`). The July research makes this a
+  verified, zero-cost lever against the dominant merge/bleed mode: a single positive point is
+  under-constrained and lets SAM2 bleed into neighbours, while a box and/or negative points on
+  neighbouring objects sharply constrain the decoder's search space (Sanaat et al., SPIE Medical
+  Imaging 2025, arXiv 2408.04762). This validates the existing box-seed + nearest-neighbour-negative
+  design; the actionable check is to confirm no path ever falls back to a point-only seed.
 
 ### 4.6 Post-processing, topology-aware, and mesh-space not morphological (Problem 6 · R7)
 
@@ -262,14 +358,29 @@ The single-arm failure is the field's universal failure mode; there are four com
 
 Two threads, now that I have GT:
 
-- **Finetune SAM2 on the confirmed ground truth.** Mask-decoder-only first (frozen prompt encoder),
-  add LoRA on the image encoder if needed, PEFT updates <5% of params, fits a single consumer GPU,
-  and is the explicit low-data recommendation. Supervise **only on confirmed voxels**; use a
-  composite loss (BCE + soft-Dice + soft-clDice). Sources/tooling: micro_sam (Nature Methods 2024,
-  s41592-024-02580-4; github.com/computational-cell-analytics/micro-sam, + peft-sam); lightweight
-  SAM2 microscopy finetuning in a single Colab (bioRxiv 2025.11.08.687405); SAM2LoRA (arXiv
-  2510.10288); FGNet (arXiv 2511.13063). Optional: initialize from CEM500K EM-pretrained features
-  (eLife 2021, articles/65894).
+- **Finetune SAM2 on the confirmed ground truth, neurite-targeted.** Mask-decoder-only first (frozen
+  prompt encoder), add LoRA on the image encoder if needed, PEFT updates <5% of params, fits a single
+  consumer GPU. Supervise **only on confirmed voxels**. The July research turned this from a plausible
+  plan into a recipe with one hard rule and two simplifications:
+  - **Hard rule: the finetune must be neurite-targeted, never organelle-borrowed.** micro_sam's EM
+    *generalist* (trained on organelles) reliably improves only roundish structures (mito, nuclei) and
+    *degrades* CREMI neurites, "because it was trained to segment organelles rather than membrane
+    compartments like neurites"; a task *specialist* finetune does improve neurites across all settings
+    (Archit et al., Nature Methods 2024, s41592-024-02580-4). So do not initialize from or borrow an
+    organelle model; train on our own neurite labels. This is also the clearest published "when
+    finetuning fails to beat stock" signal, and the domain-gap pivot for Stage 2.
+  - **Keep the loss simple.** The claim that a BCE+SoftDice+FocalTversky composite is essential was
+    *refuted* in the research (0-3). Start with Dice + BCE (the lightweight SAM2 Colab recipe), add
+    soft-clDice only for the connectivity/fragmentation mode (§4.4). Likewise, the claim that
+    full-model / image-encoder finetuning beats decoder-only was *refuted* (1-2), so **decoder-first is
+    defensible**, not a compromise.
+  - **Feasibility and data efficiency are settled.** SAM4EM does decoder LoRA in ~4GB VRAM plus a 3D
+    memory-attention over serial slices, directly our propagation regime (arXiv 2504.21544, CVPR 2025
+    workshop); SAM2LoRA tunes <5% of params (arXiv 2510.10288); microscopy evidence says most of the
+    gain arrives with only ~2-5% of training data or as few as ~10 images (micro_sam; lightweight SAM2
+    Colab, bioRxiv 2025.11.08.687405). Optional: initialize from CEM500K EM-pretrained features (eLife
+    2021, articles/65894). Caveat: all accuracy numbers are organelle/fundus/LM, none thin neurites, so
+    treat feasibility as transferable and magnitudes as not.
 - **Build the dense-segmentation + cross-z-linking path in parallel** (§4.3) as the architectural
   hedge: if the cross-worm domain gap turns out large and SAM2 finetuning doesn't beat stock SAM2,
   this path is less sensitive to SAM2's natural-image priors. This is the R5 re-architecture, no
@@ -289,6 +400,15 @@ Two threads, now that I have GT:
 
 Ordered so each stage's output feeds the next, and so the ruler (Stage 0) exists before any tuning.
 Thresholds are advance/pivot gates, in the §4 ruler spirit.
+
+> **Re-evaluation (July 2026): error detection + the target-worm benchmark is the gate, not the tail.**
+> The two research passes make the sequencing dependency explicit: I cannot fairly compare any Stage 1-3
+> segmentation change until I can *measure* it, which needs both a trustworthy detector and an
+> in-distribution benchmark (§4.2, §4.2b). So the cheap training-free pieces of Stage 4 move forward to
+> run alongside Stage 1: **forward/backward propagation consistency** and **topology debugging stats**
+> (self-loop = merge) cost almost nothing and replace several hand-tuned thresholds immediately, and the
+> **target-worm annotation benchmark** should be scoped early because it gates the A/B evidence every
+> later stage is judged on. The finetuning stage keeps the new hard constraint: neurite-targeted only.
 
 - **Stage 0, Instrument & benchmark the current pipeline (now).** ERL + VOI_split/VOI_merge on the
   confirmed cross-worm segments; set the merge:split cost ratio; benchmark the *current* pipeline.
@@ -363,9 +483,11 @@ Thresholds are advance/pivot gates, in the §4 ruler spirit.
 
   *Loose ends:* `predict_gt.py` is **discontinued** (the scored path is `batch.py`, which has real
   seeding/postprocess); its empty-name `--neuron-limit` bug and bleed levers retire with it.
-- **Stage 1, Free wins on the existing SAM2 path (1-2 wk).** Drop in SAM2Long; center-outward
-  propagation; forward/backward consistency check (replaces several hand-tuned QC thresholds);
-  re-seed at skeleton nodes + skeleton-following crops; **node-anchored multimask selection** (pick
+- **Stage 1, Free wins on the existing SAM2 path (1-2 wk).** Drop in SAM2Long (and trial the sibling
+  training-free memory strategies MA-SAM2 and the 3D-volume RevSAM2, §4.3); center-outward
+  propagation; forward/backward consistency check (replaces several hand-tuned QC thresholds, and is
+  the cheapest verified error signal, §4.2); confirm box/mask seeds never fall back to point-only
+  (§4.5); re-seed at skeleton nodes + skeleton-following crops; **node-anchored multimask selection** (pick
   SAM2's candidate that contains the positive node and, with `multimask_exclude_neg`, excludes the
   neighbour negatives; on for the `eval` preset, adapts the 2025 lightweight-SAM2 paper's
   anchor-containment idea, see [ADR 0012](../adr/0012-node-anchored-multimask-selection.md)). *Advance
@@ -380,20 +502,33 @@ Thresholds are advance/pivot gates, in the §4 ruler spirit.
   from `eval.score_batch`. *Cost to plan around:* each config is a full GT run + score (~19 min/full-res
   run today), so a search needs a fast subset or a cheaper proxy. *Advance when:* the tuned config beats
   the hand-set defaults on the held-out eval set.
-- **Stage 2, Finetune SAM2 (2-4 wk; always the plan).** Decoder-first + optional encoder-LoRA on
-  confirmed voxels, composite + soft-clDice loss. The 2025 lightweight-SAM2 paper is the concrete
-  low-cost recipe to start from: freeze the image + prompt encoders, fine-tune only the mask decoder
-  (Dice + BCE, AdamW, cosine annealing), which they show lifts domain accuracy from small datasets
-  without added architecture. *Advance when:* finetuned beats stock SAM2 on held-out confirmed
-  segments. *Pivot if not:* inspect the domain gap, lean on Stage 3. *(§4.7, §4.4)*
+- **Stage 2, Finetune SAM2, neurite-targeted (2-4 wk; always the plan).** Decoder-first + optional
+  encoder-LoRA on confirmed voxels, Dice + BCE loss (add soft-clDice only for connectivity; the
+  composite-is-essential and full-model-beats-decoder claims were both refuted, §4.7). **Hard
+  constraint from the July research: train on our own neurite labels, never initialize from or borrow
+  an organelle-trained EM model, which measurably degrades neurites.** The lightweight-SAM2 Colab is
+  the concrete low-cost recipe (freeze image + prompt encoders, tune the mask decoder, AdamW, cosine
+  annealing); SAM4EM shows decoder-LoRA + 3D memory-attention in ~4GB VRAM. Data efficiency is
+  favorable (most gain by ~2-5% of data / ~10 images), but confirm the *minimum* label volume on our
+  own morphology, the literature only documents large/organelle regimes. *Advance when:* finetuned
+  beats stock SAM2 on held-out confirmed segments. *Pivot if not:* inspect the domain gap, lean on
+  Stage 3. *(§4.7, §4.4)*
 - **Stage 3, Fix branching structurally (3-6 wk).** Parallel per-slice over-segmentation
   (affinities/LSD or FGNet-style) → watershed → agglomeration → link across z (Seg2Link/Trackastra),
   used where propagation drops an arm. *Advance when:* branch-point recall beats single-arm
   propagation. *(§4.3, §4.7)*
-- **Stage 4, Learned QC + triage (ongoing).** Train the split/merge classifier / quality regressor
-  on confirmed GT; add connectome-prior checks; route only flagged frames to the human. *Advance
-  when:* human review time per neuron drops while ERL holds, the stated success criterion (faster
-  than manual, accuracy preserved). *(§4.2)*
+- **Stage 4, Error detection + triage (start the cheap parts NOW, in parallel with Stage 1).** This
+  moved up: it gates trustworthy A/B for every other stage (see the §5 re-evaluation note). Land in
+  order of evidence strength: (a) **forward/backward propagation consistency** and **topology debugging
+  stats** (self-loop = merge, orphan = error), both training-free and cheap; (b) **EM-content features**
+  into QC (image + mask + context), the biggest structural gap; (c) **no-reference quality estimation**
+  (In-Context RCA reusing our SAM2, with the cross-worm GT as its reference set) for the target worm,
+  re-calibrated once target labels exist; (d) a **learned split/merge classifier / quality regressor**
+  (EvanySeg-style head) trained by recycling human corrections as labels. Build the **target-worm
+  annotation benchmark** (§4.2b) alongside, so the detector has both a training set and an honest
+  precision/recall+recall eval that is not blinded by selection bias. *Advance when:* human review time
+  per neuron drops while ERL holds, the stated success criterion (faster than manual, accuracy
+  preserved). *(§4.2, §4.2b)*
 
 ---
 
@@ -421,7 +556,14 @@ Thresholds are advance/pivot gates, in the §4 ruler spirit.
   spot-checks on the target worm.
 - **First-party benchmark numbers.** FGNet, SAM2Long, Cutie, nnInteractive, micro_sam numbers are on
   natural-video / organelle / medical benchmarks, not thin C. elegans neurites, expect lower
-  absolute performance.
+  absolute performance. Both July research passes were blunt here: **no verified source evaluates on
+  thin C. elegans neurites at low resolution**, so every quoted figure is an optimistic ceiling. The
+  proof is within a single method, SAM4EM scores 92.4% Dice on blobby mitochondria and 53.8% on complex
+  synapses, so morphology alone can halve the number.
+- **Organelle transfer degrades neurites.** An EM finetune trained on organelles is *detrimental* for
+  neurites (micro_sam), and a quality estimator trained on one segmenter/domain drops sharply
+  off-distribution (EvanySeg ~0.75 → 0.506). Anything trained or calibrated on the cross-worm GT or on
+  organelle data must be validated, and likely re-calibrated, on target-worm neurites before it is trusted.
 - **Licensing.** SAM2 and micro_sam are permissive; nnInteractive checkpoints are non-commercial
   (CC-BY-NC-SA 4.0), verify before any non-research use.
 - **Linkers don't model arbitrary merges.** Trackastra/Seg2Link model divisions; ultrack forbids
@@ -439,11 +581,19 @@ Thresholds are advance/pivot gates, in the §4 ruler spirit.
 - C. elegans CATMAID/VAST vEM context, Frontiers Neural Circuits 2018, fncir.2018.00094.
 
 **SAM2 / Segment Anything for EM & microscopy**
-- FGNet (SAM2 → 3D EM neurons, dual affinity), arXiv 2511.13063 (AAAI 2026).
-- micro_sam, Nature Methods 2024, s41592-024-02580-4; github.com/computational-cell-analytics/micro-sam (+ peft-sam).
+- FGNet (SAM2 → 3D EM neurons, dual affinity; *not* training-free, beats stock only after EM finetune), arXiv 2511.13063 (AAAI 2026).
+- Spatial-SAM (learned SDF memory for 3D EM, trained 3D U-Net; blob organelles only), CVPR 2026.
+- micro_sam, Nature Methods 2024, s41592-024-02580-4; github.com/computational-cell-analytics/micro-sam (+ peft-sam). *Key result: organelle generalist degrades neurites; neurite specialist improves them.*
 - **Lightweight SAM2 microscopy finetuning (Colab), bioRxiv 2025.11.08.687405.**
-- SAM2LoRA, arXiv 2510.10288. SAM-EM (full SAM2 finetune, particles), arXiv 2501.03153.
+- SAM4EM (decoder-LoRA ~4GB VRAM + 3D memory attention), arXiv 2504.21544 (CVPR 2025 workshop); github.com/Uzshah/SAM4EM.
+- SAM2LoRA (<5% params), arXiv 2510.10288. SAM-EM (full SAM2 finetune, particles), arXiv 2501.03153.
 - SAM2 3D medical / propagation, arXiv 2408.02635; SegmentWithSAM arXiv 2408.15224; SLM-SAM 2 arXiv 2505.01854; center-outward study arXiv 2507.23272.
+
+**Training-free VOS / SAM2 memory strategies**
+- SAM2Long (memory-tree search), arXiv 2410.16268 (ICCV 2025); github.com/Mark12Ding/SAM2Long.
+- MA-SAM2 (occlusion-resilient memory), arXiv 2507.09577 (MICCAI 2025); github.com/Fawke108/MA-SAM2.
+- RevSAM2 (3D-volume reverse-propagation memory), arXiv 2409.04298.
+- Prompting discipline (box/negatives constrain vs point bleed), Sanaat et al., SPIE Medical Imaging 2025, arXiv 2408.04762.
 
 **Connectomics reconstruction**
 - FFN, Januszewski et al., Nature Methods 2018, s41592-018-0049-4; github.com/google/ffn.
@@ -456,8 +606,12 @@ Thresholds are advance/pivot gates, in the §4 ruler spirit.
 - Cutie, arXiv 2310.12982 (CVPR 2024); XMem, arXiv 2207.07115 (ECCV 2022).
 
 **Error detection / proofreading / quality**
-- Guided Proofreading, Haehn et al., arXiv 1704.00848. Error Detection & Correction, Zung/Lee et al., arXiv 1708.02599.
-- Autoproof, arXiv 2509.26585; ConnectomeBench, arXiv 2511.05542; In-Context RCA, arXiv 2503.04522.
+- Guided Proofreading, Haehn et al., CVPR 2018, arXiv 1704.00848 (image+mask+context input recipe). Error Detection & Correction, Zung/Lee et al., NeurIPS 2017, arXiv 1708.02599.
+- Interactive proofreading tools + eval template (novices worsen segmentations; guided-to-errors helps), Haehn et al., IEEE VIS/TVCG 2014.
+- Split/merge cost asymmetry + topology debugging stats (self-loops, orphans), Plaza & Funke, Frontiers Neural Circuits 2018, fncir.2018.00102.
+- Reverse Classification Accuracy (GT-free Dice prediction), Valindria et al., IEEE TMI 2017, arXiv 1702.03407. In-Context RCA (SAM2 + DINOv2), arXiv 2503.04522.
+- EvanySeg (GT-free per-object quality regressor; architecture template), arXiv 2409.14874.
+- Autoproof (recycle corrections as labels), arXiv 2509.26585; ConnectomeBench (mine edit histories), arXiv 2511.05542.
 
 **Metrics**
 - ERL / merge-split, FFN (above); II-CATS bERL/nERL, Zhai et al., PMLR v227 2024. VOI, Meilă; Nunez-Iglesias et al. SNEMI3D adapted-Rand.
