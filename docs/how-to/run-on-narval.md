@@ -103,6 +103,7 @@ sbatch --job-name=exp_fullres     --export=ALL,EXP_PRESET=original_fullres     c
 sbatch --job-name=exp_wholeimg_s4 --export=ALL,EXP_PRESET=original_wholeimg_s4 cluster/run_exp.sh
 sbatch --job-name=exp_tier2forced --export=ALL,EXP_PRESET=original_tier2forced cluster/run_exp.sh
 sbatch --job-name=exp_bigimg      --export=ALL,EXP_PRESET=original_bigimg      cluster/run_exp.sh
+sbatch --job-name=exp_tier2_s1    --export=ALL,EXP_PRESET=original_tier2_s1    cluster/run_exp.sh   # scale-1 tier-2 (the cheap resolution win)
 # merge each after its array succeeds (use the job id sbatch printed):
 sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_fullres     cluster/run_merge_exp.sh
 sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_wholeimg_s4 cluster/run_merge_exp.sh

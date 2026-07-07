@@ -45,7 +45,17 @@ def test_assert_image_size_raises_on_silent_noop():
 # --- experiment presets ----------------------------------------------------------------
 
 EXP_PRESETS = ["original_fullres", "original_tier2forced", "original_bigimg",
-               "original_wholeimg_s4"]
+               "original_wholeimg_s4", "original_tier2_s1"]
+
+
+def test_tier2_s1_reads_crops_at_full_res():
+    # Fills SAM2's 1024 input for sub-2048-tif crops that scale-2 under-fills. tier2 stays on;
+    # max_px raised so crops are not coarsened straight back to scale >1.
+    cfg = PipelineConfig(**presets.get_preset("original_tier2_s1")["pipeline"])
+    assert cfg.chain_crop_scale == 1
+    assert cfg.chain_crop_max_px == 2048
+    p = presets.get_preset("original_tier2_s1")
+    assert p["tier2_all"] is True
 
 
 @pytest.mark.parametrize("name", EXP_PRESETS)

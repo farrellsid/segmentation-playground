@@ -5,31 +5,43 @@ seeding of the first draft. Builds on the mask-seeded-propagation spec (same dat
 chosen alternative to raising `image_size` (the bigimg variant, which crashed inside SAM2 and
 is off-distribution anyway).
 
-## Why, and the honest limit
+## Why, and where the resolution actually comes from
 
-SAM2 resizes every input to a fixed 1024 square, so effective resolution is capped by that
-1024, not by GPU memory. Cropping beats the cap because a crop makes 1024 cover a small
-physical area. Tier-2 already crops to the chain; it only loses resolution when a chain is so
-large that even its crop will not fit one input, at which point it reads coarser.
+SAM2 resizes every crop to a fixed 1024 input, so the effective resolution of a chain's
+segmentation is `min(crop_tif / crop_scale, 1024) / crop_tif` samples per tif pixel. Two
+regimes: read the crop fine enough that its input reaches 1024 and effective resolution is
+`1024 / crop_tif`, at which point the read scale stops mattering; read it coarser than 1024 and
+SAM2 upsamples, so the input's sample count is the ceiling and reading finer helps.
 
-So be clear about the scope: tiling is **not** broadly better than tier-2. For a compact chain
-whose crop already fits one input, a tile grid is one tile, identical to tier-2. Tiling earns
-its keep only on the minority of large or sprawling chains (AVAL-like) where tier-2 currently
-coarsens. Whether that minority is worth the build is a measurement, not an assumption: count
-how many chains' full-resolution crop exceeds one input before committing.
+Measured on the tier2forced run (621 chains): the longest crop edge is a median of 1560 tif px,
+and only 14% exceed 2048. Two consequences:
+
+1. The current tier-2 reads at `crop_scale=2`, so the median crop is fed at ~780 input px,
+   below 1024. SAM2 upsamples it, so 86% of chains (crop under 2048 tif) under-fill the 1024
+   input and leave resolution on the table (about 0.50 samples/tif at the median). Reading the
+   same crops at `crop_scale=1` fills the input (1560 downsampled to 1024) and lifts effective
+   resolution to about 0.66/tif, roughly a third sharper, for free on the cluster. This is the
+   cheap win and is worth shipping on its own.
+2. To go past `1024 / crop_tif` you must shrink the physical extent per input, which means
+   tiling. A 1560 tif crop split into ~800 tif tiles roughly doubles effective resolution
+   (~1.28/tif). Because the median crop already exceeds 1024 tif, tiling helps essentially every
+   chain, not just large ones. The open question is whether ~0.66/tif after the scale-1 fix is
+   already sharp enough for the neurites, an eyeball-and-GT question, not an assumption.
 
 The first draft also had a real seeding hole. A chain's skeleton is a 1D centerline, so on the
 anchor slice it sits at a single point; a grid of tiles would leave almost every tile with no
 prompt. The coarse-to-fine design below removes that hole by seeding tiles from a mask, not a
 point.
 
-## The building block: scale-1 tier-2
+## The building block: scale-1 tier-2 (the cheap win, ship first)
 
-A tile is just a tier-2 crop read at full resolution that fits one input. So the first, cheap
-step is a scale-1 tier-2 mode: `chain_crop_scale=1` with `chain_crop_max_px` raised (on the
-cluster VRAM is not binding). That alone is the "original-resolution crop" test, and it tells
-us how often a chain exceeds one input (the chains that then coarsen are exactly the tiling
-candidates).
+A tile is just a tier-2 crop read fine enough to fill one input. The cheap step, worth shipping
+before any tiling, is a scale-1 tier-2 mode: `chain_crop_scale=1` with `chain_crop_max_px`
+raised so crops are not coarsened straight back (on the cluster VRAM is not binding). Per the
+measurement above this fills SAM2's 1024 input for the 86% of chains whose crop is under 2048
+tif, where scale 2 currently under-fills it, so it lifts effective resolution by roughly a
+third at essentially no cost. A new preset (`original_tier2_s1`) makes it a one-line cluster
+variant alongside the others.
 
 ## Design: coarse-to-fine
 
@@ -81,7 +93,12 @@ Tile knobs on `PipelineConfig` (off by default): `tile_enable`, `tile_input_px` 
 
 ## Sequence
 
-1. Measure the large-chain fraction from existing runs (decides whether tiling is worth it).
-2. Ship scale-1 tier-2 (cheap) and mask-seeding (broad) first.
-3. Build coarse-to-fine tiling only if the measurement says enough chains coarsen, and judge it
-   against scale-1 tier-2 and the coarse pass on GT.
+The measurement is done (median crop 1560 tif, 14% over 2048), so the order is set:
+
+1. Ship scale-1 tier-2 and mask-seeding first. Both are cheap, and scale-1 alone recovers about
+   a third of the effective resolution the current scale-2 crops throw away by under-filling the
+   1024 input.
+2. Build coarse-to-fine tiling next. The median crop already exceeds 1024 tif, so tiling helps
+   essentially every chain; the question is diminishing returns past scale-1, not whether it
+   triggers. Judge it against scale-1 tier-2 and the coarse pass on GT.
+3. Mask-seeding is orthogonal (it improves the seed, not the resolution) and lands with either.

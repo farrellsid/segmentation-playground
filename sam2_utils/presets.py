@@ -135,6 +135,21 @@ PRESETS = {
         "clean": False, "neurons": EXP_NEURONS,
         "score_out": None,
     },
+    "original_tier2_s1": {
+        # Scale-1 tier-2: read each chain's tier-2 crop at full resolution (chain_crop_scale=1)
+        # with chain_crop_max_px raised to 2048, so a crop under ~2048 tif fills SAM2's 1024
+        # input instead of under-filling it at the default crop_scale=2. Measured median crop is
+        # 1560 tif, and 86% of chains are under 2048, so this lifts effective resolution by ~a
+        # third at no accuracy risk (VRAM is not binding on the cluster). The cheap resolution
+        # win; see the 2026-07-07 tiled-fullres spec for the min(input,1024)/crop_tif reasoning.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_scale": 1, "chain_crop_max_px": 2048},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_tier2_s1",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
 }
 
 
