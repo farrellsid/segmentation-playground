@@ -470,7 +470,7 @@ def _reasons_for_row(row: pd.Series) -> str:
     pi = row.get("pred_iou")
     if pd.notna(pi) and pi < 0.5:
         out.append(f"pIoU {pi:.2f}")
-    return " ".join(out)
+    return " ".join
 
 
 def build_triage_queue(output_root: Path, manifest: pd.DataFrame) -> pd.DataFrame:
@@ -637,8 +637,10 @@ def _build_session(cfg: PipelineConfig) -> Session:
     """One-time session setup. Lift this almost verbatim from run_aval.py."""
     # Predictors built ONCE, above the driver (cfg.model_size consumed here, not
     # inside run_chain).
-    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image")
-    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video")
+    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image",
+                                                image_size=cfg.image_size)
+    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video",
+                                               image_size=cfg.image_size)
     diagnostics.snapshot("after model load")
 
     # annotate_df: CATMAID pull (or cached CSV), then apply the stack->tif affine.
@@ -670,8 +672,10 @@ def _build_gt_session(cfg: PipelineConfig,
     from eval import gt_dataset
     from sam2_utils.skeletons import normalize_name
 
-    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image")
-    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video")
+    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image",
+                                                image_size=cfg.image_size)
+    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video",
+                                               image_size=cfg.image_size)
     diagnostics.snapshot("after model load")
 
     annotate_df, chains, frame_store = gt_dataset.build_gt_session_inputs(
@@ -681,6 +685,66 @@ def _build_gt_session(cfg: PipelineConfig,
     print(f"[batch] SEM-Dauer 1: {len(chains)} chains over "
           f"{len({c['cell_name'] for c in chains})} neurons; EM={frame_store.em_dir}")
     return Session(image_predictor, video_predictor, annotate_df, chains, frame_store)
+
+
+def write_run_meta(output_root: Path, *, preset: str, cfg: PipelineConfig,
+                   neurons: Optional[Sequence[str]], gif_mode: str,
+                   tier2_on_flagged: bool, tier2_all: bool, session: "Session") -> None:
+    """Write ``_run_meta.json``: full provenance for a run we cannot watch live.
+
+    A cluster run is fire-and-forget (no live console, Duo-gated login), so persist
+    everything needed to reconstruct what actually executed for post-hoc comparison:
+    the preset and resolved resolution/tier-2 knobs, the git commit + dirty flag, host,
+    the argv, the neuron scope, and the video predictor's ACTUAL ``image_size`` (so the
+    bigimg variant records the size it truly built at, not just what was requested). Pairs
+    with the per-chain ``state.json`` (phase timings, ``fell_back_to_sam``, QC summary) and
+    ``_manifest.csv`` / ``_timing.csv`` already written per run.
+    """
+    import sys
+    import platform
+    import subprocess
+    from dataclasses import asdict, is_dataclass
+
+    output_root = Path(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    def _git(*a: str) -> Optional[str]:
+        try:
+            return subprocess.run(["git", *a], cwd=Path(__file__).resolve().parent,
+                                  capture_output=True, text=True, timeout=10).stdout.strip()
+        except Exception:
+            return None
+
+    meta = {
+        "preset": preset,
+        "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "git_commit": _git("rev-parse", "HEAD"),
+        "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+        "git_dirty": bool(_git("status", "--porcelain")),
+        "host": platform.node(),
+        "argv": sys.argv,
+        "resolution": {
+            "scale": cfg.scale,
+            "save_downscale": cfg.save_downscale,
+            "image_size_requested": cfg.image_size,
+            "image_size_actual": getattr(session.video_predictor, "image_size", None),
+        },
+        "tier2": {
+            "tier2_on_flagged": tier2_on_flagged,
+            "tier2_all": tier2_all,
+            "chain_crop_min_image_score": cfg.chain_crop_min_image_score,
+            "chain_crop_from_mask": cfg.chain_crop_from_mask,
+        },
+        "model_size": cfg.model_size,
+        "gif_mode": gif_mode,
+        "neurons": list(neurons) if neurons else None,
+        "n_neurons": len(neurons) if neurons else None,
+        "pipeline_config": asdict(cfg) if is_dataclass(cfg) else None,
+    }
+    path = output_root / "_run_meta.json"
+    path.write_text(json.dumps(meta, indent=2, default=str))
+    print(f"[batch] wrote run provenance -> {path} "
+          f"(image_size actual={meta['resolution']['image_size_actual']})")
 
 
 def main() -> None:
@@ -735,12 +799,18 @@ def main() -> None:
         session = _build_gt_session(cfg, neurons, args.neuron_limit)
         # scope run_batch (clean + enumerate) to exactly the chains we loaded
         resolved = sorted({c["cell_name"] for c in session.chains})
+        write_run_meta(Path(cfg.output_root), preset=args.preset, cfg=cfg, neurons=resolved,
+                       gif_mode=gif_mode, tier2_on_flagged=tier2_flagged,
+                       tier2_all=tier2_all, session=session)
         run_batch(session, cfg, Path(cfg.output_root), neurons=resolved, clean=clean,
                   gif_mode=gif_mode, tier2_on_flagged=tier2_flagged, tier2_all=tier2_all)
         return
 
     # --- target worm ---
     session = _build_session(cfg)
+    write_run_meta(Path(cfg.output_root), preset=args.preset, cfg=cfg, neurons=neurons,
+                   gif_mode=gif_mode, tier2_on_flagged=tier2_flagged,
+                   tier2_all=tier2_all, session=session)
     run_batch(session, cfg, Path(cfg.output_root), neurons=neurons, clean=clean,
               gif_mode=gif_mode, tier2_on_flagged=tier2_flagged, tier2_all=tier2_all)
 

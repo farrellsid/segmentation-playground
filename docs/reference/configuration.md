@@ -25,7 +25,10 @@ Everything you would tune for a run lives here, in one place. Defaults reproduce
 single-chain run.
 
 - Spaces and resolution: `scale` (SAM2 input downscale), `save_downscale` (on-disk mask downscale;
-  equal to `scale` is canonical, see [ADR 0006](../adr/0006-canonical-mask-space.md)).
+  equal to `scale` is canonical, see [ADR 0006](../adr/0006-canonical-mask-space.md)), `image_size`
+  (override SAM2's internal input resolution, default 1024; None keeps the checkpoint default). SAM2
+  resizes every frame to `image_size`, so raising it is the only in-model way to feed more pixels
+  than scale/cropping give; verified post-build in `setup.py`, memory grows roughly quadratically.
 - Anchor crop (default on): `crop_anchor`, `crop_size_tif`, `crop_scale`. Runs image mode on a
   high-res crop around the node. Off falls back to the full-frame path.
 - Per-chain crop, tier-2 (default off, auto-on for flagged chains): `chain_crop`,

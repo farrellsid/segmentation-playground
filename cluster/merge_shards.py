@@ -86,6 +86,16 @@ def merge(shard_root: Path, out_root: Path) -> None:
     print(f"[merge] linked {n_linked} neuron dirs; "
           f"manifest rows={n_manifest}, timing rows={n_timing}")
 
+    # Carry a shard's run provenance up to the merged root. Each shard wrote its own
+    # _run_meta.json (identical preset/knobs/git across chunks, only the per-chunk
+    # `neurons` differs), so copying the first shard's copy documents the merged tree
+    # for a post-hoc, unobserved cluster run. link_neuron_dirs skips it (not a dir).
+    src_meta = next((s / "_run_meta.json" for s in shards
+                     if (s / "_run_meta.json").exists()), None)
+    if src_meta is not None:
+        (out_root / "_run_meta.json").write_text(src_meta.read_text())
+        print(f"[merge] copied run provenance from {src_meta}")
+
     # Rebuild the global triage queue from the merged manifest. build_triage_queue
     # reads each chain's qc.csv off disk (through the symlinks), so it does not care
     # that the neuron dirs are links rather than real dirs.

@@ -27,6 +27,13 @@ class PipelineConfig:
     save_downscale: int = 8            # on-disk mask downscale; == scale is canonical.
                                        # Diverge only if you want interpolated
                                        # higher-res Blender masks.
+    image_size: Optional[int] = None   # override SAM2's internal input resolution (px);
+                                       # None keeps the checkpoint default (1024). SAM2
+                                       # resizes every frame/crop to this size, so raising
+                                       # it is the only in-model way to feed more pixels
+                                       # (memory ~quadratic; off-distribution for the
+                                       # pretrained encoder). Read at predictor-build; the
+                                       # actual value is asserted post-build (setup.py).
 
     # prompt construction
     k_max_neg: int = 7                 # max negative points per object

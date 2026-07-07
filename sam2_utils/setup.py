@@ -150,16 +150,49 @@ def ensure_checkpoint(
 # Predictor build
 # =============================================================================
 
+def _image_size_overrides(image_size: int | None) -> list[str]:
+    """Hydra override list to set SAM2's internal input resolution, or [] for the default."""
+    return [f"++model.image_size={int(image_size)}"] if image_size else []
+
+
+def _assert_image_size(model, requested: int | None, where: str) -> None:
+    """Fail loud if an image_size override did not take.
+
+    SAM2 resizes every frame/crop to ``model.image_size``; a wrong hydra key would
+    silently no-op (a force-added key nothing reads), leaving the model at 1024 and
+    producing an experiment that looks like it ran at the requested size but did not.
+    We cannot observe the cluster run live, so verify the built model actually carries
+    the requested size and raise otherwise, turning a silent no-op into a hard failure
+    the shard log will show.
+    """
+    if not requested:
+        return
+    actual = getattr(model, "image_size", None)
+    if actual != int(requested):
+        raise RuntimeError(
+            f"{where}: requested image_size={requested} but the built SAM2 model reports "
+            f"image_size={actual}. The hydra override did not take (wrong key or an "
+            f"encoder that fixes its own resolution). Do not trust this run."
+        )
+
+
 def build_image_predictor(
     checkpoint_path: Path | str,
     model_cfg: str,
     device,
+    image_size: int | None = None,
 ):
-    """Build a SAM2ImagePredictor. Build once, reuse for the session."""
+    """Build a SAM2ImagePredictor. Build once, reuse for the session.
+
+    ``image_size`` overrides SAM2's internal input resolution (default 1024); verified
+    post-build (see ``_assert_image_size``).
+    """
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
 
-    sam2_model = build_sam2(model_cfg, str(checkpoint_path), device=device)
+    sam2_model = build_sam2(model_cfg, str(checkpoint_path), device=device,
+                            hydra_overrides_extra=_image_size_overrides(image_size))
+    _assert_image_size(sam2_model, image_size, "build_image_predictor")
     return SAM2ImagePredictor(sam2_model)
 
 
@@ -168,6 +201,7 @@ def build_video_predictor(
     model_cfg: str,
     device,
     correct_as_cond: bool = False,
+    image_size: int | None = None,
 ):
     """Build a SAM2 video predictor for spatio-temporal masklets.
 
@@ -188,8 +222,11 @@ def build_video_predictor(
     from sam2.build_sam import build_sam2_video_predictor
     overrides = (["++model.add_all_frames_to_correct_as_cond=true"]
                  if correct_as_cond else [])
-    return build_sam2_video_predictor(model_cfg, str(checkpoint_path), device=device,
-                                      hydra_overrides_extra=overrides)
+    overrides += _image_size_overrides(image_size)
+    predictor = build_sam2_video_predictor(model_cfg, str(checkpoint_path), device=device,
+                                           hydra_overrides_extra=overrides)
+    _assert_image_size(predictor, image_size, "build_video_predictor")
+    return predictor
 
 
 def build_predictor(
@@ -198,11 +235,14 @@ def build_predictor(
     device=None,
     checkpoint_dir: Path | None = None,
     correct_as_cond: bool = False,
+    image_size: int | None = None,
 ):
     """One-shot convenience: pick size + kind, get a ready-to-use predictor.
 
     ``correct_as_cond`` (video only) promotes human corrections to conditioning
     frames; see ``build_video_predictor``. Ignored for ``kind="image"``.
+    ``image_size`` overrides SAM2's internal input resolution (default 1024) for both
+    kinds; verified post-build.
 
     Returns
     -------
@@ -213,9 +253,10 @@ def build_predictor(
         device = setup_device(verbose=True)
     ckpt, cfg = ensure_checkpoint(size, checkpoint_dir=checkpoint_dir)
     if kind == "image":
-        predictor = build_image_predictor(ckpt, cfg, device)
+        predictor = build_image_predictor(ckpt, cfg, device, image_size=image_size)
     elif kind == "video":
-        predictor = build_video_predictor(ckpt, cfg, device, correct_as_cond=correct_as_cond)
+        predictor = build_video_predictor(ckpt, cfg, device, correct_as_cond=correct_as_cond,
+                                           image_size=image_size)
     else:
         raise ValueError(f"kind must be 'image' or 'video', got {kind!r}")
     return predictor, device

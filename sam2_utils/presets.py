@@ -47,6 +47,11 @@ _PIPELINE = dict(model_size="large", scale=8, save_downscale=8,
                  k_max_neg=3, neg_radius=150, box_margin=10,
                  chain_crop_from_mask=True)
 
+# Fixed neuron subset for the resolution-experiment presets (original_fullres /
+# _tier2forced / _bigimg / _stitch). Baked into the presets, not passed at submit, so
+# every variant runs the IDENTICAL subset and the cross-variant comparison is fair.
+EXP_NEURONS = KEY_NEURONS + ["AVAL"]
+
 PRESETS = {
     "eval": {
         "dataset": "sem-dauer-1",
@@ -69,6 +74,50 @@ PRESETS = {
         "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
         "clean": False, "neurons": KEY_NEURONS[0:3],
         "score_out": None,                         # no cross-worm GT scoring for the target worm
+    },
+
+    # --- resolution experiments (target worm, EXP_NEURONS subset, distinct outputs) ---
+    # A head-to-head of ways to spend the cluster's compute on resolution. All share the
+    # subset, model, and seed knobs so only the resolution strategy differs. See the spec
+    # docs/superpowers/specs/2026-07-06-fullres-resolution-experiments-design.md. NOTE
+    # (verified): SAM2 resizes every frame/crop to its internal image_size (1024 by
+    # default), so "whole image at full res" does NOT raise effective resolution vs
+    # scale-8; only cropping (tier-2/stitch) or raising image_size (bigimg) does.
+    "original_fullres": {
+        # Variant 1: whole frame at full res, no tier-2. Expected equal-or-worse than
+        # scale-8 (SAM2 downsamples the ~9.7k-px frame ~9.5x to 1024); a measured baseline.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "scale": 1, "save_downscale": 1},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_fullres",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": False, "tier2_all": False, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_tier2forced": {
+        # Variant 2: tier-2 crop on EVERY chain with the fallback floor dropped to 0, so
+        # no chain reverts to the scale-8 full frame. The high-res mechanism that actually
+        # works, applied universally.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_tier2forced",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_bigimg": {
+        # Variant 3: raise SAM2's internal input resolution to 2048 and feed scale-4 frames
+        # (~2432 px >= 2048) so the extra pixels are real, no tier-2. RISKY: off-distribution
+        # for the pretrained encoder and may OOM on a 40GB A100 (memory ~quadratic in
+        # image_size x ~300 stored frames). The build self-verifies image_size took effect.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "scale": 4, "save_downscale": 4, "image_size": 2048},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_bigimg",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": False, "tier2_all": False, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
     },
 }
 
