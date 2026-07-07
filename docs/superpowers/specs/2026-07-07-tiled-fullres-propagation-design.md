@@ -1,94 +1,87 @@
-# Tiled full-res propagation: the real resolution lever
+# Tiled full-res propagation: coarse-to-fine, mask-seeded
 
-Status: design, not yet implemented. This is the "with stitch" idea from the resolution
-experiments (2026-07-06), scoped as a buildable v1, and the chosen alternative to raising
-`image_size` (the bigimg variant, which crashed inside SAM2 and is off-distribution anyway).
+Status: design, not yet implemented. Revised after review; supersedes the skeleton-grid
+seeding of the first draft. Builds on the mask-seeded-propagation spec (same date) and is the
+chosen alternative to raising `image_size` (the bigimg variant, which crashed inside SAM2 and
+is off-distribution anyway).
 
-## Why
+## Why, and the honest limit
 
 SAM2 resizes every input to a fixed 1024 square, so effective resolution is capped by that
-1024, not by GPU memory. The tier-2 crop already exploits this: cropping a small window means
-1024 covers a small physical area, so a thin neurite is seen at high effective resolution. The
-whole-image variants confirmed the ceiling from the other side (a 9.7k-px frame downsampled to
-1024 loses detail; scale 1 vs scale 4 should look near-identical).
+1024, not by GPU memory. Cropping beats the cap because a crop makes 1024 cover a small
+physical area. Tier-2 already crops to the chain; it only loses resolution when a chain is so
+large that even its crop will not fit one input, at which point it reads coarser.
 
-The gap: when a chain's crop is large, the current tier-2 code bumps `crop_scale` coarser so the
-input still fits under `chain_crop_max_px` (1536), trading resolution away exactly where the
-chain is big. Raising `image_size` to feed more pixels crashes on the pretrained weights (the
-bigimg `.view()` error) and is off-distribution regardless. Tiling keeps full resolution over a
-large region while staying at the native 1024 input per tile, in-distribution.
+So be clear about the scope: tiling is **not** broadly better than tier-2. For a compact chain
+whose crop already fits one input, a tile grid is one tile, identical to tier-2. Tiling earns
+its keep only on the minority of large or sprawling chains (AVAL-like) where tier-2 currently
+coarsens. Whether that minority is worth the build is a measurement, not an assumption: count
+how many chains' full-resolution crop exceeds one input before committing.
 
-## Goal
+The first draft also had a real seeding hole. A chain's skeleton is a 1D centerline, so on the
+anchor slice it sits at a single point; a grid of tiles would leave almost every tile with no
+prompt. The coarse-to-fine design below removes that hole by seeding tiles from a mask, not a
+point.
 
-For a chain whose full-resolution crop exceeds one SAM2 input, split the crop into overlapping
-tiles no larger than one input, propagate each tile independently, and union the per-tile masks
-back into the chain's crop space. Save and treat the result as a high-resolution tier-2 chain,
-so aggregation and the GUI need no changes.
+## The building block: scale-1 tier-2
 
-Single object per chain is what makes the stitch simple: there is nothing to disambiguate across
-tile borders, overlapping predictions are just OR'd.
+A tile is just a tier-2 crop read at full resolution that fits one input. So the first, cheap
+step is a scale-1 tier-2 mode: `chain_crop_scale=1` with `chain_crop_max_px` raised (on the
+cluster VRAM is not binding). That alone is the "original-resolution crop" test, and it tells
+us how often a chain exceeds one input (the chains that then coarsen are exactly the tiling
+candidates).
 
-## Design
+## Design: coarse-to-fine
 
-Config knobs on `PipelineConfig` (all off by default, so existing runs are untouched):
+1. **Coarse pass (reused, not repeated).** Run the existing tier-2 (or scale-1 tier-2) pass
+   once. Its saved masks are the approximation. Per the mask-seeded spec, a later pass reads
+   them via `seed_from="saved_masks"`, so the coarse pass is never re-run unless tier-1 itself
+   changes.
+2. **Place tiles from the prediction, not the skeleton.** Lay full-resolution tiles over where
+   the coarse mask actually is (its per-frame foreground extent plus a margin), only where
+   there is mask. No empty tiles by construction, and coverage follows the real cell, not the
+   skeleton bbox.
+3. **Fine pass, mask-seeded per tile.** Seed each tile with the coarse mask cropped to that
+   tile (a mask prompt via `add_new_mask`), then propagate at full resolution in the tile's
+   crop space. Because every tile is seeded by the coarse mask it overlaps, there is no
+   point-prompt hole.
+4. **Stitch.** Remap each tile's per-frame mask into the chain crop space with the existing
+   `remap_mask_to_window` and OR them; single object, so overlaps just union. Save in the chain
+   crop space and persist the chain crop window (not the tiles) to `state.json`, so downstream
+   sees an ordinary high-resolution tier-2 chain.
 
-- `tile_enable: bool = False`
-- `tile_input_px: int = 1024` (target tile input edge; a tile covers `tile_input_px * crop_scale`
-  tif px, so at `crop_scale=1` a tile is ~1024 tif px)
-- `tile_overlap_frac: float = 0.2` (neighbor overlap, so a neurite crossing a border is seen
-  whole in at least one tile)
-
-Flow, per chain, when `tile_enable` and the chain's full-res crop (at `crop_scale=1`) has a
-longest edge greater than `tile_input_px`:
-
-1. Build the chain crop window at `crop_scale=1` (full res), the same `chain_crop_window` as
-   tier-2 but without the coarsening bump.
-2. Tile it: a grid of overlapping sub-windows over the crop, each `<= tile_input_px` on a side,
-   stepping by `tile_input_px * (1 - tile_overlap_frac)`. New helper `tile_crop_window` in
-   `crop.py` returns the list of sub-`CropWindow`s.
-3. Per tile, seed and propagate independently in that tile's crop space: gather the chain's
-   skeleton nodes whose `(x, y)` fall inside the tile; pick the tile's anchor as the in-tile
-   node nearest the chain's global anchor z; run the normal image-mode prompt (positive node +
-   nearest-node negatives) then box, then video-propagate over the chain's z-range. A tile with
-   no chain node is skipped (the chain is not there).
-4. Stitch: remap each tile's per-frame mask into the chain crop space with the existing
-   `remap_mask_to_window` and OR them (single object). Save the unioned masks in the chain crop
-   space.
-5. Persist the chain crop window (not the tiles) to `state.json`, so the tiling is internal and
-   downstream sees an ordinary high-res tier-2 chain.
+Tile knobs on `PipelineConfig` (off by default): `tile_enable`, `tile_input_px` (default 1024),
+`tile_overlap_frac` (default 0.2).
 
 ## Components and isolation
 
-- `crop.py`: `tile_crop_window(cw, *, tile_input_px, overlap_frac) -> list[CropWindow]`, pure
-  geometry, unit-testable (coverage of the parent window, overlap, count).
-- Orchestrator: a tiled branch that loops tiles through the existing per-tile seed and propagate
-  primitives and unions the results. Reuses `remap_mask_to_window` for the stitch.
-- No change to aggregation, QC, or the GUI: a tiled chain is saved exactly like a tier-2 chain.
+- `crop.py`: `tile_windows_from_mask(coarse_masks, chain_cw, *, tile_input_px, overlap_frac)`
+  returns the fine sub-`CropWindow`s covering the coarse foreground. Pure geometry, testable.
+- Orchestrator: a tiled branch that, per tile, seeds from the coarse mask (mask-seeded spec) and
+  propagates, then unions via `remap_mask_to_window`.
+- No change to QC, aggregation, or the GUI; a tiled chain is saved like a tier-2 chain.
 
 ## Testing
 
-- `tile_crop_window`: synthetic windows assert the tiles cover the parent, respect the overlap
-  and max size, and reduce to a single tile when the crop already fits. Torch-free.
-- Stitch: a pure test that unioning known sub-masks reproduces a known full mask. Torch-free.
-- The seed/propagate loop itself needs a GPU, so it is exercised by a smoke run on one large
-  chain, then scored against GT, not by a unit test.
+- `tile_windows_from_mask`: synthetic coarse masks assert tiles cover the foreground, respect
+  overlap and max size, and reduce to one tile when the foreground fits one input. Torch-free.
+- Stitch: unioning known sub-masks reproduces a known full mask. Torch-free.
+- The seed-and-propagate loop needs a GPU, so it is a smoke on one large chain scored against
+  GT, not a unit test.
 
 ## Risks and open questions
 
-- **Per-tile seeding is the hard part.** A tile that the neurite passes through but that has no
-  skeleton node on the anchor frame is skipped in v1; the overlap from adjacent node-bearing
-  tiles should cover most of the neurite, but a long node-sparse stretch could be dropped. If
-  that shows up, v2 seeds a node-less tile from the propagated mask handed off at the shared
-  border of an already-run neighbor.
-- **Seam over-fill.** Union takes the more inclusive prediction where tiles disagree, so seams
-  can over-fill slightly. Acceptable for v1; measured against GT.
-- **Cost.** A large chain becomes N propagations. Bounded because tiling triggers only when the
-  crop exceeds one input, and only for the chains that need it.
-- Connectivity and thin-structure losses (clDice and friends) are out of scope here; this spec is
-  only about not throwing resolution away on large chains.
+- **Coverage vs the coarse mask's errors.** Tiles follow the coarse mask, so a region the
+  coarse pass missed entirely gets no tile. This refines what the coarse pass found; it does not
+  discover new structure. Acceptable, since the goal is sharper boundaries on the traced cell.
+- **Seam over-fill.** Union takes the more inclusive prediction where tiles overlap, so seams
+  can over-fill slightly. Measured against GT.
+- **Cost.** A large chain becomes N propagations, bounded because tiling triggers only when the
+  crop exceeds one input.
 
-## v1 scope
+## Sequence
 
-Tile the tier-2 crop, seed each tile independently from its in-tile nodes, propagate per tile,
-union into the chain crop space, save as a high-res tier-2 chain. Gate expansion (border handoff
-seeding, seam arbitration) on GT numbers from the v1 smoke.
+1. Measure the large-chain fraction from existing runs (decides whether tiling is worth it).
+2. Ship scale-1 tier-2 (cheap) and mask-seeding (broad) first.
+3. Build coarse-to-fine tiling only if the measurement says enough chains coarsen, and judge it
+   against scale-1 tier-2 and the coarse pass on GT.
