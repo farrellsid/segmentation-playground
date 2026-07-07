@@ -100,13 +100,19 @@ merge each:
 cd ~/projects/def-mzhen/fsid/segmentation-playground
 git pull                                    # get the presets + run_exp.sh
 sbatch --job-name=exp_fullres     --export=ALL,EXP_PRESET=original_fullres     cluster/run_exp.sh
+sbatch --job-name=exp_wholeimg_s4 --export=ALL,EXP_PRESET=original_wholeimg_s4 cluster/run_exp.sh
 sbatch --job-name=exp_tier2forced --export=ALL,EXP_PRESET=original_tier2forced cluster/run_exp.sh
 sbatch --job-name=exp_bigimg      --export=ALL,EXP_PRESET=original_bigimg      cluster/run_exp.sh
 # merge each after its array succeeds (use the job id sbatch printed):
 sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_fullres     cluster/run_merge_exp.sh
+sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_wholeimg_s4 cluster/run_merge_exp.sh
 sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_tier2forced cluster/run_merge_exp.sh
 sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_bigimg      cluster/run_merge_exp.sh
 ```
+
+`original_wholeimg_s4` is the scale control: whole image like `original_fullres` but at
+scale 4, so comparing the two confirms whether whole-image `scale` changes the masks (it
+should not, since SAM2 resizes both to 1024).
 
 Each merged tree carries a `_run_meta.json` (preset, knobs, git commit, actual SAM2
 `image_size`) for post-hoc interpretation. `original_bigimg` (`image_size=2048`) is the

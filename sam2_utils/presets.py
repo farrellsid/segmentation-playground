@@ -119,6 +119,22 @@ PRESETS = {
         "clean": False, "neurons": EXP_NEURONS,
         "score_out": None,
     },
+    "original_wholeimg_s4": {
+        # Control: whole frame, no tier-2, IDENTICAL to original_fullres but scale=4
+        # (~2432 px) instead of scale=1 (~9728 px), with image_size at its default 1024.
+        # Tests the "SAM2 downsamples every whole-image input to 1024" claim: both feed SAM2
+        # a 1024 view, so the masks should be SIMILAR (not identical: different pre-downsample
+        # filter + JPEG per size). A small delta vs original_fullres confirms the 1024
+        # bottleneck; a large delta would refute it. Pairs with bigimg, which instead CHANGES
+        # image_size, so the two isolate the scale knob from the input-size knob.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "scale": 4, "save_downscale": 4},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_wholeimg_s4",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": False, "tier2_all": False, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
 }
 
 

@@ -44,7 +44,8 @@ def test_assert_image_size_raises_on_silent_noop():
 
 # --- experiment presets ----------------------------------------------------------------
 
-EXP_PRESETS = ["original_fullres", "original_tier2forced", "original_bigimg"]
+EXP_PRESETS = ["original_fullres", "original_tier2forced", "original_bigimg",
+               "original_wholeimg_s4"]
 
 
 @pytest.mark.parametrize("name", EXP_PRESETS)
@@ -80,3 +81,14 @@ def test_bigimg_raises_image_size_and_feeds_finer_frames():
     assert cfg.image_size == 2048
     # on-disk frame must be finer than image_size or the extra pixels are empty upscale
     assert cfg.scale == 4 and cfg.save_downscale == 4
+
+
+def test_wholeimg_s4_is_the_scale_control():
+    # Same whole-image, no-tier-2, default-image_size path as fullres, only scale differs,
+    # so it isolates the scale knob. image_size None (unlike bigimg) is what makes it a
+    # control for "does whole-image scale down to the same 1024 view".
+    ctrl = PipelineConfig(**presets.get_preset("original_wholeimg_s4")["pipeline"])
+    fullres = PipelineConfig(**presets.get_preset("original_fullres")["pipeline"])
+    assert ctrl.image_size is None and fullres.image_size is None
+    assert ctrl.scale == 4 and fullres.scale == 1
+    assert ctrl.save_downscale == ctrl.scale        # qc guard

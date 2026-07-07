@@ -27,9 +27,18 @@ run's `target_shards` / `target_merged`.
 | # | Preset | Strategy | Type | Expectation |
 |---|--------|----------|------|-------------|
 | 1 | `original_fullres` | whole frame at `scale=1`, no tier-2 | config only | equal-or-worse than scale-8 (SAM2 still sees 1024); a measured baseline |
+| 1c | `original_wholeimg_s4` | whole frame at `scale=4`, no tier-2 (control) | config only | similar to variant 1: same 1024 view, only the pre-downsample path differs |
 | 2 | `original_tier2forced` | tier-2 crop on every chain, `chain_crop_min_image_score=0`, no fallback | config only | the high-res mechanism that already works, applied universally |
 | 3 | `original_bigimg` | `image_size=2048`, `scale=4` frames (~2432 px), no tier-2 | code (config knob + `setup.py` hydra override) | real extra pixels, but off-distribution and may OOM on a 40GB A100 |
 | 4 | `original_stitch` | per-chain full-res crop tiled into <=1024 windows, single-object masks unioned | new feature (crop + orchestrator) | not yet built; see below |
+
+Variant 1c is a control that empirically checks the "why" above: it is variant 1 with only
+`scale` changed (1 -> 4) and `image_size` left at the default 1024. If its masks come out
+similar to variant 1's, the 1024 bottleneck is confirmed and whole-image `scale` does not
+change effective resolution; a large difference would refute it. It pairs with variant 3,
+which instead changes `image_size`, so the two isolate the scale knob from the input-size
+knob. Expect small deltas, not identical masks: the two scales reach 1024 by different
+pre-downsample filters and JPEG sizes.
 
 `save_downscale` tracks `scale` in every variant (the qc node-lookup guard requires
 `scale == save_downscale`).
