@@ -37,6 +37,15 @@ Two config knobs on `PipelineConfig`, both defaulting to today's behavior:
   anchor frame from that mask rather than re-predicting it. This is what a refinement or tiling
   pass uses to skip the coarse pass.
 
+Gated on anchor quality. A mask seed is more literal than a box: a loose box lets SAM2 re-find
+the cell inside it, so a slightly-off anchor can self-recover, whereas a broken mask is carried
+forward through memory and propagates its brokenness. So mask-seeding only runs when the anchor
+passes its quality check (`anchor_passed` / `image_score` at or above the gate the pipeline
+already computes); a low-scoring anchor falls back to the box seed (or flags for a human). This
+keeps the precision on confident anchors and bounds the downside on shaky ones. The mask seed is
+the trusted-seed case, which is why the GUI's resume already mask-seeds from a human-corrected
+mask.
+
 The seeding change is confined to the phase that builds the video seed; propagation, QC, save,
 and aggregation are unchanged.
 
@@ -55,8 +64,17 @@ and aggregation are unchanged.
 - Round-trip: seeding the anchor frame from a known saved mask reproduces that mask at the
   anchor (the propagation itself needs a GPU, so it is a smoke, not a unit test).
 
+## Risks
+
+- **A broken anchor propagates.** The main risk, and the reason for the anchor-quality gate
+  above. Mask-seeding is not a blind replacement for the box; it is precision on anchors already
+  judged good. It must be measured against GT (box vs mask vs mask+box, gated), not assumed to
+  win, and it leans on QC to catch the broken-propagation case regardless of seed.
+- **Largest-CC still applies to the mask seed** so a stray blob in the anchor does not seed a
+  second object.
+
 ## Scope
 
-v1: `seed_mode="mask"` from the anchor image mask, the broad cheap win, measured against GT vs
-the box baseline. The `seed_from="saved_masks"` path is the hook the coarse-to-fine tiling
+v1: `seed_mode="mask"` from the anchor image mask, gated on anchor quality, measured against the
+box baseline on GT. The `seed_from="saved_masks"` path is the hook the coarse-to-fine tiling
 design consumes; it lands with tiling if not before.
