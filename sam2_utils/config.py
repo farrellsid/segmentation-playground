@@ -14,7 +14,9 @@ from pathlib import Path
 #: Root of the raw EM data (sorted .tif stack). Override with the SAM2_WORM_PATH env
 #: var (used on the cluster, where the stack lives under project storage); unset, it
 #: falls back to the local Windows default so existing local runs are unaffected.
-WORM_PATH = Path(os.environ.get("SAM2_WORM_PATH", r"E:\ZhenLab\Data\SAM2_test_NR_raw"))
+#: Local default is F: (the original E: drive's cable failed, same migration as the
+#: GT paths below; F: contents match the old E: layout).
+WORM_PATH = Path(os.environ.get("SAM2_WORM_PATH", r"F:\ZhenLab\Data\SAM2_test_NR_raw"))
 
 #: Where SAM2 checkpoints are downloaded to. Relative to notebook CWD by default.
 CHECKPOINT_DIR = Path("checkpoints")
@@ -34,9 +36,9 @@ CHAINS_PATH = DATA_DIR / "chains.json"             #: per-neuron MLC chains
 ROOTS_PATH  = DATA_DIR / "roots.json"              #: chain roots
 
 #: Where per-chain mask outputs + the manifest/triage CSVs are written.
-OUTPUT_ROOT = Path(r"E:\ZhenLab\Data\output_masks\test2_single")
+OUTPUT_ROOT = Path(r"F:\ZhenLab\Data\output_masks\test2_single")
 #: Parent dir for the SAM2 JPEG frame cache + per-chain link views.
-FRAMES_ROOT = Path(r"E:\ZhenLab\Data")
+FRAMES_ROOT = Path(r"F:\ZhenLab\Data")
 
 # -----------------------------------------------------------------------------
 # Cross-worm ground truth (eval/)  (see eval/README.md)
