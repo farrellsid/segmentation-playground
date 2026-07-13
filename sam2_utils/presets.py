@@ -150,6 +150,40 @@ PRESETS = {
         "clean": False, "neurons": EXP_NEURONS,
         "score_out": None,
     },
+
+    # --- follow-up round (2026-07 review): negatives + full-res second pass -------
+    # Two levers layered on the report's two-step baseline (original_tier2forced):
+    # negative seed points, and a full-res second pass (chain_crop_scale 1). Bleed is
+    # the dominant error with negatives off (meeting notes), so negatives is lever one;
+    # the full-res pass is the cheap resolution win layered on top. The fallback floor
+    # is held at 0.0 in BOTH (forced tier-2 everywhere, matching original_tier2forced),
+    # so the only variables vs the baseline are seed_negatives and chain_crop_scale.
+    # seed_negatives feeds the neighbour nodes into the video conditioning frame (the
+    # anchor image prediction already uses them); see orchestrator step 6 / propagate.seed.
+    "original_tier2forced_neg": {
+        # Baseline two-step + negative seed points. Isolates the negatives lever.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_tier2forced_neg",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_tier2_s1forced_neg": {
+        # Baseline two-step + negatives + full-res second pass (crop_scale 1, max_px 2048,
+        # the cheap resolution win). Isolates chain_crop_scale 2 -> 1 on top of the _neg run.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_tier2_s1forced_neg",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
 }
 
 
