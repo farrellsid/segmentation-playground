@@ -440,17 +440,19 @@ merge-metric**, scored against our own CATMAID skeletons, GT-free:
 
 **Phase 1, cheap structural fixes (measured by Phase 0).**
 
-- **Re-seed every slice (or short 3-5 slice windows) from the skeleton node**, propagation limited to each
-  neuron's z-extent. Turns error-accumulating video propagation into per-slice segmentation with a
-  guaranteed-correct interior seed, defeating the identity-switch / drift mode and converging toward the
-  lab's own "computational filling". *(§4.5, §4.3)*
-- **Principled non-overlap resolve:** replace the composite's argmax / first-writer-wins with mutex
-  watershed / multicut, skeletons as attractive interiors and inter-neuron edges as repulsive
-  constraints. The mature version of the current post-hoc argmax. *(§4.3)*
-- **Prompt fixes for the nested-membrane ceiling:** box/mask seeding, multimask-select-outer (prefer the
-  candidate reaching the outer border), a negative point in the nucleus. Partial mitigation only. *(§4.5)*
+- **Re-seed every slice from the skeleton node (per-slice image-mode, no video propagation).** Each
+  slice is its own anchor, re-grounded on its own node (nodes are ~one-per-slice, so no locate pass),
+  segmented in a node-centred crop, so memory can never carry the wrong cell across slices. Keeps the
+  crop resolution win (including crop_scale 1). Directly targets the drift bleed the merge-metric shows
+  is dominant. Spec: `docs/superpowers/specs/2026-07-15-phase1-per-slice-reseed-generous-multimask.md`.
+  *(§4.5, §4.3)*
+- **Generous-capped multimask for the nested-membrane ceiling.** Among SAM2's candidates containing the
+  node, prefer the larger one so a soma mask includes the nucleus and reaches the outer membrane, but
+  hard-reject any candidate above the max-area cap (SAM2's largest is often the whole frame), with
+  resolution-aware leeway. No negative point in the nucleus, that would exclude it. Same spec as above.
+  *(§4.5)*
 
-*Gate:* merge rate down vs Phase 0, at acceptable cost.
+*Gate:* merge rate (foreign-node containment) down vs the tier2_s1forced_neg baseline, dropout not up.
 
 **Phase 2, the per-frame membrane / boundary map (supervisor's near-term request; the lab's own method).**
 Train a small membrane-probability map on the target worm. The Mulcahy/Witvliet skeleton-to-membrane
@@ -461,6 +463,11 @@ It pays off twice:
   bleed, catching what the Phase-0 merge metric misses.
 - **Grow-to-membrane refinement** of masks (and a route to de-bias the eroded cross-worm GT into a rough
   boundary ruler).
+- **Principled non-overlap resolve (moved here from Phase 1).** With a membrane/affinity signal in hand,
+  replace the composite's argmax / first-writer-wins with mutex watershed / multicut (skeletons as
+  attractive interiors, inter-neuron edges repulsive). Deferred out of Phase 1 because it needs the
+  boundary signal to beat the current argmax; on a raw EM gradient it would be a weak version of itself.
+  *(§4.3)*
 
 It also helps disambiguate outer-vs-inner border for the nested-membrane ceiling. **Ask the supervisor
 whether a reusable membrane model or training data survives from the prior pipeline**; if so, this phase's
