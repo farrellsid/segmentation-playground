@@ -84,3 +84,10 @@ def test_score_run_aggregates(tmp_path, monkeypatch):
     assert abs(summ["foreign_frame_rate"] - 0.5) < 1e-9
     assert (root / "_merge_metric.csv").exists()
     assert set(per["neuron"]) == {"AVAL"}
+
+
+def test_format_summary_is_one_line():
+    s = mm.format_summary("neg", {
+        "n_chains": 100, "n_frames": 8052, "foreign_frame_rate": 0.031,
+        "dropout_rate": 0.12, "total_foreign_nodes": 274})
+    assert "neg" in s and "0.031" in s and "\n" not in s

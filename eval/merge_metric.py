@@ -6,6 +6,7 @@ section 5 Phase 0 for the scope: this is a severe-merge floor, not an ERL benchm
 """
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -130,3 +131,28 @@ def score_run(root, annotate_df: pd.DataFrame | None = None,
         per_out["foreign_ids"] = per_out["foreign_ids"].apply(lambda ids: ";".join(ids))
         per_out.to_csv(root / "_merge_metric.csv", index=False)
     return per, summary
+
+
+def format_summary(name: str, s: dict) -> str:
+    return (f"{name:<28} chains={s['n_chains']:>4} frames={s['n_frames']:>6} "
+            f"foreign_frame_rate={s['foreign_frame_rate']:.3f} "
+            f"dropout_rate={s['dropout_rate']:.3f} "
+            f"total_foreign={s['total_foreign_nodes']:>5}")
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Target-worm skeleton merge-metric (roadmap Phase 0).")
+    ap.add_argument("--root", action="append", required=True, dest="roots",
+                    help="a merged run tree; repeat to compare runs")
+    ap.add_argument("--radius", type=int, default=DEFAULT_RADIUS)
+    args = ap.parse_args(argv)
+
+    annotate_df = load_node_table()
+    for root in args.roots:
+        _per, summ = score_run(root, annotate_df=annotate_df, radius=args.radius)
+        print(format_summary(Path(root).name, summ))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
