@@ -62,6 +62,28 @@ A follow-up experiment round and a roadmap restructure. No default pipeline beha
   per-frame membrane map; Phase 3 is the boundary benchmark plus mask-decoder finetune / FGNet head;
   Phase 4 is the dense-3D paradigm gate. Added problem #7 to §2 (the point-prompt ceiling on
   double-bordered somas). §4 stays as the solutions-by-problem reference.
+- **Phase 0 merge-metric built and run (`eval/merge_metric.py`).** A ground-truth-free severe-bleed /
+  dropout scorer: for each RAW per-chain mask it counts foreign skeleton nodes contained (a merge) and
+  own-node dropout, scored against the target worm's own CATMAID skeletons (no cross-worm GT, no
+  boundary dependence). Retro-scored the five runs:
+
+  | run | foreign_frame_rate | dropout_rate | total_foreign |
+  |---|---|---|---|
+  | fullres (neg off) | 0.356 | 0.359 | 3941 |
+  | wholeimg_s4 (neg off) | 0.453 | 0.319 | 5749 |
+  | tier2forced (neg off) | 0.471 | 0.143 | 6685 |
+  | tier2forced_neg | 0.357 | 0.147 | 3725 |
+  | tier2_s1forced_neg | 0.321 | 0.130 | 3570 |
+
+  The verdict the flag tables could not give: cropping cuts dropout about 2.5x (the mask stays on its
+  own cell), neg-off cropping has the highest bleed (a tight crop fills aggressively), negatives then
+  cut that bleed (foreign_frame_rate 0.471 -> 0.357, foreign nodes 6685 -> 3725) at no dropout cost,
+  and full-res crop + negatives (tier2_s1forced_neg) is best on every axis (bleed 0.321, dropout
+  0.130). So negatives do help; the flags were simply blind to bleed. Sanity check: AVAL/ch16 (the
+  known wrong-cell jump) shows 111 foreign-hit frames in fullres vs 13 in tier2_s1forced_neg. Caveats:
+  this is a severe-merge floor (foreign-node containment, radius 3), it does not see mild bleed (that
+  needs the Phase 2 membrane map); and tier2forced_neg covers 582 chains (AIBR unfinished), so its
+  rates compare but its totals do not.
 
 <a id="r-2026-07"></a>
 ## 2026-07, research passes, resolution experiments, and design specs
