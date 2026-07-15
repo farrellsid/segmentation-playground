@@ -6,6 +6,8 @@ section 5 Phase 0 for the scope: this is a severe-merge floor, not an ERL benchm
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -57,3 +59,24 @@ def foreign_hits(mask: np.ndarray, x0: int, y0: int,
         if pipeline._point_in_mask(mask, x - x0, y - y0, radius):
             hits.append(nid)
     return hits
+
+
+def score_chain(chain_dir: Path, neuron: str,
+                nodes_by_z: dict[int, list[tuple[float, float, str, str]]],
+                radius: int) -> list[dict]:
+    """Per-z merge/dropout records for one chain, from its RAW saved masks."""
+    masks = pipeline.chain_masks_in_sam(Path(chain_dir))
+    recs: list[dict] = []
+    for z, (mask, x0, y0) in sorted(masks.items()):
+        nodes = nodes_by_z.get(int(z), [])
+        own = [(x, y) for (x, y, cell, _nid) in nodes if cell == neuron]
+        own_ok = any(own_contained(mask, x0, y0, xy, radius) for xy in own) if own else False
+        fids = foreign_hits(mask, x0, y0, nodes, neuron, radius)
+        recs.append({
+            "z": int(z),
+            "own_contained": bool(own_ok),
+            "n_foreign": len(fids),
+            "foreign_ids": fids,
+            "empty": bool(not mask.any()),
+        })
+    return recs
