@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-15, negatives round + measurement-first roadmap redesign](#r-2026-07-15)
 - [2026-07, research passes + resolution experiments + specs](#r-2026-07)
 - [2026-06, review tooling + post-processing pass](#r-2026-06)
 - [old §2, Milestone-by-milestone build narrative (M1 → M4 review-testing pass)](#old-2)
@@ -32,6 +33,35 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-07-15"></a>
+## 2026-07-15, negatives experiment + measurement-first roadmap redesign
+
+A follow-up experiment round and a roadmap restructure. No default pipeline behavior changed.
+
+- **Negatives + full-res second-pass experiment.** Two presets on the two-step baseline:
+  `original_tier2forced_neg` (crop_scale 2 + `seed_negatives`) and `original_tier2_s1forced_neg`
+  (crop_scale 1 + negatives), run on Narval over EXP_NEURONS. tier2forced_neg stopped early (AIBR
+  unfinished); tier2_s1forced_neg completed. Pure-flag result on the 582-chain common set: adding
+  negatives or the full-res second pass is near flag-neutral (flagged chains 94, 99, 103; frame rate
+  0.205, 0.202, 0.192; negatives net -5 flagged chains). Load-bearing caveat: the QC flag rule has no
+  bleed signal, so these counts cannot grade what negatives target. A real verdict needs the
+  merge-metric below.
+- **Third deep-research pass (prior art), adversarially verified.** Confirmed the direction and
+  corrected two beliefs: the connectomics-standard rulers are skeleton/topology metrics (ERL, VOI),
+  which our CATMAID skeletons already support, and the membrane-map + skeleton-expansion filling is the
+  lab's own prior method (Mulcahy/Witvliet), the direct precedent for a per-frame boundary map.
+- **GT erosion confirmed for our copy.** The cross-worm VAST segmentation is unpublished/incomplete and
+  its neighbouring masks are inset from the shared membrane by design, so boundary metrics against it
+  are biased and the different-worm mismatch compounds it. This does not match the published C. elegans
+  filling (which expands to the membrane), so it is a property of our copy, not the method.
+- **Roadmap redesigned (`roadmap.md` §5) into a measurement-first, evidence-gated Phase 0-4 plan.**
+  Phase 0 fixes the ruler with a GT-free target-worm merge-metric (foreign skeleton-node containment on
+  raw masks) and retro-scores the existing runs; Phase 1 is cheap structural fixes (per-slice re-seed,
+  mutex-watershed non-overlap, prompt fixes for the new nested-membrane ceiling); Phase 2 is the
+  per-frame membrane map; Phase 3 is the boundary benchmark plus mask-decoder finetune / FGNet head;
+  Phase 4 is the dense-3D paradigm gate. Added problem #7 to §2 (the point-prompt ceiling on
+  double-bordered somas). §4 stays as the solutions-by-problem reference.
 
 <a id="r-2026-07"></a>
 ## 2026-07, research passes, resolution experiments, and design specs

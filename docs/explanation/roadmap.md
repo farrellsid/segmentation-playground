@@ -91,6 +91,11 @@ it maps to):
 6. **Post-processing suspected to hurt thin neurites.** Morphological open/close is a blunt
    instrument here. *(§8 item 18; R7)*
 
+7. **Nested-membrane mis-segmentation (the point-prompt ceiling).** For double-bordered structures
+   like somas (a large nucleus inside the cell), a positive point landing inside the nucleus segments
+   the *nucleus*, not the neuron. This is inherent to point-prompting on nested membranes, so even with
+   perfect prompt placement the current system has an accuracy ceiling on these objects. *(new, 2026-07)*
+
 And the bigger strategic question sitting underneath all of them: **is SAM2 video propagation the
 right base paradigm at all**, or should the hard regime be handled by a trained, EM-specialized model
 (the route the liver paper took with nnU-Net for *its* hard half)? *(R5/R6)*
@@ -396,178 +401,113 @@ Two threads, now that I have GT:
 
 ---
 
-## 5. Proposed staged plan
+## 5. Staged plan (2026-07-15 redesign: measurement-first, evidence-gated)
 
-Ordered so each stage's output feeds the next, and so the ruler (Stage 0) exists before any tuning.
-Thresholds are advance/pivot gates, in the §4 ruler spirit.
+> **Redesign note.** This replaces the earlier stage numbering. Its landed detail (the built ruler,
+> the per-section registration upgrade, the Stage-0.2 cross-worm GT smoke numbers) now lives in the
+> CHANGELOG; the roadmap stays forward-looking. One spine orders everything: *you cannot fairly choose
+> a lever until you can measure one*. Two facts from the July research + review round force it. (1) The
+> QC flags are blind to bleed. (2) The cross-worm GT is both **eroded** (confirmed in our VAST copy:
+> neighbouring masks are inset from the shared membrane by design, an unpublished/incomplete
+> segmentation) **and a different animal**, so every boundary metric against it is doubly biased. So the
+> plan leads with a ruler we can trust on the *target* worm, then gates each segmentation change on it.
+> §4 (solutions by problem) is the reference these phases point into.
 
-> **Re-evaluation (July 2026): error detection + the target-worm benchmark is the gate, not the tail.**
-> The two research passes make the sequencing dependency explicit: I cannot fairly compare any Stage 1-3
-> segmentation change until I can *measure* it, which needs both a trustworthy detector and an
-> in-distribution benchmark (§4.2, §4.2b). So the cheap training-free pieces of Stage 4 move forward to
-> run alongside Stage 1: **forward/backward propagation consistency** and **topology debugging stats**
-> (self-loop = merge) cost almost nothing and replace several hand-tuned thresholds immediately, and the
-> **target-worm annotation benchmark** should be scoped early because it gates the A/B evidence every
-> later stage is judged on. The finetuning stage keeps the new hard constraint: neurite-targeted only.
+A seventh problem joins the §2 list this round: **nested-membrane mis-segmentation** (the point-prompt
+ceiling). For double-bordered structures like somas, a positive point inside the nucleus segments the
+nucleus, not the neuron; no prompt placement fully removes it. It motivates the Phase 1 prompt fixes and,
+ultimately, the Phase 3 model upgrades.
 
-- **Stage 0, Instrument & benchmark the current pipeline (now).** ERL + VOI_split/VOI_merge on the
-  confirmed cross-worm segments; set the merge:split cost ratio; benchmark the *current* pipeline.
-  *Advance when:* I can produce a per-neuron ERL and split/merge breakdown **from the real pipeline,
-  through a verified registration**. *(§4.1)*
+**Phase 0, fix the ruler (now, ~zero cost, no new labelling).**
+The cross-worm eval harness already exists (`eval/`: region IoU, VOI, ERL, per-section registration).
+What it cannot do is grade quality on the *target* worm. The unlock is a **target-worm skeleton
+merge-metric**, scored against our own CATMAID skeletons, GT-free:
 
-  The ruler is built (region + VOI + ERL; `eval/`). A first degenerate run, `eval/predict_gt.py`,
-  small model, points-only seed, produced the first numbers and, more usefully, exposed *how* Stage 0
-  has to finish: (a) the measurement is gated on the **skel→GT coordinate transform**, which both
-  places prompts and samples node labels, so a loose transform poisons every number (the dry run:
-  ~50% of slices zero-overlap with correctly-sized-but-*displaced* masks; self-consistency ERL = 0
-  *with the perfect GT as input* because 47% of nodes sample off their own segment); and (b)
-  `predict_gt.py` is a **scaffold, not the benchmark**, a partial reimplementation with v1 shortcuts
-  (points-only seed, no postprocess, union-across-chains) that bled badly; the honest number must come
-  from the real `batch.py`. So Stage 0 completes in four sub-steps:
+- Count **foreign skeleton nodes contained in each mask**, on the **raw** (pre-non-overlap) masks: a mask
+  covering another neuron's node is an unambiguous, independently-measured bleed. Add a mask-dropout
+  (omission) count. This is a **severe-merge floor**: high precision, low recall, it misses mild bleed
+  that stops short of a neighbour's centreline (Phase 2 covers that).
+- **Scope it honestly, this is not an ERL benchmark for us.** Because every mask is seeded from its own
+  skeleton, the split/ERL side is partly circular (we were handed the topology); the non-circular, useful
+  signal is the foreign-node merge rate. Do not report ERL as if from a from-scratch segmenter.
+- **Retro-score every run we already have** (fullres, wholeimg_s4, tier2forced, neg, s1neg) on the merge
+  metric. This finally grades the negatives + resolution rounds that the blind flags could not.
+- Keep the cross-worm eval as a **secondary topology check** (VOI_merge / ERL), demoted from headline;
+  fold in the metric-robustness fixes it still needs (ERL merge tolerance, per-section affine edge
+  residual).
 
-  - **0.1, Verify the coordinate transform (keystone, first).** *Model upgrade landed.* The
-    `eval/diag_registration.py` structural check showed the residual was **structured**, not noise (a
-    per-section affine cut the median centroid residual 19.6 px → 5.1 px), so `registration.py` was
-    upgraded from *global linear + per-section translation* to a **per-section affine** (full 2×3 per
-    slice, robust fit, z-interpolated/smoothed). Re-fit result: median residual 19.6 → **4.7 px**,
-    on-mask **67.9% → 85.7%**. Provenance (right worm = project 280) confirmed four ways, so the earlier
-    ~50% miss was an under-powered alignment *model*, not a bad import. The interactive human gut-check
-    is now in place too: `eval/registration_overlay.py` is a napari viewer of the full-res VAST EM with
-    raw + registered node layers (scrub z, click-to-read coordinates for a CATMAID project-280
-    cross-check). Done at 4× scale, the affine *model* transfers to the full-res re-fit (0.3), only the
-    constants change.
-  - **0.2, Eval the real batch pipeline against GT, ✅ BUILT, first numbers in (June 2026).** The
-    production `run_chain`/`batch.py` now runs on SEM-Dauer 1 (not the `predict_gt` reimplementation)
-    via a worm-agnostic **`pipeline.FrameStore` seam** (default `TifFrameStore` keeps the target worm
-    byte-identical; `eval.gt_dataset.GtFrameStore` reads the per-slice PNG EM) plus a skel→image
-    transform baked into `annotate_df.x_tif/y_tif` from the **per-section registration**. Driver:
-    `batch.py --preset eval` with a configurable subset (`--neurons` / `--neuron-limit N` /
-    `--all`, guarded against an accidental 9766-chain run). Scored by `eval.score_batch`
-    (`BatchPredictionSource` unions chains + upscales `_sam`→GT grid), which logs live progress,
-    `eval_timing.csv`, and a `measurement_log.jsonl` provenance record (what/against-what/when/metrics/
-    results/timing). **Labelmap metrics wired** (`eval.score_labelmap`): composite per-slice `_sam`
-    labelmaps (neuron→id, first-writer-wins; tier-2 `_pcrop` placed via `crop_window`) → **VOI_split/merge
-    + ARAND** (over GT-foreground) and **per-neuron ERL** (registration node-sampling ÷save_downscale to
-    `_sam`, with neighborhood sampling). Supersedes `predict_gt.py` as the scored path.
+*Gate:* how bad is severe bleed, and did negatives / full-res actually reduce it. *(§4.1, §4.2)*
 
-    **Results (3-neuron smoke PVPR/VA4/AS3, a FLOOR, not the final gate):** small single-pass `_sam` →
-    micro-IoU 0.022, VOI 0.875, ARAND 0.162; **large + tier-2-default** → micro-IoU 0.024, VOI 0.847,
-    ARAND 0.161, ERL ~1%. (1) **Large model alone barely helps** (slightly hurts the `_sam` neurons), the cross-worm **domain gap dominates, not capacity**; (2) **tier-2 helped where it engaged**, VA4
-    *kept* tier-2 (`_pcrop`) and ~doubled IoU (0.012→0.022, precision up), but **2/3 chains fell back**
-    at the `chain_crop_min_image_score=0.70` floor (crop anchors ≈0.69; a target-worm default,
-    mis-calibrated for cross-worm → lower to ~0.6); (3) **merge/bleed-dominated** (VOI_merge ≫ split;
-    precision ~2.5%). ⚠️ VOI/ARAND ≈ FGNet's Table-4 range is **coincidence**, ours is over 3 *sparse*
-    neurons' GT-foreground (far easier than FGNet's dense volume); region IoU (0.024) + ERL (~1%) are the
-    honest read. **Next:** a multi-chain neuron (per-chain fallback + aggregation) + a lowered tier-2 floor.
-  - **0.3, Full-res GT export (parallel, manual), ✅ DONE (June 2026).** The VAST masks + EM are
-    re-exported at native resolution: `full_scale/` (9728×9216, 851 slices) sits next to
-    `one_fourth_scale/` on F:, verified == the metadata's full-res VAST coord grid. `config` now points
-    at it (`GT_DOWNSCALE = 1`). This unblocks faithful batch eval (tier-2 skeleton crops need full res)
-    and required a full-res registration (A ≈ I, not 0.25·I), **done** by scaling the ¼ fit ×4
-    (`py -3 -m eval.scale_registration`; geometrically identical to a from-scratch full-res re-fit but
-    instant vs ~1.5 h of HDD decodes, validated mean A ≈ I, on-mask 91.7% spot check). `registration.json`
-    is now full-res; the ¼ fit is kept as `registration_quarter_scale.json`.
-  - **0.4, ERL merge tolerance (metric robustness).** Stop ERL zeroing a whole neuron for a single
-    stray node (a tolerance / majority rule). Without it the skeleton metric stays at 0 even for
-    near-perfect segmentations under any registration noise.
-  - **0.5, Edge residual in the per-section affine (HIGH PRIORITY refinement).** The 0.1 human
-    gut-check (`eval/registration_overlay.py`) confirmed the affine is near-perfect at frame center but
-    drifts by tens of px at the edges (consistent with the fit's p90 ~17 px). An affine fits tangent to
-    the true warp at the correspondence centroid and deviates with radius; the likely cause is the
-    elastic per-section realignment (`*_realignment_export_*`), which no affine fully matches. It misses
-    small/thin cells and is the same off-segment-node fraction capping the ERL ceiling (~11.6 vs 76.3
-    µm). Gate the fix on a diagnostic: extend `diag_registration` to measure residual-vs-radius and
-    trial-fit a per-section quadratic / thin-plate spline, with edge residual + rim correspondence
-    density, to tell a too-simple model from edge data-starvation (interpolating models extrapolate
-    badly past the correspondence hull). Then choose the model.
+**Phase 1, cheap structural fixes (measured by Phase 0).**
 
-  *Loose ends:* `predict_gt.py` is **discontinued** (the scored path is `batch.py`, which has real
-  seeding/postprocess); its empty-name `--neuron-limit` bug and bleed levers retire with it.
-- **Stage 1, Free wins on the existing SAM2 path (1-2 wk).** Drop in SAM2Long (and trial the sibling
-  training-free memory strategies MA-SAM2 and the 3D-volume RevSAM2, §4.3); center-outward
-  propagation; forward/backward consistency check (replaces several hand-tuned QC thresholds, and is
-  the cheapest verified error signal, §4.2); confirm box/mask seeds never fall back to point-only
-  (§4.5); re-seed at skeleton nodes + skeleton-following crops; **node-anchored multimask selection** (pick
-  SAM2's candidate that contains the positive node and, with `multimask_exclude_neg`, excludes the
-  neighbour negatives; on for the `eval` preset, adapts the 2025 lightweight-SAM2 paper's
-  anchor-containment idea, see [ADR 0012](../adr/0012-node-anchored-multimask-selection.md)). *Advance
-  when:* ERL up and merge rate down vs Stage 0. *(§4.3, §4.5, §4.2)*
-- **Stage 1b, Parameter optimization (planned, the 2025 lightweight-SAM2 paper's second idea).** Jointly
-  tune the pipeline's inference knobs against the eval ruler instead of hand-setting them. Search space
-  is *our* prompted-pipeline knobs (the multimask flags, `gate_*` bounds, `k_max_neg`, seed mode,
-  `postproc_*`, `chain_crop_min_image_score`, `scale`/`save_downscale`), not the paper's: their notebook
-  optimizes the `SAM2AutomaticMaskGenerator` (`points_per_side`, `box_nms_thresh`, `crop_n_layers`...),
-  a SAM2 mode this pipeline does not use, so it is a methodology to reuse (Bayesian search like
-  `skopt.gp_minimize` on Jaccard/Dice), not a notebook to port. Objective: per-neuron region IoU + ERL
-  from `eval.score_batch`. *Cost to plan around:* each config is a full GT run + score (~19 min/full-res
-  run today), so a search needs a fast subset or a cheaper proxy. *Advance when:* the tuned config beats
-  the hand-set defaults on the held-out eval set.
-- **Stage 2, Finetune SAM2, neurite-targeted (2-4 wk; always the plan).** Decoder-first + optional
-  encoder-LoRA on confirmed voxels, Dice + BCE loss (add soft-clDice only for connectivity; the
-  composite-is-essential and full-model-beats-decoder claims were both refuted, §4.7). **Hard
-  constraint from the July research: train on our own neurite labels, never initialize from or borrow
-  an organelle-trained EM model, which measurably degrades neurites.** The lightweight-SAM2 Colab is
-  the concrete low-cost recipe (freeze image + prompt encoders, tune the mask decoder, AdamW, cosine
-  annealing); SAM4EM shows decoder-LoRA + 3D memory-attention in ~4GB VRAM. Data efficiency is
-  favorable (most gain by ~2-5% of data / ~10 images), but confirm the *minimum* label volume on our
-  own morphology, the literature only documents large/organelle regimes. *Advance when:* finetuned
-  beats stock SAM2 on held-out confirmed segments. *Pivot if not:* inspect the domain gap, lean on
-  Stage 3. *(§4.7, §4.4)*
-- **Stage 3, Fix branching structurally (3-6 wk).** Parallel per-slice over-segmentation
-  (affinities/LSD or FGNet-style) → watershed → agglomeration → link across z (Seg2Link/Trackastra),
-  used where propagation drops an arm. *Advance when:* branch-point recall beats single-arm
-  propagation. *(§4.3, §4.7)*
-- **Stage 4, Error detection + triage (start the cheap parts NOW, in parallel with Stage 1).** This
-  moved up: it gates trustworthy A/B for every other stage (see the §5 re-evaluation note). Land in
-  order of evidence strength: (a) **forward/backward propagation consistency** and **topology debugging
-  stats** (self-loop = merge, orphan = error), both training-free and cheap; (b) **EM-content features**
-  into QC (image + mask + context), the biggest structural gap; (c) **no-reference quality estimation**
-  (In-Context RCA reusing our SAM2, with the cross-worm GT as its reference set) for the target worm,
-  re-calibrated once target labels exist; (d) a **learned split/merge classifier / quality regressor**
-  (EvanySeg-style head) trained by recycling human corrections as labels. Build the **target-worm
-  annotation benchmark** (§4.2b) alongside, so the detector has both a training set and an honest
-  precision/recall+recall eval that is not blinded by selection bias. *Advance when:* human review time
-  per neuron drops while ERL holds, the stated success criterion (faster than manual, accuracy
-  preserved). *(§4.2, §4.2b)*
+- **Re-seed every slice (or short 3-5 slice windows) from the skeleton node**, propagation limited to each
+  neuron's z-extent. Turns error-accumulating video propagation into per-slice segmentation with a
+  guaranteed-correct interior seed, defeating the identity-switch / drift mode and converging toward the
+  lab's own "computational filling". *(§4.5, §4.3)*
+- **Principled non-overlap resolve:** replace the composite's argmax / first-writer-wins with mutex
+  watershed / multicut, skeletons as attractive interiors and inter-neuron edges as repulsive
+  constraints. The mature version of the current post-hoc argmax. *(§4.3)*
+- **Prompt fixes for the nested-membrane ceiling:** box/mask seeding, multimask-select-outer (prefer the
+  candidate reaching the outer border), a negative point in the nucleus. Partial mitigation only. *(§4.5)*
+
+*Gate:* merge rate down vs Phase 0, at acceptable cost.
+
+**Phase 2, the per-frame membrane / boundary map (supervisor's near-term request; the lab's own method).**
+Train a small membrane-probability map on the target worm. The Mulcahy/Witvliet skeleton-to-membrane
+expansion is the direct in-house precedent; a classical dark-ridge filter is the zero-training fallback.
+It pays off twice:
+
+- **GT-free mild-bleed detection:** a mask boundary that crosses a membrane ridge into a neighbour is
+  bleed, catching what the Phase-0 merge metric misses.
+- **Grow-to-membrane refinement** of masks (and a route to de-bias the eroded cross-worm GT into a rough
+  boundary ruler).
+
+It also helps disambiguate outer-vs-inner border for the nested-membrane ceiling. **Ask the supervisor
+whether a reusable membrane model or training data survives from the prior pipeline**; if so, this phase's
+cost collapses. Note that the prior pipeline's ~1,120 person-hours were **dense proofreading**, not
+building the map (the map is a small U-Net, days to train). *(§4.2, §4.3 tier 2)*
+
+*Gate:* membrane-aware detect + refine cuts mild bleed / underfill.
+
+**Phase 3, boundary benchmark + model upgrades.**
+
+- **Small boundary-accurate target-worm benchmark:** a few hundred cross-sections traced *to the membrane*
+  (not the eroded convention), sampled to include thin and junction cases. Calibrates the detector and
+  seeds finetuning. Days-to-weeks, not the person-years of a dense volume. *(§4.2b)*
+- **Finetune the SAM2 mask decoder** (decoder-first, Dice+BCE, neurite-targeted, never organelle-borrowed)
+  and/or an **FGNet-style fine-grained / affinity boundary head** on frozen SAM2 features, targeting the
+  domain gap, thin neurites, and the nested-membrane ceiling. *(§4.7, §4.4)*
+
+*Gate:* validated boundary improvement on the benchmark.
+
+**Phase 4, paradigm-decision gate.**
+Only if, after 0-3, the merge metric / boundary quality still misses the bar: switch the hard regime to a
+dense native-3D method (FFN, or affinity + LSD + mutex watershed), with our skeletons as seeds and
+evaluation rather than prompts. This is the §4.7 R5 hedge, now explicitly evidence-gated on the
+Phase-0/3 numbers, and the point at which the SAM2-as-core directive is renegotiated with evidence.
+Otherwise stay SAM2-augmented. *(§4.3, §4.7, §6)*
 
 ---
 
-## 5b. Near-term task queue (July 2026)
+## 5b. Immediate queue (July 2026)
 
-The concrete next actions, ordered, with status: DONE, READY (built, awaiting a run or a human
-review), or TODO. This is the tail of the staged plan made actionable; the stage tags map back
-to the plan above.
+Mapped to the phases above. DONE / READY / TODO.
 
-1. **Review the resolution comparison** (manual eyeball + GT). fullres vs wholeimg_s4 vs
-   tier2forced, plus tier2_s1 once it runs. Decides how much effective resolution actually
-   matters for the neurites, which gates whether tiling is worth building. READY: three variants
-   are extracted locally; open each with `gui.py --output-root <run>_merged --hires-em` (hires is
-   required because the cluster frames were node-local and are gone). *(Stage 1)*
-2. **Run `original_tier2_s1` on Narval**, the cheap resolution win (fills SAM2's 1024 input that
-   `crop_scale=2` under-fills for 86% of chains). READY: preset built, submit commands in the
-   Narval how-to. *(Stage 1)*
-3. **Implement mask-seeding**, anchor-quality-gated. Broad, cheap; seed the video from the anchor
-   mask instead of its bounding box, fall back to the box when the anchor is weak. A/B against
-   the box baseline on GT. TODO, spec `2026-07-07-mask-seeded-propagation`. *(Stage 1 / §4.5)*
-4. **Implement the GUI run-picker** (approach A). Unblocks clean multi-run review and fixes the
-   re-segmentation-scale and hires-EM papercuts. TODO, spec `2026-07-07-gui-run-picker`.
-5. **Start the cheap Stage 4 error detection**: forward/backward propagation consistency and
-   topology stats (self-loop = merge, orphan = error), both training-free. Gates trustworthy A/B
-   for every later change. TODO. *(Stage 4 · §4.2)*
-6. **Scope the target-worm annotation benchmark** (§4.2b): labeling granularity, sampling that
-   avoids selection bias, schema. Gates in-distribution evaluation and the learned detector's
-   training set. TODO. *(Stage 4)*
-7. **Measure branch-junction coverage** on GT: does the per-neuron union under-cover the junction
-   where two chains meet? Gates the branch-junction multi-seed repair idea (multi-point re-image
-   from interior points of each arm's mask, not centroids). TODO. *(Stage 3 · §4.3)*
-8. **Coarse-to-fine tiling**, built only if scale-1 tier-2 (task 2) is not sharp enough by the
-   task-1 review. TODO, spec `2026-07-07-tiled-fullres-propagation`. *(Stage 1/3)*
-9. **Metric robustness**: ERL merge tolerance (Stage 0.4) and the per-section affine edge
-   residual (Stage 0.5). TODO. *(Stage 0)*
+1. **Verify the GT erosion** (Phase 0). DONE: confirmed, neighbouring masks are inset from the shared
+   membrane by design in our VAST copy.
+2. **Resolution + negatives review** (old Stage 1). DONE: cropping is the measurable resolution win,
+   whole-image scale is ~irrelevant (1024 resize); negatives and the full-res second pass are
+   flag-neutral, pending the Phase-0 metric for a real verdict.
+3. **Build the target-worm merge-metric and retro-score all runs** (Phase 0). TODO, the next action:
+   foreign-node containment + dropout on raw masks vs CATMAID skeletons.
+4. **Re-seed per slice + z-extent-limited propagation** (Phase 1). TODO.
+5. **Mutex-watershed / multicut non-overlap resolve** (Phase 1). TODO.
+6. **Membrane-probability map**, plus the supervisor conversation about reusing the prior model
+   (Phase 2). TODO.
+7. **Boundary-accurate benchmark + mask-decoder finetune / FGNet head** (Phase 3). TODO.
 
-`bigimg` (SAM2 `image_size` 2048) is retired as configured: it crashes in SAM2 off-distribution,
-and even fixed its output would be unvalidated; the resolution goal is served by cropping and
-tiling instead. Revisit only with the cluster traceback if the finetuning path stalls.
+`bigimg` (SAM2 `image_size` 2048) stays retired: it crashes off-distribution and its output would be
+unvalidated; the resolution goal is served by cropping / tiling.
 
 ---
 
@@ -582,6 +522,14 @@ tiling instead. Revisit only with the cluster traceback if the finetuning path s
 - **A trained dense model clearly wins** → the SAM2-as-core directive is a constraint to renegotiate
   with my professor, with evidence (ERL numbers) rather than argument. Until then SAM2 stays central
   and the dense path is a hedge/component, not a replacement.
+- **The target-worm merge-metric (Phase 0) shows bleed is mild** -> de-prioritize the architecture
+  changes; the negatives / full-res levers may already be close enough, and effort shifts to the
+  boundary benchmark and finetune.
+- **A reusable membrane model survives from the prior lab pipeline** -> Phase 2 collapses to reuse +
+  calibration and can jump ahead of Phase 1.
+- **The eroded / different-worm confound proves dominant** (Phase 0) -> treat all past boundary numbers
+  (including the ~2-3% precision) as unreliable, and rebuild the ruler on target-worm skeletons + the
+  Phase-3 benchmark before trusting any boundary A/B.
 
 ---
 
@@ -610,6 +558,16 @@ tiling instead. Revisit only with the cluster traceback if the finetuning path s
 - **Operating ahead of the literature.** As of June 2026 no published SAM2 pipeline targets C. elegans
   neurite instance segmentation specifically; FGNet (mouse/fly EM) is the closest. Budget for
   iteration, the survey is a map, not a recipe.
+- **The skeleton merge-metric is a severe-bleed floor, not a full ruler.** It only catches bleed that
+  reaches a foreign centreline, and its split/ERL side is partly circular for a skeleton-seeded pipeline,
+  so it is not comparable to from-scratch ERL numbers. Mild bleed and boundary quality still need the
+  membrane map (Phase 2) and the boundary benchmark (Phase 3).
+- **The GT erosion is confirmed for our copy, not the published method.** Our VAST segmentation is
+  unpublished/incomplete and its masks are inset from the membrane by design; the published C. elegans
+  filling expands *to* the membrane. Boundary metrics against our cross-worm GT are therefore biased, and
+  the different-worm mismatch compounds it.
+- **The point-prompt paradigm has a hard ceiling on nested membranes** (soma + nucleus): 100% accuracy is
+  unreachable by prompt tuning alone, part of the case for the Phase-3 model upgrades.
 
 ---
 
