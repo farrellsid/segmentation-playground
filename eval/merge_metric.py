@@ -101,7 +101,11 @@ def run_scale(root: Path) -> int:
 
 def score_run(root, annotate_df: pd.DataFrame | None = None,
               radius: int = DEFAULT_RADIUS) -> tuple[pd.DataFrame, dict]:
-    """Aggregate per-chain records, write CSV, return per-frame DataFrame and summary dict."""
+    """Aggregate per-chain records, write CSV, return per-frame DataFrame and summary dict.
+
+    The n_chains count includes only chains that produced at least one scored frame;
+    a chain with no frames (empty masks/ directory) is not counted. No CSV is written
+    if the run has zero scored frames."""
     root = Path(root)
     scale = run_scale(root)
     if annotate_df is None:

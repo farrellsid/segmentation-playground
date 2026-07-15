@@ -82,6 +82,7 @@ def test_score_run_aggregates(tmp_path, monkeypatch):
     assert summ["n_chains"] == 1 and summ["n_frames"] == 2
     assert summ["total_foreign_nodes"] == 1        # f0 hit on z1400 only
     assert abs(summ["foreign_frame_rate"] - 0.5) < 1e-9
+    assert summ["dropout_rate"] == 0.0
     assert (root / "_merge_metric.csv").exists()
     assert set(per["neuron"]) == {"AVAL"}
 
