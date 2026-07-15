@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import cv2
+import json
 from pathlib import Path
 from eval import merge_metric as mm
 
@@ -63,3 +64,23 @@ def test_score_chain_flags_foreign_and_dropout(tmp_path):
     assert recs[1400]["foreign_ids"] == ["f0"] and not recs[1400]["empty"]
     assert recs[1401]["empty"] and not recs[1401]["own_contained"]
     assert recs[1401]["n_foreign"] == 0
+
+
+def test_score_run_aggregates(tmp_path, monkeypatch):
+    # one neuron AVAL with a chain that bleeds onto AVAR's node on one of two frames
+    a = np.zeros((50, 50), dtype=np.uint8); a[10:20, 10:20] = 1
+    b = np.zeros((50, 50), dtype=np.uint8); b[10:20, 10:20] = 1
+    root = tmp_path / "run_merged"
+    _write_chain(root / "AVAL", "chain_00", {1400: a, 1401: b})
+    (root / "_run_meta.json").write_text(json.dumps(
+        {"resolution": {"scale": 8, "save_downscale": 8}}))
+    df = pd.DataFrame({
+        "node_id": ["own0", "own1", "f0"], "cell_name": ["AVAL", "AVAL", "AVAR"],
+        "z": [1400, 1401, 1400], "x_tif": [120.0, 120.0, 112.0], "y_tif": [120.0, 120.0, 112.0],
+    })
+    per, summ = mm.score_run(root, annotate_df=df, radius=0)
+    assert summ["n_chains"] == 1 and summ["n_frames"] == 2
+    assert summ["total_foreign_nodes"] == 1        # f0 hit on z1400 only
+    assert abs(summ["foreign_frame_rate"] - 0.5) < 1e-9
+    assert (root / "_merge_metric.csv").exists()
+    assert set(per["neuron"]) == {"AVAL"}

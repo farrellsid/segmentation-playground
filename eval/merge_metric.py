@@ -6,6 +6,7 @@ section 5 Phase 0 for the scope: this is a severe-merge floor, not an ERL benchm
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,8 @@ import pandas as pd
 
 import pipeline
 from sam2_utils import alignment, config
+
+DEFAULT_RADIUS = 3
 
 
 def load_node_table() -> pd.DataFrame:
@@ -80,3 +83,50 @@ def score_chain(chain_dir: Path, neuron: str,
             "empty": bool(not mask.any()),
         })
     return recs
+
+
+def run_scale(root: Path) -> int:
+    """Read resolution.scale from <root>/_run_meta.json, check it matches save_downscale."""
+    meta = json.loads((Path(root) / "_run_meta.json").read_text())
+    res = meta.get("resolution", {})
+    scale = int(res["scale"])
+    sd = int(res.get("save_downscale", scale))
+    if sd != scale:
+        raise ValueError(
+            f"{root}: scale ({scale}) != save_downscale ({sd}); the node grid "
+            "assumption does not hold, extend the scorer before trusting it.")
+    return scale
+
+
+def score_run(root, annotate_df: pd.DataFrame | None = None,
+              radius: int = DEFAULT_RADIUS) -> tuple[pd.DataFrame, dict]:
+    """Aggregate per-chain records, write CSV, return per-frame DataFrame and summary dict."""
+    root = Path(root)
+    scale = run_scale(root)
+    if annotate_df is None:
+        annotate_df = load_node_table()
+    nbz = nodes_by_z(annotate_df, scale)
+
+    rows: list[dict] = []
+    for neuron_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        neuron = neuron_dir.name
+        for chain_dir in sorted(neuron_dir.glob("chain_*")):
+            cidx = int(chain_dir.name.split("_")[-1])
+            for rec in score_chain(chain_dir, neuron, nbz, radius):
+                rec.update(neuron=neuron, chain_idx=cidx)
+                rows.append(rec)
+
+    per = pd.DataFrame(rows)
+    n_frames = len(per)
+    summary = {
+        "n_chains": int(per[["neuron", "chain_idx"]].drop_duplicates().shape[0]) if n_frames else 0,
+        "n_frames": int(n_frames),
+        "foreign_frame_rate": float((per["n_foreign"] > 0).mean()) if n_frames else 0.0,
+        "dropout_rate": float((per["empty"] | ~per["own_contained"]).mean()) if n_frames else 0.0,
+        "total_foreign_nodes": int(per["n_foreign"].sum()) if n_frames else 0,
+    }
+    if n_frames:
+        per_out = per.copy()
+        per_out["foreign_ids"] = per_out["foreign_ids"].apply(lambda ids: ";".join(ids))
+        per_out.to_csv(root / "_merge_metric.csv", index=False)
+    return per, summary
