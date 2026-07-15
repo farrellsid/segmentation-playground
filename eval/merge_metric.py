@@ -6,8 +6,10 @@ section 5 Phase 0 for the scope: this is a severe-merge floor, not an ERL benchm
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
+import pipeline
 from sam2_utils import alignment, config
 
 
@@ -34,3 +36,24 @@ def nodes_by_z(annotate_df: pd.DataFrame, scale: int
     ):
         out.setdefault(int(z), []).append((x_tif / scale, y_tif / scale, cell, nid))
     return out
+
+
+def own_contained(mask: np.ndarray, x0: int, y0: int,
+                  node_xy: tuple[float, float], radius: int) -> bool:
+    """True if the mask covers its own node (grid coords), accounting for the
+    mask's (x0, y0) grid offset."""
+    x, y = node_xy
+    return pipeline._point_in_mask(mask, x - x0, y - y0, radius)
+
+
+def foreign_hits(mask: np.ndarray, x0: int, y0: int,
+                 nodes: list[tuple[float, float, str, str]],
+                 own_neuron: str, radius: int) -> list[str]:
+    """node_ids of nodes belonging to a DIFFERENT neuron that fall inside the mask."""
+    hits: list[str] = []
+    for x, y, cell, nid in nodes:
+        if cell == own_neuron:
+            continue
+        if pipeline._point_in_mask(mask, x - x0, y - y0, radius):
+            hits.append(nid)
+    return hits
