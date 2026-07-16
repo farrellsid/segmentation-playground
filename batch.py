@@ -159,7 +159,9 @@ def _append_timing(output_root, neuron, chain_idx, state, peak_vram):
         row[f"t_{p.split()[0]}"] = round(ps[p], 3) if p in ps else pd.NA
     for k in ("jpeg_load", "propagate_only"):
         row[f"t_{k}"] = round(sub[k], 3) if k in sub else pd.NA
-    row["t_total"] = round(sum(ps.values()), 3)
+    tier1 = getattr(state, "tier1_seconds", 0.0) or 0.0    # first _sam pass on a tier-2 re-run
+    row["t_pass1"] = round(tier1, 3) if tier1 else pd.NA   # NA for a single-pass chain
+    row["t_total"] = round(tier1 + sum(ps.values()), 3)    # both passes for a tier-2 chain
     path = Path(output_root) / "_timing.csv"
     pd.DataFrame([row], columns=list(row)).to_csv(
         path, mode="a", header=not path.exists(), index=False)
@@ -413,8 +415,12 @@ def _run_one_chain(
         why = "all-chains mode" if tier2_all else "flagged in _sam"
         print(f"[batch] tier-2 re-run ({why}) {neuron}/chain_{chain_idx:02d}")
         diagnostics.cleanup_vram()                       # reclaim before the second pass
+        pass1_seconds = sum((getattr(state, "phase_seconds", {}) or {}).values())
         state = _run_chain_once(session, replace(cfg, chain_crop=True),
                                 neuron, chain_idx, chain)
+        # carry the first (_sam) pass's time, otherwise reassigning `state` drops it and
+        # _timing.csv would record only the second pass for a two-pass chain.
+        state.tier1_seconds = pass1_seconds
         kept = ("fell back to _sam" if getattr(state, "fell_back_to_sam", False)
                 else "kept tier-2 (_pcrop)")
         print(f"[batch] tier-2 re-run done {neuron}/chain_{chain_idx:02d}: "

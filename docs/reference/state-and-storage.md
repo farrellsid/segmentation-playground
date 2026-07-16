@@ -26,7 +26,7 @@ output/
   _manifest.csv               # every chain and its execution status; drives the batch and resume
   _triage.csv                 # queued (intervene) frames across all chains; feeds the GUI
   _review.csv                 # the GUI-owned review-status ledger, separate from the manifest
-  _timing.csv                 # per-chain phase seconds and peak VRAM
+  _timing.csv                 # per-chain phase seconds + peak VRAM; for a tier-2 chain t_total covers both passes and t_pass1 is the first (_sam) pass
   _labels.csv                 # one row per labelled frame (the GUI's training-data exhaust)
   <neuron>/
     chain_00/
