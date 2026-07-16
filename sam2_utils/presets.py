@@ -201,6 +201,36 @@ PRESETS = {
         "clean": False, "neurons": EXP_NEURONS,
         "score_out": None,
     },
+    "original_perslice_only": {
+        # Isolation: per-slice re-seeding WITHOUT generous multimask (original_perslice has both),
+        # otherwise identical to original_tier2_s1forced_neg. An A/B against that baseline
+        # attributes the per-slice lever alone.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_only",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_generous_only": {
+        # Isolation: generous-capped multimask WITHOUT per-slice re-seeding (still propagation),
+        # otherwise identical to original_tier2_s1forced_neg. An A/B against that baseline
+        # attributes the generous lever alone.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "multimask_anchor": True, "multimask_generous": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_generous_only",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
 }
 
 
