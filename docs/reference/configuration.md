@@ -46,8 +46,15 @@ single-chain run.
   auto-selects one by `(contains the positive node, plausible area, single connected component, SAM
   IoU)`. `multimask_exclude_neg` (default off, only consulted when `multimask_anchor` is on) adds an
   anti-bleed term: among candidates that contain the positive node, prefer one that contains none of
-  the negative neighbour nodes. The `eval` preset turns `multimask_anchor` on. See
-  [ADR 0012](../adr/0012-node-anchored-multimask-selection.md).
+  the negative neighbour nodes. `multimask_generous` (default off, also consulted only when
+  `multimask_anchor` is on) instead changes the tie-break to prefer the LARGER gate-passing candidate,
+  so a soma mask includes the nucleus and reaches the outer membrane; it stays capped by the area gate,
+  so a whole-frame blob does not win while any gate-passer exists. The `eval` preset turns
+  `multimask_anchor` on. See [ADR 0012](../adr/0012-node-anchored-multimask-selection.md).
+- Per-slice re-seeding (default off): `per_slice_reseed` replaces whole-chain video propagation with
+  independent per-slice image-mode segmentation, each slice re-seeded from its own skeleton node inside
+  the chain crop, so SAM2 memory cannot carry the wrong cell across slices. When off, the propagation
+  path is byte-identical. See the Phase 1 spec under `docs/superpowers/specs/`.
 - Prompts and seed: `k_max_neg`, `box_margin`, `box_margin_frac`, `seed_negatives`, plus the seed
   shape knobs. See [ADR 0008](../adr/0008-video-seed-box-vs-mask.md).
 - Anchor gate (observational): `gate_min_area_frac`, `gate_max_area_frac`, `gate_min_largest_cc_frac`.

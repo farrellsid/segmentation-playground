@@ -8,7 +8,7 @@ as few files as possible.
 
 | Goal | Edit | Notes |
 |------|------|-------|
-| A segmentation phase | the matching `pipeline/` submodule | The core is a package split by concern: `predict.py` (anchor select, prompt build, image predict, multimask select, box, anchor gate, tier-1 crop), `propagate.py` (video propagation), `crop.py` (tier-2 windows + frame prep), `frames.py` (FrameStore + EM loading), `masks.py` (save + postprocess), `qc.py` (per-chain QC), `orchestrator.py` (`run_chain`). Phase functions take plain arrays and a config, do no I/O setup. |
+| A segmentation phase | the matching `pipeline/` submodule | The core is a package split by concern: `predict.py` (anchor select, prompt build, image predict, multimask select, box, anchor gate, tier-1 crop), `propagate.py` (video propagation + per-slice re-seed `segment_per_slice`), `crop.py` (tier-2 windows + frame prep), `frames.py` (FrameStore + EM loading), `masks.py` (save + postprocess), `qc.py` (per-chain QC), `orchestrator.py` (`run_chain`). Phase functions take plain arrays and a config, do no I/O setup. |
 | A run/tuning knob (scale, crop, QC thresholds, seed shape) | `PipelineConfig` in `pipeline/config.py` | One dataclass holds every tunable. Defaults reproduce the original single-chain run. (Distinct from `sam2_utils/config.py`, which holds static paths/constants.) |
 | The per-chain state object or its serialization | `pipeline/state.py` | `ChainState`, `Prompts`, `AnchorScore`, and the `state_to_dict`/`from_dict` + `save_state`/`load_state` round-trip. |
 | The default knobs for a named run (which worm, model, paths, tier-2) | `sam2_utils/presets.py` | `--preset original` (target worm) and `--preset eval` (cross-worm GT). Any CLI flag overrides. |
@@ -24,7 +24,7 @@ as few files as possible.
 | Predictor construction, device selection, checkpoint download | `sam2_utils/setup.py` | Builds the image or video predictor. Imports torch lazily. |
 | The CATMAID client or annotation fetch | `sam2_utils/catmaid.py` | REST wrapper plus `fetch_all_annotations`. |
 | RAM/VRAM/disk diagnostics for long runs | `sam2_utils/diagnostics.py` | Snapshots and VRAM cleanup. torch is lazy here too. |
-| Ground-truth evaluation (region IoU, VOI, ARAND, ERL, registration) | `eval/` | `score_batch.py`, `metrics.py`, `erl.py`, `registration.py`, `gt_dataset.py`. |
+| Ground-truth evaluation (region IoU, VOI, ARAND, ERL, registration) | `eval/` | `score_batch.py`, `metrics.py`, `erl.py`, `registration.py`, `gt_dataset.py`. The GT-free target-worm severe-bleed / dropout scorer (foreign skeleton-node containment) is `merge_metric.py`. |
 | The single-chain regression run | `run_aval.py` | Runs one chain end to end. The worked example and reproduction harness. |
 | Running the batch in parallel on the Narval cluster | `cluster/` | Slurm array over `batch.py`: `make_chunks.py` (neurons to chunks), `run_array.sh` (the array job), `merge_shards.py` + `run_merge.sh` (stitch shards). See [../how-to/run-on-narval.md](../how-to/run-on-narval.md). |
 

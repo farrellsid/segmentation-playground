@@ -70,3 +70,19 @@ Common flags: `--preset <name>`, `--no-labelmap` (skip the VOI/ARAND/ERL labelma
 metrics only). See [../how-to/evaluate-against-gt.md](../how-to/evaluate-against-gt.md). Other `eval/`
 entry points (`eval.run_erl`, `eval.registration`, `eval.diag_registration`,
 `eval.scale_registration`) are documented in `eval/README.md`.
+
+## eval.merge_metric
+
+Ground-truth-free severe-bleed / dropout scorer for the target worm (roadmap Phase 0). For each run's
+RAW per-chain masks it counts foreign skeleton nodes contained (a merge) and own-node dropout, scored
+against the worm's own CATMAID skeletons, so it needs no cross-worm GT and no boundary labels. Writes a
+`_merge_metric.csv` into each run tree and prints one summary line per run.
+
+```bash
+py -3 -m eval.merge_metric --root <merged_run> [--root <other> ...] [--radius N]
+```
+
+Summary columns: `foreign_frame_rate` (fraction of frames whose mask contains another neuron's node),
+`dropout_rate` (fraction whose mask lost its own node), `total_foreign`. This is a severe-merge floor
+(foreign-node containment at `--radius`, default 3 grid px), so it does not catch mild bleed. Repeat
+`--root` to compare runs on a single node-table load.
