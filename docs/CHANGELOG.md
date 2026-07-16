@@ -84,6 +84,17 @@ A follow-up experiment round and a roadmap restructure. No default pipeline beha
   this is a severe-merge floor (foreign-node containment, radius 3), it does not see mild bleed (that
   needs the Phase 2 membrane map); and tier2forced_neg covers 582 chains (AIBR unfinished), so its
   rates compare but its totals do not.
+- **Phase 1 code landed (gated off, awaiting GPU smoke).** Two roadmap Phase 1 fixes, both behind
+  default-off flags so existing behavior is byte-identical: per-slice re-seeding (`per_slice_reseed`,
+  run_chain segments each slice from its own skeleton node in the chain crop with no video
+  propagation, so memory cannot carry the wrong cell across slices) and generous-capped multimask
+  (`multimask_generous`, prefer a larger candidate so a soma includes the nucleus and reaches the
+  outer membrane, capped so a whole-frame blob never wins while a gate-passer exists). New
+  `original_perslice` preset. Built as 8 TDD tasks via subagents; the whole-branch review caught and
+  fixed a frame_conf low-res-logit indexing crash before it could reach a GPU run. 215 tests pass,
+  ruff clean. The real quality A/B (per-slice and generous vs tier2_s1forced_neg on eval.merge_metric,
+  foreign_frame_rate down, dropout not up) is pending the human GPU smoke: downscaled locally, then
+  CCDB. Spec + plans under docs/superpowers/.
 
 <a id="r-2026-07"></a>
 ## 2026-07, research passes, resolution experiments, and design specs
