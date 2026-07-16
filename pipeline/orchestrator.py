@@ -233,12 +233,14 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
                 state.prompts, annotate_df, scale=cfg.scale,
                 crop_size_tif=cfg.crop_size_tif, crop_scale=eff_crop_scale, cw=cw_chain_l,
                 multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
-                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg)
+                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg,
+                select_generous=cfg.multimask_generous)
         else:
             mask_anchor, state.image_score, _logits = image_predict(
                 image_predictor, image_sam, state.prompts,
                 multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
-                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg)
+                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg,
+                select_generous=cfg.multimask_generous)
             cw, prompts_anchor = None, state.prompts
         image_hw_anchor = mask_anchor.shape[:2]
         if cfg.multimask_anchor:

@@ -162,7 +162,8 @@ def _negative_points(prompts: Optional[Prompts]) -> np.ndarray:
 def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional[Prompts],
                         image_hw: tuple[int, int], *, contain_radius_px: int,
                         area_bounds: tuple[float, float],
-                        exclude_neg: bool = False) -> tuple[int, np.ndarray, float]:
+                        exclude_neg: bool = False,
+                        generous: bool = False) -> tuple[int, np.ndarray, float]:
     """Pick the best of SAM2's multimask candidates for an anchor seed.
 
     Ranking is lexicographic and *graceful*, it always returns one candidate, so a
@@ -179,13 +180,19 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
                                             usually one huge clean blob (lcc ~ 1.0) that
                                             would otherwise win on step 4
       4. single-CC health (largest_cc_frac) : one clean blob over fragmented membrane
-      5. SAM predicted IoU (scores)       : final tiebreak among otherwise-equal masks
+      5. tiebreak (generous)              : SAM predicted IoU (scores) by default; with
+                                            `generous=True`, the LARGER area_frac instead,
+                                            among candidates already tied on steps 1-4 (the
+                                            area gate at step 3 still rejects anything over
+                                            `area_bounds`'s upper cap, so a whole-frame
+                                            over-cap blob never wins even under `generous`)
 
     Everything is judged in the space the masks live in (the caller passes matching
     `prompts`, `image_hw`, and `contain_radius_px`), so this is transform-free like
     score_anchor. The chosen mask still only sources the video-seed *box*; the
     positive seed point is unchanged, so a multimask pick never moves the seed point.
-    With `exclude_neg=False` the key is byte-identical to the original ranking.
+    With `exclude_neg=False` and `generous=False` the key is byte-identical to the
+    original ranking.
     Returns (best_idx, mask_bool, score).
     """
     masks = np.asarray(masks).astype(bool)
@@ -204,12 +211,13 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
         _, lcc = _largest_cc_frac(m)
         score = float(scores[i]) if i < scores.size else 0.0
         area_ok = int(min_af <= area_frac <= max_af)
+        tiebreak = area_frac if generous else score
         if exclude_neg:
             no_neg = int(not any(
                 _point_in_mask(m, float(nx), float(ny), contain_radius_px) for nx, ny in negs))
-            key = (int(contained), no_neg, area_ok, lcc, score)
+            key = (int(contained), no_neg, area_ok, lcc, tiebreak)
         else:
-            key = (int(contained), area_ok, lcc, score)
+            key = (int(contained), area_ok, lcc, tiebreak)
         if best_key is None or key > best_key:
             best_idx, best_key = i, key
     return best_idx, masks[best_idx], (float(scores[best_idx]) if best_idx < scores.size else 0.0)
@@ -219,6 +227,7 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
                   multimask: bool = False, select_contain_radius_px: int = 0,
                   select_area_bounds: tuple[float, float] = (0.0, 1.0),
                   select_exclude_neg: bool = False,
+                  select_generous: bool = False,
                   ) -> tuple[np.ndarray, float, np.ndarray]:
     """Run image-mode SAM2 on the anchor frame.
 
@@ -231,7 +240,9 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
     *always* computes all 3 candidates regardless of the flag (it only slices the
     output, see sam2/modeling/sam/mask_decoder.py), and the heavy image-encoder
     `set_image` runs once either way; the only added work is scoring 3 masks on CPU.
-    The selection params are only consulted when `multimask=True`.
+    The selection params are only consulted when `multimask=True`. `select_generous`
+    forwards to `_select_anchor_mask`'s `generous` tiebreak (prefer the larger
+    gate-passing candidate over the higher-scoring one); default False is unchanged.
 
     A `prompts.box_sam` (xyxy in `image_sam` space) is forwarded as SAM2's `box` seed,
     so a human-drawn box (GUI) shapes the mask alongside any points. Points are passed
@@ -260,7 +271,7 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
     best, mask_b, score = _select_anchor_mask(
         masks, scores, prompts, masks.shape[1:],
         contain_radius_px=select_contain_radius_px, area_bounds=select_area_bounds,
-        exclude_neg=select_exclude_neg)
+        exclude_neg=select_exclude_neg, generous=select_generous)
     return mask_b.astype(bool), score, logits[best:best + 1]
 
 
@@ -369,6 +380,7 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
                         multimask: bool = False, select_contain_radius_px: int = 0,
                         select_area_bounds: tuple[float, float] = (0.0, 1.0),
                         select_exclude_neg: bool = False,
+                        select_generous: bool = False,
                         ) -> tuple[np.ndarray, float, "alignment.CropWindow", "Prompts"]:
     """Image-mode anchor prediction on a high-res crop (default path).
 
@@ -423,5 +435,6 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
     mask_crop, score, _logits = image_predict(
         image_predictor, crop_img, prompts_crop, multimask=multimask,
         select_contain_radius_px=select_contain_radius_px,
-        select_area_bounds=select_area_bounds, select_exclude_neg=select_exclude_neg)
+        select_area_bounds=select_area_bounds, select_exclude_neg=select_exclude_neg,
+        select_generous=select_generous)
     return mask_crop, score, cw, prompts_crop

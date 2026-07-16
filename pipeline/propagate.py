@@ -421,7 +421,8 @@ def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, in
         mask, score, logits = image_predict(
             image_predictor, image, prompts, multimask=cfg.multimask_anchor,
             select_contain_radius_px=contain_r, select_area_bounds=area_bounds,
-            select_exclude_neg=cfg.multimask_exclude_neg)
+            select_exclude_neg=cfg.multimask_exclude_neg,
+            select_generous=cfg.multimask_generous)
 
         video_segments[frame_idx] = {obj_id: mask}
         pred_iou[frame_idx] = float(score)
