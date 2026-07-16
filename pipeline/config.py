@@ -177,6 +177,13 @@ class PipelineConfig:
     # default OFF so it can be measured against plain multimask selection.
     multimask_exclude_neg: bool = False
 
+    # Generous-capped multimask pick (roadmap Phase 1 item 3). When True (and
+    # multimask_anchor on), among candidates that contain the node, are single-CC, and pass
+    # the area gate, prefer the LARGEST area rather than the highest score, so a soma mask
+    # includes the nucleus and reaches the outer membrane. The area gate's upper bound still
+    # rejects whole-frame blobs. Default False reproduces the current ranking exactly.
+    multimask_generous: bool = False
+
     # paths (project-static paths like WORM_PATH stay in sam2_utils.config)
     output_root: Optional[Path] = None     # e.g. .../output_masks; per-chain subdir is derived
     frames_root: Optional[Path] = None     # parent dir for SAM2 JPEG frame folders
