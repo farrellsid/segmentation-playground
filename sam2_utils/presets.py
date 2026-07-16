@@ -184,6 +184,22 @@ PRESETS = {
         "clean": False, "neurons": EXP_NEURONS,
         "score_out": None,
     },
+    "original_perslice": {
+        # Per-slice reseeding variant: chains processed per-slice with reseeding on
+        # each slice boundary, using the same pipeline knobs as original_tier2_s1forced_neg
+        # (negatives, full-res tier-2). Tests per-slice propagation as an alternative to
+        # whole-chain propagation.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
 }
 
 

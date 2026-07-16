@@ -119,4 +119,20 @@ Each merged tree carries a `_run_meta.json` (preset, knobs, git commit, actual S
 `image_size`) for post-hoc interpretation. `original_bigimg` (`image_size=2048`) is the
 risky one: it may OOM on the 40GB A100 or fail the post-build `image_size` assertion, so an
 empty shard with an OOM or assertion error in its log is expected-failure, check the log and
-`_run_meta.json`. The fourth comparison point is the full `original` run you already have.
+`_run_meta.json`.
+
+### Per-slice reseeding variant
+
+To test per-slice propagation with reseeding at slice boundaries, first run a downscaled
+local smoke test on your GPU:
+
+```bash
+py -3 batch.py --preset original_perslice --neurons AIYL --model-size tiny --clean
+py -3 -m eval.merge_metric --root <that run's output_root>
+```
+
+Then submit the full run on Narval:
+
+```bash
+sbatch --job-name=exp_perslice --export=ALL,EXP_PRESET=original_perslice cluster/run_exp.sh
+``` The fourth comparison point is the full `original` run you already have.
