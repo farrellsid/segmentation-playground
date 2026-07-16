@@ -1,5 +1,5 @@
 import pandas as pd
-from pipeline import predict
+from pipeline import predict, PipelineConfig
 
 
 def test_centreline_by_z_uses_nodes_and_interpolates_gaps():
@@ -18,3 +18,7 @@ def test_centreline_by_z_uses_nodes_and_interpolates_gaps():
     assert got[1402] == (120.0, 840.0)
     # z=1401 interpolated halfway between the two chain nodes, NOT the foreign node
     assert got[1401] == (100.0, 820.0)
+
+
+def test_per_slice_reseed_flag_defaults_false():
+    assert PipelineConfig().per_slice_reseed is False

@@ -197,6 +197,12 @@ class PipelineConfig:
                                        # legacy _sam or tier-2 _pcrop, NOT tier-1 crop_anchor _crop)
     box_margin_frac: float = 0.0       # %-of-bbox-size box pad when seed_box == "frac" (underfill fix)
 
+    # Per-slice re-seeding (roadmap Phase 1 item 1). When True, run_chain segments each
+    # slice independently in the chain crop, re-seeded from that slice's own node, instead
+    # of seeding one anchor and propagating. Memory cannot carry the wrong cell across
+    # slices. Default False keeps the propagation path byte-identical.
+    per_slice_reseed: bool = False
+
     # mask post-processing -> deterministic, no model. Runs before
     # save+QC so QC scores the delivered mask. Off = baseline. Kernels are in
     # scale-8 _sam px; keep <= the neurite half-width.
