@@ -92,8 +92,9 @@ links into the shards.
 To compare ways of spending compute on resolution (design:
 [../superpowers/specs/2026-07-06-fullres-resolution-experiments-design.md](../superpowers/specs/2026-07-06-fullres-resolution-experiments-design.md)),
 run the experiment presets on the fixed `EXP_NEURONS` subset. These are separate from the
-full target-worm run and write their own `/scratch/$USER/<preset>_*` trees. Chunks are 2
-neurons each (`cluster/exp_neuron_chunks.txt`, array 0-7); submit one array per variant, then
+full target-worm run and write their own `/scratch/$USER/<preset>_*` trees. Chunks are 1
+neuron each (`cluster/exp_neuron_chunks.txt`, array 0-15, so the heavier per-slice presets
+isolate each neuron and AVAL cannot time out a shared chunk); submit one array per variant, then
 merge each:
 
 ```bash

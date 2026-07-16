@@ -4,9 +4,10 @@
 # The resolution experiments (original_fullres / original_tier2forced / original_bigimg)
 # run a fixed neuron subset (presets.EXP_NEURONS) split into small chunks so they run in
 # parallel, isolate AVAL's many chains to one task, and survive a single task failing.
-# Chunks come from cluster/exp_neuron_chunks.txt (2 neurons/line, 8 lines -> array 0-7);
+# Chunks come from cluster/exp_neuron_chunks.txt (1 neuron/line, 16 lines -> array 0-15, so the
+# heavier per-slice presets isolate each neuron and AVAL cannot wall a whole 2-neuron chunk);
 # regenerate with:
-#   py -3 cluster/make_chunks.py --chunk-size 2 --neurons <EXP_NEURONS...> --out cluster/exp_neuron_chunks.txt
+#   py -3 cluster/make_chunks.py --chunk-size 1 --neurons <EXP_NEURONS...> --out cluster/exp_neuron_chunks.txt
 #
 # Submit ONCE PER VARIANT, passing the preset via --export (same script, three arrays =
 # 3 x 8 = 24 GPU tasks; add the full-run baseline you already have for the 4th comparison):
@@ -26,7 +27,7 @@
 # empty chunk shard is expected-failure, check its log + _run_meta.json.
 
 #SBATCH --account=def-mzhen        # bare account; Slurm auto-routes to _gpu via --gres
-#SBATCH --array=0-7%8              # 8 chunks (2 neurons each); match exp_neuron_chunks.txt
+#SBATCH --array=0-15%8             # 16 chunks (1 neuron each); match exp_neuron_chunks.txt
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8          # within Narval's per-GPU ratio (<= 12 cores/GPU)
 #SBATCH --mem=64G                  # higher than the full run: full-res frames + bigimg are heavier
