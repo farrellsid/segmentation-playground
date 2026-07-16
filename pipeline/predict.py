@@ -182,10 +182,15 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
       4. single-CC health (largest_cc_frac) : one clean blob over fragmented membrane
       5. tiebreak (generous)              : SAM predicted IoU (scores) by default; with
                                             `generous=True`, the LARGER area_frac instead,
-                                            among candidates already tied on steps 1-4 (the
-                                            area gate at step 3 still rejects anything over
-                                            `area_bounds`'s upper cap, so a whole-frame
-                                            over-cap blob never wins even under `generous`)
+                                            among candidates already tied on steps 1-4. The
+                                            area gate at step 3 outranks the tiebreak, so a
+                                            whole-frame over-cap blob loses to any candidate
+                                            that passes the gate, EVEN under `generous`. But
+                                            if every candidate exceeds the cap, area_ok ties
+                                            at 0 for all of them and generous then picks the
+                                            largest (worst) of the failing candidates, a
+                                            degenerate slice the merge-metric will surface,
+                                            not a case this tiebreak protects against.
 
     Everything is judged in the space the masks live in (the caller passes matching
     `prompts`, `image_hw`, and `contain_radius_px`), so this is transform-free like

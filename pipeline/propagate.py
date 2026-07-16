@@ -426,8 +426,14 @@ def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, in
 
         video_segments[frame_idx] = {obj_id: mask}
         pred_iou[frame_idx] = float(score)
+        # frame_conf is the same mean-foreground-sigmoid proxy PropagationSession._collect
+        # computes for the video path: the foreground comes from THIS logit array's own
+        # threshold (lg > 0.0), not the full-res `mask` from image_predict. logits is SAM2's
+        # low_res_masks (256x256), a different resolution than mask (full crop res), so
+        # indexing the low-res logits with the full-res mask raises IndexError on real SAM2.
         lg = np.asarray(logits[0], dtype=float)
-        fg = lg[mask]
+        m_lr = lg > 0.0
+        fg = lg[m_lr]
         frame_conf[frame_idx] = float((1.0 / (1.0 + np.exp(-fg))).mean()) if fg.size else float("nan")
 
     return video_segments, frame_conf, pred_iou

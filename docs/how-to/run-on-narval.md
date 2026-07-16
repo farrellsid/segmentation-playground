@@ -124,10 +124,13 @@ empty shard with an OOM or assertion error in its log is expected-failure, check
 ### Per-slice reseeding variant
 
 To test per-slice propagation with reseeding at slice boundaries, first run a downscaled
-local smoke test on your GPU:
+local smoke test on your GPU. `original_perslice` normally forces a full-res tier-2 pass
+(`chain_crop_scale=1`), which already OOM'd once at full res, so the local smoke adds
+`--no-tier2`: that keeps the run on the preset's first, downscaled `_sam` pass (`scale=8`)
+and skips the full-res crop entirely. Full-res per-slice is CCDB-only, run it there instead:
 
 ```bash
-py -3 batch.py --preset original_perslice --neurons AIYL --model-size tiny --clean
+py -3 batch.py --preset original_perslice --neurons AIYL --model-size tiny --no-tier2 --clean
 py -3 -m eval.merge_metric --root <that run's output_root>
 ```
 
@@ -135,4 +138,6 @@ Then submit the full run on Narval:
 
 ```bash
 sbatch --job-name=exp_perslice --export=ALL,EXP_PRESET=original_perslice cluster/run_exp.sh
-``` The fourth comparison point is the full `original` run you already have.
+```
+
+The fourth comparison point is the full `original` run you already have.

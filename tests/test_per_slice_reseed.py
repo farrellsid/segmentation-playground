@@ -38,7 +38,13 @@ def test_per_slice_reseed_flag_defaults_false():
 
 class _StubPredictor:
     """Minimal image-predictor stub: set_image records shape, predict returns one
-    canned mask covering the seeded point, so segment_per_slice runs torch-free."""
+    canned mask covering the seeded point, so segment_per_slice runs torch-free.
+
+    logits are shaped (n_masks, 256, 256), SAM2's actual low_res_masks resolution,
+    deliberately DIFFERENT from the full-res mask shape (h, w): segment_per_slice must
+    derive frame_conf's foreground from the logits' own threshold, never by indexing
+    the low-res logits with the full-res mask (that raises IndexError on real SAM2).
+    """
     def set_image(self, img): self._hw = img.shape[:2]
     def predict(self, point_coords=None, point_labels=None, box=None, multimask_output=False):
         h, w = self._hw
@@ -48,7 +54,7 @@ class _StubPredictor:
             m[max(0, y-2):y+3, max(0, x-2):x+3] = True
         masks = np.stack([m, m, m]) if multimask_output else m[None]
         scores = np.array([0.9, 0.8, 0.7][: masks.shape[0]])
-        logits = np.zeros((masks.shape[0], h, w), dtype=np.float32)
+        logits = np.zeros((masks.shape[0], 256, 256), dtype=np.float32)
         return masks, scores, logits
 
 
