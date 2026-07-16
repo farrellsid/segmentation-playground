@@ -1,5 +1,16 @@
+import importlib
+
+import numpy as np
 import pandas as pd
 from pipeline import predict, PipelineConfig
+from pipeline import config as cfgmod
+
+# pipeline/__init__.py re-exports propagate() (the function) under the name
+# "propagate", which shadows the submodule of the same name on the pipeline
+# package object. `from pipeline import propagate` would therefore hand back
+# the function, not the module segment_per_slice lives in, so fetch the
+# submodule straight from the import machinery instead.
+prop = importlib.import_module("pipeline.propagate")
 
 
 def test_centreline_by_z_uses_nodes_and_interpolates_gaps():
@@ -22,3 +33,38 @@ def test_centreline_by_z_uses_nodes_and_interpolates_gaps():
 
 def test_per_slice_reseed_flag_defaults_false():
     assert PipelineConfig().per_slice_reseed is False
+
+
+class _StubPredictor:
+    """Minimal image-predictor stub: set_image records shape, predict returns one
+    canned mask covering the seeded point, so segment_per_slice runs torch-free."""
+    def set_image(self, img): self._hw = img.shape[:2]
+    def predict(self, point_coords=None, point_labels=None, box=None, multimask_output=False):
+        h, w = self._hw
+        m = np.zeros((h, w), dtype=bool)
+        if point_coords is not None and len(point_coords):
+            x, y = int(point_coords[0][0]), int(point_coords[0][1])
+            m[max(0, y-2):y+3, max(0, x-2):x+3] = True
+        masks = np.stack([m, m, m]) if multimask_output else m[None]
+        scores = np.array([0.9, 0.8, 0.7][: masks.shape[0]])
+        logits = np.zeros((masks.shape[0], h, w), dtype=np.float32)
+        return masks, scores, logits
+
+
+def test_segment_per_slice_returns_a_mask_per_frame(tmp_path):
+    # 3 frames on disk, full-frame (cw=None -> _sam space)
+    import cv2
+    fdir = tmp_path / "frames"; fdir.mkdir()
+    for i in range(3):
+        cv2.imwrite(str(fdir / f"{i:05d}.jpg"), np.full((40, 40, 3), 127, np.uint8))
+    frame_to_z = {0: 1400, 1: 1401, 2: 1402}
+    centreline_tif = {1400: (80.0, 80.0), 1401: (80.0, 80.0), 1402: (80.0, 80.0)}  # scale 8 -> (10,10)
+    df = pd.DataFrame({"node_id": [], "cell_name": [], "z": [], "x_tif": [], "y_tif": []})
+    cfg = cfgmod.PipelineConfig(scale=8, k_max_neg=0)
+    vs, conf, piou = prop.segment_per_slice(
+        _StubPredictor(), str(fdir), frame_to_z, centreline_tif, df,
+        cfg=cfg, obj_id=1, cw=None)
+    assert set(vs) == {0, 1, 2}
+    assert all(1 in vs[f] for f in vs)              # obj_id present per frame
+    assert vs[0][1].sum() > 0                        # canned mask non-empty at the seed
+    assert set(conf) == {0, 1, 2} and set(piou) == {0, 1, 2}

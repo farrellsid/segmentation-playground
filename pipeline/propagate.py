@@ -1,13 +1,19 @@
-"""Interruptible SAM2 video propagation: FrameResult, the IoU hook, PropagationSession, propagate."""
+"""Interruptible SAM2 video propagation: FrameResult, the IoU hook, PropagationSession,
+propagate, and segment_per_slice (the per-frame node-anchored image-mode alternative)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 from typing import Callable, Iterator, Optional
 
 import numpy as np
+import pandas as pd
 
+from sam2_utils import alignment
+
+from .predict import build_prompts, image_predict
 from .state import Prompts
 
 
@@ -294,3 +300,113 @@ def propagate(video_predictor, frames_dir: str, prompts: Prompts,
         return session.video_segments, session.frame_conf, session.pred_iou
     finally:
         session.close()
+
+
+def _node_id_at(annotate_df: pd.DataFrame, catmaid_z: int, x_tif: float, y_tif: float):
+    """The node_id backing a real (non-interpolated) centreline point, or None.
+
+    `centreline_by_z` returns a (x_tif, y_tif) per catmaid_z: for a z with a real
+    chain node it is that node's own coordinates verbatim; for a gap z it is a
+    linear interpolation with no backing row. `build_prompts` needs an actual
+    node_id (it reads the node's CATMAID x/y to rank same-z neighbours by
+    distance), so negatives are only built where a real node exists; an
+    interpolated z degrades to a positive-only seed rather than guessing a
+    neighbour ranking from a synthetic point.
+    """
+    if not len(annotate_df):
+        return None
+    z_col = annotate_df["z"]
+    x_col = pd.to_numeric(annotate_df["x_tif"], errors="coerce")
+    y_col = pd.to_numeric(annotate_df["y_tif"], errors="coerce")
+    match = annotate_df.loc[(z_col == catmaid_z) & (x_col == x_tif) & (y_col == y_tif), "node_id"]
+    return match.iloc[0] if len(match) else None
+
+
+def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, int],
+                      centreline_tif: dict[int, tuple[float, float]],
+                      annotate_df: pd.DataFrame, *, cfg, obj_id: int,
+                      cw: Optional["alignment.CropWindow"] = None,
+                      ) -> tuple[dict[int, dict[int, np.ndarray]], dict[int, float], dict[int, float]]:
+    """Per-frame node-anchored image-mode segmentation, no video propagation.
+
+    For each prepared frame, seed image-mode SAM2 from THAT frame's own centreline
+    point (`centreline_tif`, from `predict.centreline_by_z`) instead of propagating
+    one anchor's memory across the whole chain, so a mis-tracked cell can never
+    carry into a later slice (roadmap Phase 1 item 1). Returns the SAME
+    `(video_segments, frame_conf, pred_iou)` shape `propagate()` returns, so
+    save/QC/`chain_masks_in_sam` need no change.
+
+    `cw` is the chain's tier-2 crop window: when set, frames on disk and the
+    returned masks are in `_pcrop` (the space `prepare_chain_crop_frames` wrote);
+    when None, both are `_sam` (the space `prepare_video_frames` wrote). Frames are
+    read by 0-indexed `{frame_idx:05d}.jpg`, exactly the naming `prepare_video_frames`
+    / `prepare_chain_crop_frames` use, so no torch/video-predictor frame loader is
+    needed here, only `cv2.imread`.
+
+    The seed point is built in `_sam` first (`alignment.tif_to_sam`, same as
+    `build_prompts`), then, when `cw` is set, remapped `_sam` -> `_pcrop` via
+    `cw.sam_to_crop` (the `_sam -> _tif -> _crop` chain `anchor_crop_predict` uses
+    for its own prompt remap): no coordinate math is reinvented here. Neighbour
+    negatives, when `cfg.k_max_neg > 0`, are `build_prompts`' own negatives for
+    the frame's real backing node (see `_node_id_at`), mapped through the same
+    `_sam` (-> `_pcrop`) step as the positive.
+
+    Returns
+    -------
+    (video_segments, frame_conf, pred_iou)
+        video_segments : {frame_idx: {obj_id: mask bool}}, in `_pcrop` (cw set) or
+                         `_sam` (cw None), matching `propagate()`.
+        frame_conf     : {frame_idx: float}, mean-foreground-sigmoid proxy over the
+                         image-mode logits, the same proxy `PropagationSession._collect`
+                         computes for the video path.
+        pred_iou       : {frame_idx: float}, SAM2's own predicted-IoU score for the
+                         mask `image_predict` returned (its single-mask score, or the
+                         selected multimask candidate's score).
+    """
+    import cv2
+
+    space_ratio = (float(cfg.scale) / float(cw.crop_scale)) if cw is not None else 1.0
+    contain_r = int(round(cfg.qc_skeleton_dilation_px * space_ratio))
+    area_bounds = (cfg.gate_min_area_frac, cfg.gate_max_area_frac)
+
+    video_segments: dict[int, dict[int, np.ndarray]] = {}
+    frame_conf: dict[int, float] = {}
+    pred_iou: dict[int, float] = {}
+
+    for frame_idx in sorted(frame_to_z):
+        catmaid_z = frame_to_z[frame_idx]
+        img_path = Path(frames_dir) / f"{frame_idx:05d}.jpg"
+        image = cv2.cvtColor(cv2.imread(str(img_path)), cv2.COLOR_BGR2RGB)
+
+        x_tif, y_tif = centreline_tif[catmaid_z]
+        pos_sam = alignment.tif_to_sam([x_tif, y_tif], cfg.scale)     # (2,)
+        points_sam = [[float(pos_sam[0]), float(pos_sam[1])]]
+        labels = [1]
+
+        if cfg.k_max_neg > 0:
+            node_id = _node_id_at(annotate_df, catmaid_z, x_tif, y_tif)
+            if node_id is not None:
+                neg_prompts = build_prompts(
+                    node_id, catmaid_z, annotate_df, scale=cfg.scale,
+                    k_max_neg=cfg.k_max_neg, neg_radius=cfg.neg_radius)
+                neg_labels = np.asarray(neg_prompts.labels)
+                for pt in np.asarray(neg_prompts.points_sam, dtype=float)[neg_labels == 0]:
+                    points_sam.append([float(pt[0]), float(pt[1])])
+                    labels.append(0)
+
+        points_sam_arr = np.asarray(points_sam, dtype=float)
+        points_pred = cw.sam_to_crop(points_sam_arr) if cw is not None else points_sam_arr
+        prompts = Prompts(points_sam=points_pred, labels=np.asarray(labels, dtype=int))
+
+        mask, score, logits = image_predict(
+            image_predictor, image, prompts, multimask=cfg.multimask_anchor,
+            select_contain_radius_px=contain_r, select_area_bounds=area_bounds,
+            select_exclude_neg=cfg.multimask_exclude_neg)
+
+        video_segments[frame_idx] = {obj_id: mask}
+        pred_iou[frame_idx] = float(score)
+        lg = np.asarray(logits[0], dtype=float)
+        fg = lg[mask]
+        frame_conf[frame_idx] = float((1.0 / (1.0 + np.exp(-fg))).mean()) if fg.size else float("nan")
+
+    return video_segments, frame_conf, pred_iou
