@@ -29,13 +29,32 @@ from .predict import (
     anchor_crop_predict,
     box_from_mask,
     build_prompts,
+    centreline_by_z,
     image_predict,
     score_anchor,
     select_anchor,
 )
-from .propagate import propagate
+from .propagate import propagate, segment_per_slice
 from .qc import run_qc
 from .state import ChainState, Prompts, _anchor_score_to_dict, load_state
+
+
+def _do_segmentation(cfg, *, image_predictor, video_predictor, frames_dir, frame_to_z,
+                     prompts, anchor_frame_idx, chain, annotate_df, cw, obj_id, **seed_kw):
+    """Choose the segmentation path: per-slice re-seed vs. video propagation.
+
+    Returns the shared `(video_segments, frame_conf, pred_iou)` shape both
+    `segment_per_slice` and `propagate` produce, so `run_chain`'s save/QC/state
+    steps need no branch of their own. `seed_kw` (seed_box, seed_points,
+    seed_negatives, seed_mask, mask_anchor, subtimings) is only meaningful to
+    `propagate`; `segment_per_slice` builds its own per-frame seed instead.
+    """
+    if cfg.per_slice_reseed:
+        centreline = centreline_by_z(chain, annotate_df)
+        return segment_per_slice(image_predictor, frames_dir, frame_to_z, centreline,
+                                 annotate_df, cfg=cfg, obj_id=obj_id, cw=cw)
+    return propagate(video_predictor, frames_dir, prompts, anchor_frame_idx,
+                     obj_id=obj_id, **seed_kw)
 
 
 def run_chain(state: ChainState, *, image_predictor, video_predictor,
@@ -348,9 +367,11 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
 
     # 7. propagate (seed per the ablation spec; defaults = box+positive = baseline seed)
     _step(7, "propagate (bidirectional)")
-    video_segments, frame_conf, pred_iou = propagate(
-        video_predictor, state.frames_dir, state.prompts,
-        state.anchor_frame_idx, obj_id=state.obj_id,
+    video_segments, frame_conf, pred_iou = _do_segmentation(
+        cfg, image_predictor=image_predictor, video_predictor=video_predictor,
+        frames_dir=state.frames_dir, frame_to_z=state.frame_to_z,
+        prompts=state.prompts, anchor_frame_idx=state.anchor_frame_idx,
+        chain=chain, annotate_df=annotate_df, cw=cw_chain, obj_id=state.obj_id,
         seed_box=(cfg.seed_box != "none"), seed_points=cfg.seed_points,
         seed_negatives=cfg.seed_negatives, seed_mask=cfg.seed_mask,
         mask_anchor=(mask_anchor_seed if cfg.seed_mask else None),

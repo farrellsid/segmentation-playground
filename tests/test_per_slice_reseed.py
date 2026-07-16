@@ -103,6 +103,38 @@ def test_segment_per_slice_drops_out_of_window_negatives(tmp_path):
     assert 1 in vs[0] and vs[0][1].sum() > 0   # the positive still seeded a mask
 
 
+def test_do_segmentation_routes_on_per_slice_reseed_flag(monkeypatch):
+    # _do_segmentation is the module-level dispatch run_chain calls; verify the
+    # flag alone decides segment_per_slice vs. propagate, with everything else stubbed.
+    import pipeline.orchestrator as orch
+
+    calls = {"per_slice": 0, "propagate": 0}
+
+    def fake_per_slice(*a, **k):
+        calls["per_slice"] += 1
+        return ({0: {1: np.zeros((4, 4), bool)}}, {0: 0.0}, {0: 0.0})
+
+    def fake_propagate(*a, **k):
+        calls["propagate"] += 1
+        return ({}, {}, {})
+
+    monkeypatch.setattr(orch, "segment_per_slice", fake_per_slice)
+    monkeypatch.setattr(orch, "propagate", fake_propagate)
+
+    chain = {"cell_name": "AVAL", "nodes": ["n0"]}
+    df = pd.DataFrame({"node_id": ["n0"], "cell_name": ["AVAL"], "z": [1400],
+                       "x_tif": [10.0], "y_tif": [10.0]})
+    common = dict(image_predictor=None, video_predictor=None, frames_dir="unused",
+                 frame_to_z={0: 1400}, prompts=None, anchor_frame_idx=0,
+                 chain=chain, annotate_df=df, cw=None, obj_id=1)
+
+    orch._do_segmentation(cfgmod.PipelineConfig(per_slice_reseed=True), **common)
+    assert calls == {"per_slice": 1, "propagate": 0}
+
+    orch._do_segmentation(cfgmod.PipelineConfig(per_slice_reseed=False), **common)
+    assert calls == {"per_slice": 1, "propagate": 1}
+
+
 def test_segment_per_slice_returns_a_mask_per_frame(tmp_path):
     # 3 frames on disk, full-frame (cw=None -> _sam space)
     import cv2
