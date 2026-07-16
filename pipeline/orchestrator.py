@@ -368,7 +368,7 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     print(f"    {state.n_frames} frames  (anchor frame_idx={state.anchor_frame_idx})")
 
     # 7. propagate (seed per the ablation spec; defaults = box+positive = baseline seed)
-    _step(7, "propagate (bidirectional)")
+    _step(7, "per-slice re-seed" if cfg.per_slice_reseed else "propagate (bidirectional)")
     video_segments, frame_conf, pred_iou = _do_segmentation(
         cfg, image_predictor=image_predictor, video_predictor=video_predictor,
         frames_dir=state.frames_dir, frame_to_z=state.frame_to_z,
