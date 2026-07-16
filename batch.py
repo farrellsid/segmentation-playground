@@ -470,7 +470,7 @@ def _reasons_for_row(row: pd.Series) -> str:
     pi = row.get("pred_iou")
     if pd.notna(pi) and pi < 0.5:
         out.append(f"pIoU {pi:.2f}")
-    return " ".join
+    return " ".join(out)
 
 
 def build_triage_queue(output_root: Path, manifest: pd.DataFrame) -> pd.DataFrame:
