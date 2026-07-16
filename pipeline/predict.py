@@ -30,6 +30,32 @@ def select_anchor(chain: dict, annotate_df: pd.DataFrame) -> tuple[int, int]:
     return midnode, anchor_catmaid_z
 
 
+def centreline_by_z(chain: dict, annotate_df: pd.DataFrame) -> dict:
+    """{catmaid_z: (x_tif, y_tif)} centreline point for each z in the chain's node
+    z-range. Uses the chain's own nodes (real and virtual); a z with no node is
+    linearly interpolated between the nearest present z's (which is what a virtual
+    node already is). Foreign neurons' nodes are never used."""
+    ids = {str(n) for n in chain["nodes"]}
+    sub = annotate_df[annotate_df["node_id"].astype(str).isin(ids)]
+    by_z: dict[int, tuple[float, float]] = {}
+    for z, x, y in zip(sub["z"].astype(int), sub["x_tif"].astype(float), sub["y_tif"].astype(float)):
+        by_z.setdefault(int(z), (float(x), float(y)))   # first node wins on a shared z
+    if not by_z:
+        return {}
+    present = sorted(by_z)
+    out: dict[int, tuple[float, float]] = {}
+    for z in range(present[0], present[-1] + 1):
+        if z in by_z:
+            out[z] = by_z[z]
+            continue
+        lo = max(p for p in present if p < z)
+        hi = min(p for p in present if p > z)
+        t = (z - lo) / (hi - lo)
+        (x0, y0), (x1, y1) = by_z[lo], by_z[hi]
+        out[z] = (x0 + t * (x1 - x0), y0 + t * (y1 - y0))
+    return out
+
+
 def build_prompts(anchor_node_id: int, catmaid_z: int, annotate_df: pd.DataFrame,
                   *, scale: int, k_max_neg: int, neg_radius: int) -> Prompts:
     """Anchor skeleton node (positive) + K nearest same-z nodes (negative), in _sam.
