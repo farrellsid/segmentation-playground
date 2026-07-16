@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from pipeline import predict, PipelineConfig
 from pipeline import config as cfgmod
+from sam2_utils.alignment import CropWindow
 
 # pipeline/__init__.py re-exports propagate() (the function) under the name
 # "propagate", which shadows the submodule of the same name on the pipeline
@@ -49,6 +50,57 @@ class _StubPredictor:
         scores = np.array([0.9, 0.8, 0.7][: masks.shape[0]])
         logits = np.zeros((masks.shape[0], h, w), dtype=np.float32)
         return masks, scores, logits
+
+
+class _RecordingStubPredictor(_StubPredictor):
+    """Same canned-mask behaviour as _StubPredictor, but records the point_labels
+    (and point_coords) segment_per_slice actually hands to predict(), so a test
+    can assert what did or did not survive the crop-window filter."""
+    def __init__(self):
+        self.seen_labels = []
+        self.seen_coords = []
+
+    def predict(self, point_coords=None, point_labels=None, box=None, multimask_output=False):
+        self.seen_coords.append(None if point_coords is None else np.array(point_coords))
+        self.seen_labels.append(None if point_labels is None else np.array(point_labels))
+        return super().predict(point_coords=point_coords, point_labels=point_labels,
+                               box=box, multimask_output=multimask_output)
+
+
+def test_segment_per_slice_drops_out_of_window_negatives(tmp_path):
+    # cw set (a small crop window) + a negative neighbour node far enough away
+    # that its _pcrop coordinate lands outside the crop; the positive anchor's
+    # _pcrop coordinate lands inside. segment_per_slice must drop the negative
+    # before predict() sees it, mirroring anchor_crop_predict's
+    # `in_bounds | (labels == 1)` filter.
+    import cv2
+    fdir = tmp_path / "frames"; fdir.mkdir()
+    cv2.imwrite(str(fdir / "00000.jpg"), np.full((40, 40, 3), 127, np.uint8))
+    frame_to_z = {0: 1400}
+    centreline_tif = {1400: (160.0, 100.0)}   # -> _sam (20, 12.5) -> _crop (16, 10): in-window
+
+    df = pd.DataFrame({
+        "node_id": ["n0", "n1"],
+        "cell_name": ["AVAL", "AVAL"],
+        "z": [1400, 1400],
+        "x": [0.0, 100.0],          # CATMAID xy, used only to rank same-z neighbours
+        "y": [0.0, 100.0],
+        "x_tif": [160.0, 100000.0],  # n1 maps far outside the crop window
+        "y_tif": [100.0, 100000.0],
+    })
+    cfg = cfgmod.PipelineConfig(scale=8, k_max_neg=1)
+    cw = CropWindow(origin_tif=(0.0, 0.0), size_tif=(400, 400), crop_scale=10, sam_scale=8)
+
+    stub = _RecordingStubPredictor()
+    vs, conf, piou = prop.segment_per_slice(
+        stub, str(fdir), frame_to_z, centreline_tif, df,
+        cfg=cfg, obj_id=1, cw=cw)
+
+    assert len(stub.seen_labels) == 1
+    labels_seen = stub.seen_labels[0]
+    assert labels_seen is not None
+    assert list(labels_seen) == [1]           # the out-of-window negative never reached predict()
+    assert 1 in vs[0] and vs[0][1].sum() > 0   # the positive still seeded a mask
 
 
 def test_segment_per_slice_returns_a_mask_per_frame(tmp_path):

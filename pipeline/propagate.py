@@ -318,6 +318,8 @@ def _node_id_at(annotate_df: pd.DataFrame, catmaid_z: int, x_tif: float, y_tif: 
     z_col = annotate_df["z"]
     x_col = pd.to_numeric(annotate_df["x_tif"], errors="coerce")
     y_col = pd.to_numeric(annotate_df["y_tif"], errors="coerce")
+    # Matches on (z, x_tif, y_tif) alone, not scoped to the chain's own neuron:
+    # relies on node coordinates being effectively unique across annotate_df.
     match = annotate_df.loc[(z_col == catmaid_z) & (x_col == x_tif) & (y_col == y_tif), "node_id"]
     return match.iloc[0] if len(match) else None
 
@@ -349,7 +351,9 @@ def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, in
     for its own prompt remap): no coordinate math is reinvented here. Neighbour
     negatives, when `cfg.k_max_neg > 0`, are `build_prompts`' own negatives for
     the frame's real backing node (see `_node_id_at`), mapped through the same
-    `_sam` (-> `_pcrop`) step as the positive.
+    `_sam` (-> `_pcrop`) step as the positive, then, when `cw` is set, filtered
+    by the same in-bounds-or-positive rule `anchor_crop_predict` uses: negatives
+    landing outside the crop window are dropped, the positive is always kept.
 
     Returns
     -------
@@ -376,7 +380,10 @@ def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, in
     for frame_idx in sorted(frame_to_z):
         catmaid_z = frame_to_z[frame_idx]
         img_path = Path(frames_dir) / f"{frame_idx:05d}.jpg"
-        image = cv2.cvtColor(cv2.imread(str(img_path)), cv2.COLOR_BGR2RGB)
+        raw = cv2.imread(str(img_path))
+        if raw is None:
+            raise FileNotFoundError(f"frame not found: {img_path}")
+        image = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
 
         x_tif, y_tif = centreline_tif[catmaid_z]
         pos_sam = alignment.tif_to_sam([x_tif, y_tif], cfg.scale)     # (2,)
@@ -395,8 +402,21 @@ def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, in
                     labels.append(0)
 
         points_sam_arr = np.asarray(points_sam, dtype=float)
-        points_pred = cw.sam_to_crop(points_sam_arr) if cw is not None else points_sam_arr
-        prompts = Prompts(points_sam=points_pred, labels=np.asarray(labels, dtype=int))
+        labels_arr = np.asarray(labels, dtype=int)
+        if cw is not None:
+            # _sam -> _pcrop, then drop out-of-window negatives (same filter as
+            # anchor_crop_predict's own _sam -> _crop prompt remap): the positive
+            # anchor is kept unconditionally, an out-of-window negative is inert
+            # (and would otherwise raise inside SAM2's predict call).
+            pts_crop = cw.sam_to_crop(points_sam_arr)
+            H_crop, W_crop = image.shape[:2]
+            in_bounds = ((pts_crop[:, 0] >= 0) & (pts_crop[:, 0] < W_crop) &
+                         (pts_crop[:, 1] >= 0) & (pts_crop[:, 1] < H_crop))
+            keep = in_bounds | (labels_arr == 1)
+            points_pred, labels_arr = pts_crop[keep], labels_arr[keep]
+        else:
+            points_pred = points_sam_arr
+        prompts = Prompts(points_sam=points_pred, labels=labels_arr)
 
         mask, score, logits = image_predict(
             image_predictor, image, prompts, multimask=cfg.multimask_anchor,
