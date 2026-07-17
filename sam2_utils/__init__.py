@@ -19,6 +19,7 @@ so pipeline.py can stay torch/qc-free at import time):
     review_queue  - work queue + GUI-owned review-status ledger; pure pandas
                     (the napari GUI itself is top-level ``gui.py``, not in this
                     package, to keep napari out of the import path entirely)
+    membrane      - membrane-ness map (Sato ridge filter) + boundary detectors
 """
 
 # Only the light/core modules are imported eagerly. The heavy viewers (qc,

@@ -43,6 +43,14 @@ def test_spanning_membrane_empty_mask():
     assert mb.spanning_membrane(mask, np.zeros((30, 30), np.float32)) == (False, 0.0)
 
 
+def test_spanning_membrane_mask_fully_covered_by_membrane():
+    mask = _rect_mask()
+    mem = np.ones((30, 30), dtype=np.float32)  # membrane covers the whole mask
+    spanning, frac = mb.spanning_membrane(mask, mem)
+    assert spanning is False
+    assert frac == 0.0
+
+
 def test_boundary_on_membrane_high_when_edge_on_ridge():
     mask = _rect_mask()  # perimeter at rows/cols 5 and 24
     mem = np.zeros((30, 30), dtype=np.float32)
@@ -52,6 +60,12 @@ def test_boundary_on_membrane_high_when_edge_on_ridge():
     on = mb.boundary_on_membrane(mask, mem)
     assert on > 0.8
     assert mb.boundary_on_membrane(mask, np.zeros((30, 30), np.float32)) == 0.0
+
+
+def test_boundary_on_membrane_empty_mask():
+    mask = np.zeros((30, 30), dtype=bool)
+    mem = np.ones((30, 30), dtype=np.float32)  # membrane everywhere, but no perimeter to test
+    assert mb.boundary_on_membrane(mask, mem) == 0.0
 
 
 def test_underfill_high_when_mask_inset_from_membrane_box():

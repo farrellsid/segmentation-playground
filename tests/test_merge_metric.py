@@ -114,6 +114,18 @@ def test_membrane_source_missing_frame_returns_none(monkeypatch):
     assert src.map_for(1400, 0, 0, 10, 10) is None
 
 
+def test_membrane_source_failed_z_is_cached_not_retried(monkeypatch):
+    calls = {"n": 0}
+    def boom(z, *, scale, frame_store=None):
+        calls["n"] += 1
+        raise FileNotFoundError(z)
+    monkeypatch.setattr(mm.pipeline, "load_frame_sam", boom)
+    src = mm.MembraneSource(scale=8)
+    assert src.map_for(1400, 0, 0, 10, 10) is None
+    assert src.map_for(1400, 0, 0, 10, 10) is None
+    assert calls["n"] == 1
+
+
 def test_membrane_source_out_of_bounds_returns_none(monkeypatch):
     frame = np.full((30, 30, 3), 200, dtype=np.uint8)
     monkeypatch.setattr(mm.pipeline, "load_frame_sam",
