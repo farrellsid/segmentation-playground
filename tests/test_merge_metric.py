@@ -120,3 +120,53 @@ def test_membrane_source_out_of_bounds_returns_none(monkeypatch):
                         lambda z, *, scale, frame_store=None: (frame, (0, 0)))
     src = mm.MembraneSource(scale=8)
     assert src.map_for(1400, x0=25, y0=25, h=20, w=20) is None
+
+
+class _StubSource:
+    """Membrane map with a single vertical ridge at column `ridge_x` (full frame)."""
+    def __init__(self, ridge_x=15, shape=(50, 50)):
+        self.ridge_x, self.shape = ridge_x, shape
+    def map_for(self, z, x0, y0, h, w):
+        m = np.zeros((h, w), dtype=np.float32)
+        col = self.ridge_x - x0
+        if 0 <= col < w:
+            m[:, col] = 1.0
+        return m
+
+
+def test_score_chain_adds_membrane_columns(tmp_path):
+    a = np.zeros((50, 50), dtype=np.uint8); a[10:20, 10:20] = 1  # spans ridge at x=15
+    d = _write_chain(tmp_path, "AVAL_chain00", {1400: a})
+    nbz = {1400: [(15.0, 15.0, "AVAL", "own0")]}  # own node, no foreign
+    rec = mm.score_chain(d, "AVAL", nbz, radius=0, membrane_source=_StubSource(15))[0]
+    assert rec["spanning_merge"] is True
+    assert rec["bled_fraction"] > 0.0
+    assert 0.0 <= rec["boundary_on_membrane"] <= 1.0
+
+
+def test_score_run_reports_mild_bleed_rate(tmp_path):
+    a = np.zeros((50, 50), dtype=np.uint8); a[10:20, 10:20] = 1  # spans ridge, no foreign node
+    root = tmp_path / "run_merged"
+    _write_chain(root / "AVAL", "chain_00", {1400: a})
+    (root / "_run_meta.json").write_text(json.dumps(
+        {"resolution": {"scale": 8, "save_downscale": 8}}))
+    df = pd.DataFrame({"node_id": ["own0"], "cell_name": ["AVAL"],
+                       "z": [1400], "x_tif": [120.0], "y_tif": [120.0]})
+    per, summ = mm.score_run(root, annotate_df=df, radius=0, membrane_source=_StubSource(15))
+    assert summ["total_foreign_nodes"] == 0
+    assert summ["mild_bleed_rate"] == 1.0          # spanning merge with no foreign node
+    assert summ["spanning_merge_rate"] == 1.0
+    assert "spanning_merge" in per.columns
+
+
+def test_score_run_no_membrane_keeps_phase0(tmp_path):
+    a = np.zeros((50, 50), dtype=np.uint8); a[10:20, 10:20] = 1
+    root = tmp_path / "run_merged"
+    _write_chain(root / "AVAL", "chain_00", {1400: a})
+    (root / "_run_meta.json").write_text(json.dumps(
+        {"resolution": {"scale": 8, "save_downscale": 8}}))
+    df = pd.DataFrame({"node_id": ["own0"], "cell_name": ["AVAL"],
+                       "z": [1400], "x_tif": [120.0], "y_tif": [120.0]})
+    per, summ = mm.score_run(root, annotate_df=df, radius=0, membrane_source=None)
+    assert summ["mild_bleed_rate"] is None
+    assert per["spanning_merge"].isna().all()
