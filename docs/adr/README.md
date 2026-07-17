@@ -35,3 +35,4 @@ For the running build history (what changed and when), see [../CHANGELOG.md](../
 | [0013](0013-pipeline-package-split.md) | The pipeline core is a package split by concern | Accepted |
 | [0014](0014-neuron-level-review-gui.md) | Neuron-level review as a second GUI paradigm | Accepted |
 | [0015](0015-target-worm-merge-metric-ruler.md) | Target-worm skeleton merge-metric as the GT-free bleed ruler | Accepted |
+| [0016](0016-membrane-map-border-to-border-bleed-detection.md) | Membrane map and border-to-border bleed detection | Accepted |

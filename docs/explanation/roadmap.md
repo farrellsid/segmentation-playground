@@ -455,26 +455,36 @@ merge-metric**, scored against our own CATMAID skeletons, GT-free:
 *Gate:* merge rate (foreign-node containment) down vs the tier2_s1forced_neg baseline, dropout not up.
 
 **Phase 2, the per-frame membrane / boundary map (supervisor's near-term request; the lab's own method).**
-Train a small membrane-probability map on the target worm. The Mulcahy/Witvliet skeleton-to-membrane
-expansion is the direct in-house precedent; a classical dark-ridge filter is the zero-training fallback.
-It pays off twice:
 
-- **GT-free mild-bleed detection:** a mask boundary that crosses a membrane ridge into a neighbour is
-  bleed, catching what the Phase-0 merge metric misses.
-- **Grow-to-membrane refinement** of masks (and a route to de-bias the eroded cross-worm GT into a rough
-  boundary ruler).
-- **Principled non-overlap resolve (moved here from Phase 1).** With a membrane/affinity signal in hand,
+- **2a + 2b, the foundation, LANDED.** A v1 classical dark-ridge membrane map
+  (`sam2_utils/membrane.py`, `membrane_map`) plus three GT-free detector primitives
+  (`spanning_membrane`, `boundary_on_membrane`, `underfill_fraction`), wired into
+  `eval.merge_metric` as a membrane-aware pass alongside the Phase-0 foreign-node floor. The
+  border-to-border spanning criterion catches mild bleed, a mask boundary that crosses a real
+  membrane into a neighbour without reaching that neighbour's node, and makes the nested-membrane
+  soma case fall out for free (a nucleus is a closed interior loop, not a spanning ridge). Headline
+  summary field: `mild_bleed_rate`. See [ADR 0016](../adr/0016-membrane-map-border-to-border-bleed-detection.md)
+  and [cli.md](../reference/cli.md). The signature is a swappable interface: a trained model (the
+  Mulcahy/Witvliet skeleton-to-membrane expansion, or a small U-Net) can drop in behind
+  `membrane_map` later without touching the detectors or the scorer.
+- **2c, grow-to-membrane refinement of masks, queued as its own spec.** Reuses the same membrane
+  signal and the `underfill_fraction` flood that 2b only measures, this time applying it to grow a
+  mask to its bounding membrane. Also the route to de-bias the eroded cross-worm GT into a rough
+  boundary ruler.
+- **2d, principled non-overlap resolve, queued as its own spec.** With the membrane signal in hand,
   replace the composite's argmax / first-writer-wins with mutex watershed / multicut (skeletons as
   attractive interiors, inter-neuron edges repulsive). Deferred out of Phase 1 because it needs the
-  boundary signal to beat the current argmax; on a raw EM gradient it would be a weak version of itself.
-  *(§4.3)*
+  boundary signal to beat the current argmax; on a raw EM gradient it would be a weak version of
+  itself. *(§4.3)*
 
-It also helps disambiguate outer-vs-inner border for the nested-membrane ceiling. **Ask the supervisor
-whether a reusable membrane model or training data survives from the prior pipeline**; if so, this phase's
-cost collapses. Note that the prior pipeline's ~1,120 person-hours were **dense proofreading**, not
-building the map (the map is a small U-Net, days to train). *(§4.2, §4.3 tier 2)*
+The landed foundation also helps disambiguate outer-vs-inner border for the nested-membrane ceiling.
+**Ask the supervisor whether a reusable membrane model or training data survives from the prior
+pipeline**; if so, a future trained-model swap collapses to reuse + calibration. Note that the prior
+pipeline's ~1,120 person-hours were **dense proofreading**, not building the map (a trained map is a
+small U-Net, days to train), so v1's classical filter is the pragmatic starting point either way.
+*(§4.2, §4.3 tier 2)*
 
-*Gate:* membrane-aware detect + refine cuts mild bleed / underfill.
+*Gate:* membrane-aware detect (landed) + refine (2c, queued) cuts mild bleed / underfill.
 
 **Phase 3, boundary benchmark + model upgrades.**
 
@@ -509,8 +519,10 @@ Mapped to the phases above. DONE / READY / TODO.
    foreign-node containment + dropout on raw masks vs CATMAID skeletons.
 4. **Re-seed per slice + z-extent-limited propagation** (Phase 1). TODO.
 5. **Mutex-watershed / multicut non-overlap resolve** (Phase 1). TODO.
-6. **Membrane-probability map**, plus the supervisor conversation about reusing the prior model
-   (Phase 2). TODO.
+6. **Membrane-probability map + membrane-aware bleed detection** (Phase 2 foundation, 2a + 2b).
+   DONE: `sam2_utils/membrane.py` + `eval.merge_metric`'s membrane pass, `mild_bleed_rate`
+   headline. Still open: the supervisor conversation about reusing the prior lab model, and
+   grow-to-membrane refinement (2c) + non-overlap arbitration (2d), each queued as its own spec.
 7. **Boundary-accurate benchmark + mask-decoder finetune / FGNet head** (Phase 3). TODO.
 
 `bigimg` (SAM2 `image_size` 2048) stays retired: it crashes off-distribution and its output would be

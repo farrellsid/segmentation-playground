@@ -75,3 +75,27 @@ single-chain run.
 A preset (`sam2_utils/presets.py`) bundles the worm, paths, model, tier-2 settings, and default
 neurons, so a run is `--preset <name> [--neurons ...]` instead of a long flag string. Two ship today:
 `original` (the target worm) and `eval` (the cross-worm GT). Any CLI flag overrides the preset.
+
+## Membrane metric parameters (`sam2_utils/membrane.py`)
+
+The v1 membrane map and its three detector primitives (`spanning_membrane`, `boundary_on_membrane`,
+`underfill_fraction`) take a small set of tunables, exposed as module constants and forwarded through
+`eval.merge_metric`'s membrane pass:
+
+- `sigmas` (default `(1, 2, 3)`): the Sato ridge-filter scales `membrane_map` runs the dark-ridge
+  response at, before normalising by the response's own 99th percentile.
+- `tau` (default `0.5`): the threshold on the normalised `[0, 1]` membrane map above which a pixel
+  counts as membrane. Shared by all three detectors; also a `merge_metric` CLI flag.
+- `f` (default `0.15`): the minimum area of a component, as a fraction of the mask's own area, for
+  `spanning_membrane` to count it as a border candidate. Filters out membrane-adjacent speckle.
+- `tol` (default `2` px): the dilation radius `boundary_on_membrane` allows between the mask
+  perimeter and a membrane pixel before counting that perimeter pixel as off-membrane. Also a
+  `merge_metric` CLI flag.
+- `k` (default `6` px): the bound on `underfill_fraction`'s outward flood, so a broken ridge leaks
+  only locally rather than into an unrelated neighbour.
+
+All five are resolution-aware for the `_sam` grid the metric runs on (the coarse, scale-8-ish working
+resolution most runs save at), and comparative rather than absolute: they are tuned for grading one
+run against another at a fixed scale, not for asserting a boundary is correct in isolation. See
+[ADR 0016](../adr/0016-membrane-map-border-to-border-bleed-detection.md) for why the spanning
+criterion works border-to-border, and [cli.md](cli.md) for the `merge_metric` flags.

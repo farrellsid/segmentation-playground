@@ -1,8 +1,10 @@
-"""Target-worm skeleton merge-metric (roadmap Phase 0).
+"""Target-worm skeleton merge-metric (roadmap Phase 0 + Phase 2).
 
-A ground-truth-free severe-bleed / dropout scorer for a run's RAW per-chain masks,
-scored against the target worm's own CATMAID skeletons. See docs/explanation/roadmap.md
-section 5 Phase 0 for the scope: this is a severe-merge floor, not an ERL benchmark.
+A ground-truth-free bleed / dropout scorer for a run's RAW per-chain masks, scored
+against the target worm's own CATMAID skeletons (Phase 0: foreign-node containment,
+a severe-merge floor) plus an optional membrane-aware pass (Phase 2: mild bleed and
+underfill via sam2_utils.membrane). See docs/explanation/roadmap.md section 5 for the
+scope of each phase.
 """
 from __future__ import annotations
 

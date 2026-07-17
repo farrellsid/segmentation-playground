@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-17, Phase 2 foundation: membrane map + membrane-aware bleed detection](#r-2026-07-17)
 - [2026-07-15, negatives round + measurement-first roadmap redesign](#r-2026-07-15)
 - [2026-07, research passes + resolution experiments + specs](#r-2026-07)
 - [2026-06, review tooling + post-processing pass](#r-2026-06)
@@ -33,6 +34,47 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-07-17"></a>
+## 2026-07-17, Phase 2 foundation: membrane map + membrane-aware bleed detection
+
+The roadmap Phase 2 foundation (2a + 2b), landed. Design:
+`docs/superpowers/specs/2026-07-17-phase2-membrane-map-bleed-detection-design.md`; decision record:
+[ADR 0016](adr/0016-membrane-map-border-to-border-bleed-detection.md). No default pipeline behavior
+changed, this is a new measurement, not a new lever.
+
+- **Why.** The Phase-0 skeleton merge-metric (ADR 0015) is a severe-merge floor: it only fires once a
+  mask reaches a neighbour's centreline, so it is blind to mild bleed (a mask crosses a real membrane
+  but stops short of the neighbour's node) and to underfill (a mask stops short of its own cell's
+  membrane). Neither the QC flags nor the Phase-0 metric had any opinion on either.
+- **2a, the membrane map (`sam2_utils/membrane.py`).** `membrane_map` reads a grayscale EM patch and
+  returns a per-pixel membrane-ness map in `[0, 1]`, v1 a Sato dark-ridge filter normalised by its own
+  99th percentile. The signature is a swappable interface, a trained model can sit behind it later
+  without touching anything downstream.
+- **2b, the detectors (same module).** Three pure array functions, mask and membrane map in, scalars
+  out: `spanning_membrane` (does a membrane ridge cut the mask border-to-border, the mild-bleed
+  signal), `boundary_on_membrane` (fraction of the mask perimeter sitting on a membrane, a
+  direction-agnostic boundary-quality check), `underfill_fraction` (a bounded outward flood measuring
+  how much room the mask left before its enclosing membrane). The border-to-border criterion in
+  `spanning_membrane` is deliberately not "any membrane pixel inside the mask": a nucleus is a closed
+  interior loop, not a ridge that spans the mask, so a soma is never falsely flagged, with no
+  special-cased nucleus detection anywhere in the code.
+- **Wired into the scorer (`eval/merge_metric.py`).** A new `MembraneSource` loads and caches the raw
+  EM per z through the existing FrameStore seam and crops it to each mask's window, so the membrane
+  pass degrades gracefully (falls back to Phase-0-only) whenever the EM for a frame is unavailable.
+  `score_chain` now carries four columns per frame (`spanning_merge`, `bled_fraction`,
+  `boundary_on_membrane`, `underfill_fraction`), and `score_run`'s summary gains
+  `mild_bleed_rate` (the headline: a spanning membrane crossing with no foreign node, the mild bleed
+  the Phase-0 floor cannot see), `spanning_merge_rate`, `mean_boundary_on_membrane`, and
+  `mean_underfill_fraction`. New CLI flags: `--no-membrane`, `--tau`, `--tol`. Full reference:
+  [cli.md](reference/cli.md), [configuration.md](reference/configuration.md).
+- **Built as five TDD tasks via subagents**, the membrane map, the three detectors, the
+  `MembraneSource` loader, the scorer wiring, then this documentation pass. 232 tests pass, ruff
+  clean.
+- **Deferred on purpose, each to its own spec:** 2c, grow-to-membrane refinement, which would reuse
+  the `underfill_fraction` flood to actually change a mask rather than only measure the gap; and 2d,
+  replacing the composite's first-writer-wins with a membrane-aware non-overlap resolve. Both need
+  this ruler in place first to be gated fairly, which is exactly why this round stopped at measurement.
 
 <a id="r-2026-07-15"></a>
 ## 2026-07-15, negatives experiment + measurement-first roadmap redesign
