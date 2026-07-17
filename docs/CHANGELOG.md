@@ -75,6 +75,25 @@ changed, this is a new measurement, not a new lever.
   the `underfill_fraction` flood to actually change a mask rather than only measure the gap; and 2d,
   replacing the composite's first-writer-wins with a membrane-aware non-overlap resolve. Both need
   this ruler in place first to be gated fairly, which is exactly why this round stopped at measurement.
+- **Follow-on: `--scale` override + a one-frame visual sanity check + the retro-score.** Added a
+  `--scale` flag so trees without a `_run_meta.json` (the merged CCDB shards) can be scored, and saved
+  two example membrane-map figures under `docs/figures/membrane-v1/`. The visual check confirmed the
+  v1 map traces real cell boundaries but also fires on organelles (mitochondria, vesicles), so it is a
+  comparative ruler, not an absolute one, and on a soma the nucleus envelope is a stronger ridge than
+  the faint outer membrane (the nested-membrane ceiling seen from the membrane side).
+- **Retro-score verdict on the four Phase-1 A/B trees** (scale 8; Phase-0 numbers reproduced the
+  2026-07-15 run exactly, confirming the scale). Membrane columns, baseline / generous_only /
+  perslice_only / perslice: mild_bleed 0.029 / 0.028 / 0.020 / 0.019; spanning_rate 0.095 / 0.111 /
+  0.034 / 0.061; underfill 0.483 / 0.469 / 0.615 / 0.475; boundary_on_membrane ~0.90 flat. Reading:
+  (1) **per-slice's damage is gross blow-ups, not mild bleed.** Its typical mask is the cleanest of the
+  four (lowest mild_bleed and spanning_rate); all its cost sits in the gross tail (`total_foreign`
+  17,481, a whole-worm blob is not "spanning" so it lands in Phase-0, not mild_bleed). This overturns
+  the earlier "trades severe for mild bleed" guess: the fix is still the blow-up guard. (2) **per-slice's
+  real tradeoff is underfill** (0.615, highest), the honest cost of tighter masks. (3) **generous shows
+  its intended benefit and its cost, measurably:** underfill down (0.483 to 0.469) while spanning_rate
+  up (0.095 to 0.111), a genuine fill-vs-merge lever rather than a pure loss. (4) `boundary_on_membrane`
+  is not discriminative at v1 (organelle noise). Caveat: read mild_bleed alongside Phase-0, never
+  instead of it; the two partition gross vs subtle merge.
 
 <a id="r-2026-07-15"></a>
 ## 2026-07-15, negatives experiment + measurement-first roadmap redesign
