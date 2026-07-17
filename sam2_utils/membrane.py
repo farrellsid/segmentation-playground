@@ -10,6 +10,7 @@ docs/superpowers/specs/2026-07-17-phase2-membrane-map-bleed-detection-design.md
 from __future__ import annotations
 
 import numpy as np
+from scipy import ndimage as ndi
 
 # v1 defaults, resolution-aware for the _sam grid (scale ~8). Comparative, not absolute.
 DEFAULT_SIGMAS = (1, 2, 3)
@@ -35,3 +36,46 @@ def membrane_map(em_patch: np.ndarray, *, sigmas=DEFAULT_SIGMAS) -> np.ndarray:
     resp = sato(img, sigmas=sigmas, black_ridges=True).astype(np.float32)
     denom = float(np.percentile(resp, 99)) + 1e-6
     return np.clip(resp / denom, 0.0, 1.0).astype(np.float32)
+
+
+def _perimeter(mask: np.ndarray) -> np.ndarray:
+    """The 1-px inner boundary ring of a boolean mask."""
+    return mask & ~ndi.binary_erosion(mask)
+
+
+def spanning_membrane(mask: np.ndarray, mem: np.ndarray, *,
+                      tau: float = DEFAULT_TAU, f: float = DEFAULT_F
+                      ) -> tuple[bool, float]:
+    """Detect a membrane ridge that spans the mask border-to-border.
+
+    Remove membrane (mem > tau) from the mask, label the remainder, keep
+    components with area >= f * area(mask). If two or more kept components each
+    touch the mask's outer border, a membrane cut the mask in two: it engulfed a
+    cell boundary. Returns (spanning_merge, bled_fraction), bled_fraction being
+    the second-largest border-touching component area / mask area.
+
+    A nucleus (a closed interior loop) leaves one border-touching cytoplasm
+    region plus one enclosed region that does not touch the border, so a soma is
+    not flagged, by construction.
+    """
+    area = int(mask.sum())
+    if area == 0:
+        return False, 0.0
+    opened = mask & (mem <= tau)
+    lbl, n = ndi.label(opened)
+    if n == 0:
+        return False, 0.0
+    perim = _perimeter(mask)
+    min_area = f * area
+    border_areas: list[int] = []
+    for i in range(1, n + 1):
+        comp = lbl == i
+        a = int(comp.sum())
+        if a < min_area:
+            continue
+        if bool((comp & perim).any()):
+            border_areas.append(a)
+    border_areas.sort(reverse=True)
+    if len(border_areas) >= 2:
+        return True, border_areas[1] / area
+    return False, 0.0
