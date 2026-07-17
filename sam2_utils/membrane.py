@@ -79,3 +79,39 @@ def spanning_membrane(mask: np.ndarray, mem: np.ndarray, *,
     if len(border_areas) >= 2:
         return True, border_areas[1] / area
     return False, 0.0
+
+
+def boundary_on_membrane(mask: np.ndarray, mem: np.ndarray, *,
+                         tau: float = DEFAULT_TAU, tol: int = DEFAULT_TOL) -> float:
+    """Fraction of the mask perimeter within tol px of a membrane pixel. Low
+    means the edge floats through cytoplasm (leaking bleed or underfill)."""
+    perim = _perimeter(mask)
+    p = int(perim.sum())
+    if p == 0:
+        return 0.0
+    memb = mem > tau
+    if tol > 0:
+        memb = ndi.binary_dilation(memb, iterations=tol)
+    return float((perim & memb).sum()) / p
+
+
+def underfill_fraction(mask: np.ndarray, mem: np.ndarray, *,
+                       tau: float = DEFAULT_TAU, k: int = DEFAULT_K) -> float:
+    """k-bounded flood out of the mask into cytoplasm (mem <= tau), membranes as
+    walls. Returns reachable cytoplasm area outside the mask / mask area: high
+    means the mask stopped short of its enclosing membrane (room to grow).
+
+    Lowest-confidence of the three detectors: at coarse _sam a broken ridge lets
+    the flood leak into a neighbour and overestimate. The k bound keeps a leak
+    local. Measured only, never applied (refinement is a separate spec)."""
+    area = int(mask.sum())
+    if area == 0:
+        return 0.0
+    cyto = mem <= tau
+    reach = mask.copy()
+    for _ in range(int(k)):
+        grown = (ndi.binary_dilation(reach) & cyto) | mask
+        if int(grown.sum()) == int(reach.sum()):
+            break
+        reach = grown
+    return float((reach & ~mask).sum()) / area
