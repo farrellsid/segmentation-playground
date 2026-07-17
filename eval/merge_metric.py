@@ -14,9 +14,47 @@ import numpy as np
 import pandas as pd
 
 import pipeline
-from sam2_utils import alignment, config
+from sam2_utils import alignment, config, membrane
 
 DEFAULT_RADIUS = 3
+
+
+class MembraneSource:
+    """Supplies membrane maps for a run's masks, cropped to each mask's _sam
+    window. Reads the raw EM per z via pipeline.load_frame_sam (the FrameStore
+    seam), caches the grayscale _sam frame per z, and runs membrane_map on the
+    window. Returns None when the EM for z is unavailable or the window is out
+    of bounds, so the scorer degrades to the Phase-0 (node-only) metric."""
+
+    def __init__(self, scale: int, *, sigmas=membrane.DEFAULT_SIGMAS, frame_store=None):
+        self.scale = int(scale)
+        self.sigmas = sigmas
+        self.frame_store = frame_store
+        self._gray: dict[int, np.ndarray | None] = {}
+
+    def _frame_gray(self, z: int):
+        if z in self._gray:
+            return self._gray[z]
+        try:
+            img, _ = pipeline.load_frame_sam(
+                int(z), scale=self.scale, frame_store=self.frame_store)
+            gray = (img.mean(axis=2) if img.ndim == 3 else img).astype(np.float32)
+        except Exception:
+            gray = None
+        self._gray[z] = gray
+        return gray
+
+    def map_for(self, z: int, x0: int, y0: int, h: int, w: int):
+        gray = self._frame_gray(int(z))
+        if gray is None:
+            return None
+        H, W = gray.shape[:2]
+        if x0 < 0 or y0 < 0 or x0 + w > W or y0 + h > H:
+            return None
+        crop = gray[y0:y0 + h, x0:x0 + w]
+        if crop.size == 0 or crop.shape != (h, w):
+            return None
+        return membrane.membrane_map(crop, sigmas=self.sigmas)
 
 
 def load_node_table() -> pd.DataFrame:

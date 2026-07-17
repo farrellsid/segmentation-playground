@@ -4,6 +4,7 @@ import cv2
 import json
 from pathlib import Path
 from eval import merge_metric as mm
+from sam2_utils import membrane as mb
 
 def test_nodes_by_z_groups_and_scales():
     df = pd.DataFrame({
@@ -92,3 +93,30 @@ def test_format_summary_is_one_line():
         "n_chains": 100, "n_frames": 8052, "foreign_frame_rate": 0.031,
         "dropout_rate": 0.12, "total_foreign_nodes": 274})
     assert "neg" in s and "0.031" in s and "\n" not in s
+
+
+def test_membrane_source_crops_and_maps(monkeypatch):
+    frame = np.full((40, 40, 3), 200, dtype=np.uint8)
+    frame[:, 20:22] = 20  # a dark ridge in the full _sam frame
+    monkeypatch.setattr(mm.pipeline, "load_frame_sam",
+                        lambda z, *, scale, frame_store=None: (frame, (0, 0)))
+    src = mm.MembraneSource(scale=8)
+    m = src.map_for(1400, x0=10, y0=10, h=20, w=20)
+    assert m is not None and m.shape == (20, 20)
+    assert float(m.max()) <= 1.0
+
+
+def test_membrane_source_missing_frame_returns_none(monkeypatch):
+    def boom(z, *, scale, frame_store=None):
+        raise FileNotFoundError(z)
+    monkeypatch.setattr(mm.pipeline, "load_frame_sam", boom)
+    src = mm.MembraneSource(scale=8)
+    assert src.map_for(1400, 0, 0, 10, 10) is None
+
+
+def test_membrane_source_out_of_bounds_returns_none(monkeypatch):
+    frame = np.full((30, 30, 3), 200, dtype=np.uint8)
+    monkeypatch.setattr(mm.pipeline, "load_frame_sam",
+                        lambda z, *, scale, frame_store=None: (frame, (0, 0)))
+    src = mm.MembraneSource(scale=8)
+    assert src.map_for(1400, x0=25, y0=25, h=20, w=20) is None
