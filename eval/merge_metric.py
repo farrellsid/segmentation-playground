@@ -164,7 +164,8 @@ def run_scale(root: Path) -> int:
 
 def score_run(root, annotate_df: pd.DataFrame | None = None,
               radius: int = DEFAULT_RADIUS, membrane_source="auto",
-              tau: float = membrane.DEFAULT_TAU, tol: int = membrane.DEFAULT_TOL
+              tau: float = membrane.DEFAULT_TAU, tol: int = membrane.DEFAULT_TOL,
+              scale: int | None = None
               ) -> tuple[pd.DataFrame, dict]:
     """Aggregate per-chain records, write CSV, return per-frame DataFrame and summary.
 
@@ -172,12 +173,16 @@ def score_run(root, annotate_df: pd.DataFrame | None = None,
     a chain with no frames (empty masks/ directory) is not counted. No CSV is written
     if the run has zero scored frames.
 
+    scale: the _sam grid scale for this tree. Defaults to reading it from the
+    tree's _run_meta.json (run_scale); pass an explicit value to score a tree
+    that has no _run_meta.json (e.g. a merged shard tree).
+
     membrane_source: "auto" builds a MembraneSource for the run scale; None
     disables the membrane pass (Phase-0-only); or pass an object with map_for()
     for tests. When membrane scalars are absent, the membrane summary keys are
     None and the Phase-0 keys are unchanged."""
     root = Path(root)
-    scale = run_scale(root)
+    scale = run_scale(root) if scale is None else int(scale)
     if annotate_df is None:
         annotate_df = load_node_table()
     nbz = nodes_by_z(annotate_df, scale)
@@ -246,13 +251,16 @@ def main(argv=None) -> int:
                     help="membrane threshold on the normalised [0,1] map")
     ap.add_argument("--tol", type=int, default=membrane.DEFAULT_TOL,
                     help="px tolerance for boundary-on-membrane")
+    ap.add_argument("--scale", type=int, default=None,
+                    help="override the _sam grid scale (for merged trees with no _run_meta.json)")
     args = ap.parse_args(argv)
 
     annotate_df = load_node_table()
     for root in args.roots:
-        src = None if args.no_membrane else MembraneSource(run_scale(root))
+        scale = args.scale if args.scale is not None else run_scale(root)
+        src = None if args.no_membrane else MembraneSource(scale)
         _per, summ = score_run(root, annotate_df=annotate_df, radius=args.radius,
-                               membrane_source=src, tau=args.tau, tol=args.tol)
+                               membrane_source=src, tau=args.tau, tol=args.tol, scale=scale)
         print(format_summary(Path(root).name, summ))
     return 0
 

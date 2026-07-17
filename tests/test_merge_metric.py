@@ -88,6 +88,20 @@ def test_score_run_aggregates(tmp_path, monkeypatch):
     assert set(per["neuron"]) == {"AVAL"}
 
 
+def test_score_run_scale_override_without_run_meta(tmp_path):
+    # a merged tree with no _run_meta.json: default path fails, --scale override works
+    a = np.zeros((50, 50), dtype=np.uint8); a[10:20, 10:20] = 1
+    root = tmp_path / "run_merged"
+    _write_chain(root / "AVAL", "chain_00", {1400: a})   # note: no _run_meta.json
+    df = pd.DataFrame({"node_id": ["own0"], "cell_name": ["AVAL"],
+                       "z": [1400], "x_tif": [120.0], "y_tif": [120.0]})
+    import pytest
+    with pytest.raises(FileNotFoundError):
+        mm.score_run(root, annotate_df=df, radius=0, membrane_source=None)
+    per, summ = mm.score_run(root, annotate_df=df, radius=0, membrane_source=None, scale=8)
+    assert summ["n_frames"] == 1 and summ["n_chains"] == 1
+
+
 def test_format_summary_is_one_line():
     s = mm.format_summary("neg", {
         "n_chains": 100, "n_frames": 8052, "foreign_frame_rate": 0.031,
