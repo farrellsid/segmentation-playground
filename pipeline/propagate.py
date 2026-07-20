@@ -324,6 +324,34 @@ def _node_id_at(annotate_df: pd.DataFrame, catmaid_z: int, x_tif: float, y_tif: 
     return match.iloc[0] if len(match) else None
 
 
+def apply_blowup_guard(video_segments: dict[int, dict[int, np.ndarray]],
+                       frame_conf: dict[int, float], pred_iou: dict[int, float],
+                       *, obj_id: int, area_factor: float, min_accepted: int = 3) -> set[int]:
+    """Replace per-slice masks that blow up (area > area_factor * median non-empty area)
+    with the nearest accepted slice's mask, and flag the guarded frames (frame_conf and
+    pred_iou -> 0.0 so QC queues them). Mutates the dicts in place; returns the guarded
+    frame indices. No-op (returns empty) when fewer than min_accepted non-empty masks exist
+    or the median is 0, so a short or mostly-empty chain sets no spurious baseline."""
+    areas = {fi: int(seg[obj_id].sum()) for fi, seg in video_segments.items() if obj_id in seg}
+    nonempty = {fi: a for fi, a in areas.items() if a > 0}
+    if len(nonempty) < min_accepted:
+        return set()
+    med = float(np.median(list(nonempty.values())))
+    if med <= 0:
+        return set()
+    cap = area_factor * med
+    blown = {fi for fi, a in nonempty.items() if a > cap}
+    accepted = sorted(fi for fi in nonempty if fi not in blown)
+    if not accepted:
+        return set()
+    for fi in blown:
+        nearest = min(accepted, key=lambda j: abs(j - fi))
+        video_segments[fi][obj_id] = video_segments[nearest][obj_id].copy()
+        frame_conf[fi] = 0.0
+        pred_iou[fi] = 0.0
+    return blown
+
+
 def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, int],
                       centreline_tif: dict[int, tuple[float, float]],
                       annotate_df: pd.DataFrame, *, cfg, obj_id: int,
@@ -436,4 +464,10 @@ def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, in
         fg = lg[m_lr]
         frame_conf[frame_idx] = float((1.0 / (1.0 + np.exp(-fg))).mean()) if fg.size else float("nan")
 
+    if getattr(cfg, "blowup_guard", False):
+        guarded = apply_blowup_guard(video_segments, frame_conf, pred_iou,
+                                     obj_id=obj_id, area_factor=cfg.blowup_area_factor)
+        if guarded:
+            print(f"    [blow-up guard] replaced {len(guarded)} slice(s) over "
+                  f"{cfg.blowup_area_factor}x median area: {sorted(guarded)}")
     return video_segments, frame_conf, pred_iou

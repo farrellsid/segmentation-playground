@@ -210,6 +210,14 @@ class PipelineConfig:
     # slices. Default False keeps the propagation path byte-identical.
     per_slice_reseed: bool = False
 
+    # Per-slice blow-up guard (roadmap Phase 1 close-out). When True (per_slice_reseed only),
+    # a post-pass rejects any slice whose mask area exceeds blowup_area_factor times the
+    # chain's median non-empty area (a per-frame explosion with no memory to catch it) and
+    # replaces it with the nearest accepted slice's mask, flagging the guarded frames for
+    # review. Default False keeps segment_per_slice's output unchanged.
+    blowup_guard: bool = False
+    blowup_area_factor: float = 25.0
+
     # mask post-processing -> deterministic, no model. Runs before
     # save+QC so QC scores the delivered mask. Off = baseline. Kernels are in
     # scale-8 _sam px; keep <= the neurite half-width.
