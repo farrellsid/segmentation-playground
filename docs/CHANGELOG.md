@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-20, Phase 1 close-out: blow-up guard + generous-first/negatives-in-crop bundle](#r-2026-07-20)
 - [2026-07-17, Phase 2 foundation: membrane map + membrane-aware bleed detection](#r-2026-07-17)
 - [2026-07-15, negatives round + measurement-first roadmap redesign](#r-2026-07-15)
 - [2026-07, research passes + resolution experiments + specs](#r-2026-07)
@@ -32,6 +33,45 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-20"></a>
+## 2026-07-20, Phase 1 close-out: blow-up guard + generous-first/negatives-in-crop bundle
+
+Two more roadmap Phase 1 fixes, both gated off by default, plus the three presets that measure them.
+Design: `docs/superpowers/specs/2026-07-17-phase1-blowup-guard-and-genfirst-negcrop-design.md`. No
+default pipeline behavior changed.
+
+- **Why.** The Phase 2 retro-score (previous entry) settled that per-slice re-seeding's real cost is a
+  gross tail, a handful of slices blowing up to the whole worm cross-section, not mild bleed. Separately,
+  the 2026-07-15 experiment found negatives cut bleed in the crop, but the existing tier-2 rerun always
+  inherits the first pass's seeds, so there was no way to run a generous, negative-free first pass (so
+  the crop is not clipped) and then turn negatives on only in the crop.
+- **Per-slice blow-up guard (`pipeline/propagate.py`, `PipelineConfig.blowup_guard`).** A post-pass at
+  the end of `segment_per_slice`, run only when `per_slice_reseed` is on: compute the median area over
+  the chain's non-empty masks, treat any mask over `blowup_area_factor` (default 25.0) times that
+  median as a blow-up, and replace it with the nearest accepted slice's mask by frame-index distance.
+  Guarded frames get `frame_conf`/`pred_iou` set to 0.0 so the existing QC confidence signal queues them
+  for review, since a substituted neighbour mask is a stand-in, not a real segmentation of that slice.
+  A chain with too few accepted masks or a zero median skips the guard rather than picking a spurious
+  baseline. Off by default and inert on the video-propagate path, so existing runs are byte-identical.
+- **Per-pass tier-2 seed overrides (`pipeline/config.py`, `batch._run_one_chain`).** Three new
+  `PipelineConfig` fields, `tier2_k_max_neg`, `tier2_seed_negatives`, `tier2_multimask_generous`, each
+  `None` by default (inherit the base value, current behaviour unchanged). When set, the tier-2 rerun
+  applies them on top of `chain_crop=True`, so the first `_sam` pass and the tier-2 crop pass can seed
+  differently, generous and negative-free to size the crop, then negatives on and generosity off once
+  inside it.
+- **Three presets (`sam2_utils/presets.py`).** `original_perslice_only_guard` and
+  `original_perslice_guard` add the blow-up guard to the existing `original_perslice_only` /
+  `original_perslice` trees, isolating the guard's effect against their guard-off counterparts.
+  `original_genfirst_negcrop` runs the generous-first, negatives-in-crop bundle as a `tier2_all`
+  two-pass: a generous, negative-free first pass sizes the crop via `chain_crop_from_mask`, then the
+  tier-2 overrides turn negatives on for the crop pass.
+- **Built as three TDD tasks via subagents** (the guard, the seed overrides, the presets), then this
+  documentation pass. Tests and ruff stayed green throughout.
+- **Deferred to the CCDB batch.** The A/B against the guard-off / bundle-off trees on `eval.merge_metric`
+  is not run yet; the Phase-1 exit decision (close out Phase 1 or iterate further) waits on it.
 
 ---
 

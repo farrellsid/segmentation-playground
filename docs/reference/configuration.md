@@ -55,8 +55,21 @@ single-chain run.
   independent per-slice image-mode segmentation, each slice re-seeded from its own skeleton node inside
   the chain crop, so SAM2 memory cannot carry the wrong cell across slices. When off, the propagation
   path is byte-identical. See the Phase 1 spec under `docs/superpowers/specs/`.
+- Per-slice blow-up guard (default off, only takes effect under `per_slice_reseed`): `blowup_guard`
+  runs a post-pass at the end of `segment_per_slice` that rejects any slice whose mask area exceeds
+  `blowup_area_factor` (default 25.0) times the chain's median non-empty-mask area, replaces it with
+  the nearest accepted slice's mask (by frame-index distance), and flags the guarded frames for review
+  by zeroing their `frame_conf`/`pred_iou` so the existing QC confidence signal queues them. It is a
+  no-op on a chain with too few accepted masks or a zero median, and it has no effect on the
+  video-propagate path. See the close-out spec under `docs/superpowers/specs/`.
 - Prompts and seed: `k_max_neg`, `box_margin`, `box_margin_frac`, `seed_negatives`, plus the seed
   shape knobs. See [ADR 0008](../adr/0008-video-seed-box-vs-mask.md).
+- Per-pass tier-2 seed overrides (default inherit): `tier2_k_max_neg`, `tier2_seed_negatives`, and
+  `tier2_multimask_generous` let the tier-2 rerun (`batch._run_one_chain`, under `tier2_all` or
+  `tier2_on_flagged`) seed differently from the first `_sam` pass. Each defaults to `None`, meaning
+  inherit the base value (current behaviour, unchanged); setting one applies it only to the tier-2
+  crop pass, for example a generous, negative-free first pass that sizes the crop via
+  `chain_crop_from_mask`, then negatives switched on once inside the crop.
 - Anchor gate (observational): `gate_min_area_frac`, `gate_max_area_frac`, `gate_min_largest_cc_frac`.
   Records a verdict; does not branch yet.
 - QC thresholds: `qc_area_ratio_bounds`, `qc_temporal_iou_min`, `qc_pred_iou_min`,
@@ -75,6 +88,21 @@ single-chain run.
 A preset (`sam2_utils/presets.py`) bundles the worm, paths, model, tier-2 settings, and default
 neurons, so a run is `--preset <name> [--neurons ...]` instead of a long flag string. Two ship today:
 `original` (the target worm) and `eval` (the cross-worm GT). Any CLI flag overrides the preset.
+
+The Phase 1 close-out adds three measurement presets, each isolating one lever for the CCDB A/B:
+
+- `original_perslice_only_guard`: per-slice re-seeding plus the blow-up guard, measured against the
+  guard-off `original_perslice_only` tree to see whether the guard cuts the gross per-slice tail
+  without hurting the clean bulk.
+- `original_perslice_guard`: per-slice re-seeding and generous multimask plus the blow-up guard,
+  measured against the guard-off `original_perslice` tree.
+- `original_genfirst_negcrop`: the generous-first, negatives-in-crop bundle. A generous, negative-free
+  first pass sizes the tier-2 crop via `chain_crop_from_mask`, then the `tier2_*` overrides turn
+  negatives on (and generosity off) once inside the crop, so the two passes optimize for coverage and
+  precision respectively.
+
+See `docs/superpowers/specs/2026-07-17-phase1-blowup-guard-and-genfirst-negcrop-design.md` for the
+full design and [roadmap.md](../explanation/roadmap.md) for where this sits in the plan.
 
 ## Membrane metric parameters (`sam2_utils/membrane.py`)
 
