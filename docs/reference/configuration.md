@@ -59,7 +59,8 @@ single-chain run.
   runs a post-pass at the end of `segment_per_slice` that rejects any slice whose mask area exceeds
   `blowup_area_factor` (default 25.0) times the chain's median non-empty-mask area, replaces it with
   the nearest accepted slice's mask (by frame-index distance), and flags the guarded frames for review
-  by zeroing their `frame_conf`/`pred_iou` so the existing QC confidence signal queues them. It is a
+  by zeroing their `pred_iou` (the QC confidence signal that queues them; `frame_conf` is zeroed too
+  for consistency but does not itself drive a flag). It is a
   no-op on a chain with too few accepted masks or a zero median, and it has no effect on the
   video-propagate path. See the close-out spec under `docs/superpowers/specs/`.
 - Prompts and seed: `k_max_neg`, `box_margin`, `box_margin_frac`, `seed_negatives`, plus the seed
@@ -86,7 +87,7 @@ single-chain run.
 ## Presets
 
 A preset (`sam2_utils/presets.py`) bundles the worm, paths, model, tier-2 settings, and default
-neurons, so a run is `--preset <name> [--neurons ...]` instead of a long flag string. Two ship today:
+neurons, so a run is `--preset <name> [--neurons ...]` instead of a long flag string. The two core presets are:
 `original` (the target worm) and `eval` (the cross-worm GT). Any CLI flag overrides the preset.
 
 The Phase 1 close-out adds three measurement presets, each isolating one lever for the CCDB A/B:

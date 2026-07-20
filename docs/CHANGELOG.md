@@ -52,8 +52,9 @@ default pipeline behavior changed.
   the end of `segment_per_slice`, run only when `per_slice_reseed` is on: compute the median area over
   the chain's non-empty masks, treat any mask over `blowup_area_factor` (default 25.0) times that
   median as a blow-up, and replace it with the nearest accepted slice's mask by frame-index distance.
-  Guarded frames get `frame_conf`/`pred_iou` set to 0.0 so the existing QC confidence signal queues them
-  for review, since a substituted neighbour mask is a stand-in, not a real segmentation of that slice.
+  Guarded frames get `pred_iou` set to 0.0 (the QC confidence signal that queues them for review;
+  `frame_conf` is zeroed too, for consistency) since a substituted neighbour mask is a stand-in, not a
+  real segmentation of that slice.
   A chain with too few accepted masks or a zero median skips the guard rather than picking a spurious
   baseline. Off by default and inert on the video-propagate path, so existing runs are byte-identical.
 - **Per-pass tier-2 seed overrides (`pipeline/config.py`, `batch._run_one_chain`).** Three new
