@@ -204,6 +204,15 @@ class PipelineConfig:
                                        # legacy _sam or tier-2 _pcrop, NOT tier-1 crop_anchor _crop)
     box_margin_frac: float = 0.0       # %-of-bbox-size box pad when seed_box == "frac" (underfill fix)
 
+    # Per-pass tier-2 seed overrides (roadmap Phase 1 close-out). When set (not None), the
+    # tier-2 rerun (batch, under tier2_all or tier2_on_flagged) applies these instead of the
+    # base value, so the first _sam pass and the tier-2 crop pass can seed differently, e.g.
+    # a generous, negative-free first pass to size the crop (chain_crop_from_mask), then
+    # negatives in the crop. None = inherit the base value (current behaviour).
+    tier2_k_max_neg: Optional[int] = None
+    tier2_seed_negatives: Optional[bool] = None
+    tier2_multimask_generous: Optional[bool] = None
+
     # Per-slice re-seeding (roadmap Phase 1 item 1). When True, run_chain segments each
     # slice independently in the chain crop, re-seeded from that slice's own node, instead
     # of seeding one anchor and propagating. Memory cannot carry the wrong cell across

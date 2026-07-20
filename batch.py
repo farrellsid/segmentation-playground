@@ -380,6 +380,20 @@ def _run_chain_once(session: Session, cfg: PipelineConfig, neuron: str,
     )
 
 
+def _tier2_overrides(cfg) -> dict:
+    """The non-None tier-2 seed overrides, mapped to their base PipelineConfig names, for
+    the tier-2 rerun. Empty when none are set, so replace(cfg, chain_crop=True, **overrides)
+    is identical to the plain rerun."""
+    out = {}
+    if cfg.tier2_k_max_neg is not None:
+        out["k_max_neg"] = cfg.tier2_k_max_neg
+    if cfg.tier2_seed_negatives is not None:
+        out["seed_negatives"] = cfg.tier2_seed_negatives
+    if cfg.tier2_multimask_generous is not None:
+        out["multimask_generous"] = cfg.tier2_multimask_generous
+    return out
+
+
 def _run_one_chain(
     session: Session,
     cfg: PipelineConfig,
@@ -416,7 +430,7 @@ def _run_one_chain(
         print(f"[batch] tier-2 re-run ({why}) {neuron}/chain_{chain_idx:02d}")
         diagnostics.cleanup_vram()                       # reclaim before the second pass
         pass1_seconds = sum((getattr(state, "phase_seconds", {}) or {}).values())
-        state = _run_chain_once(session, replace(cfg, chain_crop=True),
+        state = _run_chain_once(session, replace(cfg, chain_crop=True, **_tier2_overrides(cfg)),
                                 neuron, chain_idx, chain)
         # carry the first (_sam) pass's time, otherwise reassigning `state` drops it and
         # _timing.csv would record only the second pass for a two-pass chain.
