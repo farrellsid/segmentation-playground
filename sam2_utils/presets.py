@@ -231,6 +231,53 @@ PRESETS = {
         "clean": False, "neurons": EXP_NEURONS,
         "score_out": None,
     },
+    "original_perslice_only_guard": {
+        # original_perslice_only + the blow-up guard (Phase 1 close-out). A/B vs the guard-off
+        # tree: does capping the gross per-slice tail cut total_foreign while the clean bulk holds.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True, "blowup_guard": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_only_guard",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_perslice_guard": {
+        # original_perslice (per-slice + generous) + the blow-up guard (Phase 1 close-out).
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True, "multimask_anchor": True,
+                     "multimask_generous": True, "blowup_guard": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_guard",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_genfirst_negcrop": {
+        # Generous-first-pass, negatives-in-crop bundle (Phase 1 close-out). TIER2_ALL two-pass:
+        # a generous, negative-free _sam first pass sizes the crop (chain_crop_from_mask), then
+        # negatives in the tier-2 crop via the tier2_* overrides. Not generous in the crop pass:
+        # the first pass is generous so the crop is not clipped, the crop pass wants precision.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "chain_crop_from_mask": True,
+                     "multimask_anchor": True, "multimask_generous": True,
+                     "k_max_neg": 0, "seed_negatives": False,
+                     "tier2_k_max_neg": 3, "tier2_seed_negatives": True,
+                     "tier2_multimask_generous": False},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_genfirst_negcrop",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
 }
 
 
