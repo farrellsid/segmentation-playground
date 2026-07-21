@@ -5,9 +5,6 @@ docs/superpowers/specs/2026-07-20-perframe-segmentation-design.md
 """
 from __future__ import annotations
 
-import numpy as np  # noqa: F401 (used by later functions in this module)
-from scipy import ndimage as ndi  # noqa: F401 (used by later functions in this module)
-
 
 def nodes_in_frame(annotate_df, catmaid_z: int, scale: int
                    ) -> list[tuple[float, float, str, str]]:
