@@ -74,6 +74,29 @@ def test_select_by_metric_prefers_node_containing_membrane_aligned():
     assert idx == 2                   # `small`: contains node, no foreign, best boundary
 
 
+def test_select_by_metric_ranks_by_boundary_then_bled():
+    # Both candidates contain the node and neither reaches the foreign node, so both
+    # survive the containment/foreign filter untouched. Only boundary_on_membrane can
+    # decide the winner here.
+    from sam2_utils.perframe import _rim
+    node = (20, 20)
+    foreign = [(5, 5)]
+    a = _disk(20, 20, 6)    # tight disk around the node
+    b = _disk(20, 20, 12)   # looser disk, same centre, still misses the foreign node
+
+    mem_a_aligned = np.zeros((40, 40), np.float32)
+    mem_a_aligned[_rim(a)] = 1.0
+    idx = pf.select_by_metric([a, b], node, foreign, mem_a_aligned)
+    assert idx == 0   # `a`'s rim sits on the membrane ridge -> wins on boundary_on_membrane
+
+    # Flip which rim sits on the ridge. If the ranking (not luck) drove the previous
+    # result, moving the ridge to `b`'s rim must flip the winner to `b`.
+    mem_b_aligned = np.zeros((40, 40), np.float32)
+    mem_b_aligned[_rim(b)] = 1.0
+    idx2 = pf.select_by_metric([a, b], node, foreign, mem_b_aligned)
+    assert idx2 == 1
+
+
 def test_match_amg_assigns_nodes_and_keeps_leftover():
     node_index = [(10, 10, "AVAL", "a"), (30, 30, "AVAR", "b")]
     m_a = _disk(10, 10, 5); m_b = _disk(30, 30, 5); junk = _disk(20, 5, 3)
