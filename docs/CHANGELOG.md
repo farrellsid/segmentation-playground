@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-21, SAM3 vs SAM2 bake-off: HF-transformers PVS adapters + 2x2 comparison](#r-2026-07-21-sam3)
 - [2026-07-21, per-frame segmentation: two approaches, an AMG tuner, membrane-aware arbitration](#r-2026-07-21)
 - [2026-07-20, Phase 1 close-out: blow-up guard + generous-first/negatives-in-crop bundle](#r-2026-07-20)
 - [2026-07-17, Phase 2 foundation: membrane map + membrane-aware bleed detection](#r-2026-07-17)
@@ -34,6 +35,44 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-21-sam3"></a>
+## 2026-07-21, SAM3 vs SAM2 bake-off: HF-transformers PVS adapters + 2x2 comparison
+
+A postdoc shared a SAM 3 checkpoint (`F:\sam3\huggingface`, HuggingFace format) whose masks looked
+better than ours. We tested it as a SAM 2 drop-in. Spec
+`docs/superpowers/specs/2026-07-21-sam3-pvs-bakeoff-design.md`, plan
+`docs/superpowers/plans/2026-07-21-sam3-pvs-bakeoff.md`, full API and numbers in
+`docs/explanation/sam3-bakeoff-findings.md`.
+
+**What landed.** Two thin adapters in `sam2_utils/sam3_backend.py` wrap SAM 3's Promptable Visual
+Segmentation tracker (`Sam3TrackerModel`, `Sam3TrackerVideoModel`, via `transformers` 5.13.1, no new
+install) behind the exact `SAM2ImagePredictor` and video-predictor surfaces the pipeline calls, so
+`pipeline.segment_per_slice` and `pipeline.propagate` run SAM 3 unchanged. torch and transformers
+import lazily, so the import-direction test stays green. A driver `experiments/sam3_bakeoff.py` runs
+the 2x2 {SAM2, SAM3} x {propagation, per-slice} on shared chains, building one anchor seed and one
+frame set per chain so only the model varies, and scores every cell with the same `eval.merge_metric`
+and `sam2_utils.membrane` primitives. SAM 2 stays the pipeline default; `batch.py` is untouched.
+
+**API findings (probe `experiments/sam3_probe.py`).** Both trackers fit the 6GB card (image 2.16 GB,
+video 1.37 GB peak in bf16). Reverse propagation is supported (`propagate_in_video_iterator(...,
+reverse=True)`), but SAM 3 does not auto-infer the start frame, so the video adapter records the
+anchor frame and passes it as the default `start_frame_idx`. Two SAM3-vs-SAM2 divergences the adapter
+absorbs: a box add needs `clear_old_inputs=True`, and bf16 mask logits need a `.float()` before
+`.cpu().numpy()`.
+
+**Results (target-worm merge metric, AIAL chain_05 = 17 frames, chain_00 = 113 frames).**
+foreign-node rate orders the cells identically on both chains: sam2_prop worst, then sam2_perslice,
+then sam3_prop, then sam3_perslice best. Long-chain foreign-node rate: sam2_prop 0.796, sam2_perslice
+0.540, sam3_prop 0.372, sam3_perslice 0.221; dropout: sam2_prop 0.673 down to sam3_perslice 0.000.
+Two effects stack: per-slice beats propagation (drift), and SAM 3 beats SAM 2 (bleed). **SAM 3
+per-slice leads** (lowest bleed, zero dropout on both chains). Costs: SAM 3 is 3 to 4x slower per
+cell, and its underfill runs higher than SAM 2 propagation's (the tight-mask cost, Phase 2c
+grow-to-membrane is the lever). Caveat: two chains of one neuron on the GT-free merge metric, a strong
+first signal, not a final verdict. Next step before productionizing (a `--backend sam3` flag) is a
+broader multi-neuron run and ideally the cross-worm GT.
 
 ---
 

@@ -108,5 +108,50 @@ lives in the adapter.
 
 ## Bake-off results
 
-To be filled in by the harness (Task 6): a four-row table over
-{SAM2, SAM3} x {propagation, per-slice} on AIAL chain_05 and chain_00.
+| chain | cell | status | foreign_node_rate | dropout | underfill | mild_bleed | seconds | peak_vram_gb |
+|---|---|---|---|---|---|---|---|---|
+| AIAL/chain_05 | sam2_prop | ok | 0.647 | 0.471 | 0.423 | 0.000 | 13.98 | 1.559 |
+| AIAL/chain_05 | sam2_perslice | ok | 0.353 | 0.059 | 0.701 | 0.059 | 11.71 | 1.471 |
+| AIAL/chain_05 | sam3_prop | ok | 0.294 | 0.118 | 0.500 | 0.118 | 123.50 | 1.442 |
+| AIAL/chain_05 | sam3_perslice | ok | 0.059 | 0.000 | 0.459 | 0.176 | 45.74 | 2.174 |
+
+| chain | cell | status | foreign_node_rate | dropout | underfill | mild_bleed | seconds | peak_vram_gb |
+|---|---|---|---|---|---|---|---|---|
+| AIAL/chain_00 | sam2_prop | ok | 0.796 | 0.673 | 0.289 | 0.009 | 82.32 | 1.636 |
+| AIAL/chain_00 | sam2_perslice | ok | 0.540 | 0.150 | 0.852 | 0.053 | 62.65 | 1.471 |
+| AIAL/chain_00 | sam3_prop | ok | 0.372 | 0.345 | 0.614 | 0.080 | 234.23 | 1.823 |
+| AIAL/chain_00 | sam3_perslice | ok | 0.221 | 0.000 | 0.585 | 0.071 | 166.31 | 2.174 |
+
+### Interpretation (2026-07-21, first read)
+
+The foreign-node rate (the severe-bleed floor, the metric this project trusts most) orders the four
+cells identically on both chains: sam2_prop worst, then sam2_perslice, then sam3_prop, then
+sam3_perslice best. Two independent effects stack:
+
+- Within a model, per-slice beats propagation on bleed and dropout, reproducing the existing
+  Phase-1 result that re-seeding every slice avoids the drift that propagation accumulates. On the
+  113-frame chain SAM2 propagation drops the cell on 0.673 of frames, the drift tail at full length.
+- Within a strategy, SAM3 beats SAM2 on bleed: foreign-node rate falls 0.796 to 0.372 (propagation,
+  long chain) and 0.540 to 0.221 (per-slice, long chain). This is the postdoc's "looks better",
+  measured.
+
+**SAM3 per-slice is the leading cell**: lowest foreign-node rate on both chains (0.059 short, 0.221
+long) and zero dropout on both. It roughly halves SAM2 per-slice's bleed.
+
+Costs and honest caveats:
+
+- SAM3 is slower: about 3 to 4x SAM2 per cell (sam3_prop 234s vs sam2_prop 82s on the long chain).
+  All four cells fit the 6GB card (peak under 2.2 GB).
+- SAM3's underfill is higher than SAM2 propagation's (0.585 to 0.614 vs 0.289), the tight-mask cost
+  we already see with per-slice. Grow-to-membrane (roadmap Phase 2c) is the lever for that, and it
+  applies to the SAM3 masks the same way.
+- mild_bleed is slightly higher for SAM3, but it is only counted on frames with no gross foreign
+  hit, so as gross bleed collapses more frames become eligible for the subtler signal. Read it
+  alongside the foreign-node rate, not instead of it.
+- This is two chains of one neuron (AIAL), scored with the GT-free target-worm merge metric (a
+  severe-bleed floor over a v1 membrane map), not the cross-worm dense GT. SAM3 propagation
+  `pred_iou` is NaN this round (deferred). Treat this as a strong first signal, not a final verdict.
+
+**Next step before committing to Phase 2 (wiring `--backend sam3` into `batch.py`):** a broader run
+across more neurons and chains, and ideally the cross-worm GT for a boundary-accurate check, to
+confirm the ordering holds. If it does, SAM3 per-slice is the candidate to productionize.
