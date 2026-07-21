@@ -21,6 +21,11 @@ Or sweep the Approach-1 knob grid (12 combos) over the given frames, one subdire
 experiments-log row per combo:
     py -3 run_perframe.py --approach prompt --sweep --frames 1400 1420 --scale 8 \\
         --model-size tiny --out results/perframe/sweep
+
+Or tune Approach 2's AMG params (12-combo default grid, or --tune-grid) over the given frames,
+keeping the trial that maximises eval.perframe_score.objective:
+    py -3 run_perframe.py --tune --frames 1400 1420 --scale 8 \\
+        --model-size tiny --out results/perframe/tune
 """
 from __future__ import annotations
 
@@ -40,7 +45,7 @@ import pandas as pd
 
 import pipeline
 from sam2_utils import perframe as pf, membrane as mb, setup
-from eval.perframe_score import score_frame
+from eval.perframe_score import score_frame, objective
 
 try:
     import torch
@@ -340,13 +345,18 @@ _EXPERIMENT_LOG_HEADER = (
 )
 
 
+_EXPERIMENT_LOG_PATH = Path("docs/explanation/perframe-experiments.md")
+
+
 def _append_experiment_log(out_dir: Path, *, approach: str, negatives: str, selection: str,
-                           resolver: str, frames, rows: list[dict]) -> None:
+                           resolver: str, frames, rows: list[dict], notes: str = "") -> None:
     """Append one summary row for this run to the committed experiments table
-    (docs/explanation/perframe-experiments.md). The summary is the mean of the per-frame
-    `rows`; `notes` is left blank for a human to fill in.
+    (`_EXPERIMENT_LOG_PATH`, normally docs/explanation/perframe-experiments.md; a module
+    constant so tests can point it at a scratch file instead of the real doc). The summary
+    is the mean of the per-frame `rows`; `notes` defaults to blank for a human to fill in,
+    but a caller (e.g. --tune) can pass one, such as a gameable-objective warning.
     """
-    log_path = Path("docs/explanation/perframe-experiments.md")
+    log_path = _EXPERIMENT_LOG_PATH
     if not log_path.exists():
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(_EXPERIMENT_LOG_HEADER)
@@ -363,7 +373,7 @@ def _append_experiment_log(out_dir: Path, *, approach: str, negatives: str, sele
     row = (
         f"| {out_dir.as_posix()} | {approach} | {negatives} | {selection} | {resolver} | "
         f"{frames_str} | {mean_cov:.3f} | {mean_foreign:.2f} | {mean_boundary:.3f} | "
-        f"{mean_overlap:.4f} | |\n"
+        f"{mean_overlap:.4f} | {notes} |\n"
     )
     with open(log_path, "a", encoding="utf-8") as fh:
         fh.write(row)
@@ -436,17 +446,26 @@ def _run_one(segment_fn, annotate_df, cfg: PerframeCfg, out_dir: Path, *, approa
     return rows
 
 
-def _build_amg_from_args(args: argparse.Namespace):
-    """Build the raw SAM2 model + SAM2AutomaticMaskGenerator for --approach amg, from
-    --model-size and --amg-params (defaults: DEFAULT_AMG_PARAMS, overridden key-by-key by
-    the --amg-params JSON if given). Returns (amg, device, amg_params), the last one so
-    the caller can also record the resolved params in config.json.
+def _build_sam2_model(model_size: str):
+    """Build the raw SAM2 model for `model_size` (a checkpoint download/build, shared by a
+    single --approach amg run and the --tune grid, which builds one AMG per trial on top of
+    the same model instead of rebuilding it each time). Returns (sam2_model, device).
     """
     from sam2.build_sam import build_sam2
 
     device = setup.setup_device()
-    ckpt, model_cfg = setup.ensure_checkpoint(args.model_size)
+    ckpt, model_cfg = setup.ensure_checkpoint(model_size)
     sam2_model = build_sam2(model_cfg, str(ckpt), device=device)
+    return sam2_model, device
+
+
+def _build_amg_from_args(args: argparse.Namespace):
+    """Build the SAM2AutomaticMaskGenerator for --approach amg, from --model-size and
+    --amg-params (defaults: DEFAULT_AMG_PARAMS, overridden key-by-key by the --amg-params
+    JSON if given). Returns (amg, device, amg_params), the last one so the caller can also
+    record the resolved params in config.json.
+    """
+    sam2_model, device = _build_sam2_model(args.model_size)
     amg_params = dict(DEFAULT_AMG_PARAMS)
     if args.amg_params:
         amg_params.update(json.loads(args.amg_params))
@@ -567,6 +586,124 @@ def _run_sweep(args: argparse.Namespace) -> None:
                                frames=args.frames, rows=rows)
 
 
+# Approach 2's default tune grid: pred_iou_thresh x stability_score_thresh x
+# points_per_side = 12 combos. Overridable via --tune-grid.
+DEFAULT_TUNE_GRID = {
+    "pred_iou_thresh": (0.7, 0.8, 0.88),
+    "stability_score_thresh": (0.9, 0.95),
+    "points_per_side": (32, 64),
+}
+
+_TUNE_GAMEABLE_NOTE = ("objective can be gamed (e.g. by shrinking masks to cut overlap "
+                      "and foreign hits at the cost of coverage); montages are the real check")
+
+
+def _tune_grid_combos(grid: dict) -> list[dict]:
+    """Cartesian product of a {param: [values, ...]} grid into a list of one dict per grid
+    point, e.g. {"a": [1, 2], "b": [3]} -> [{"a": 1, "b": 3}, {"a": 2, "b": 3}]. Pure and
+    torch-free, so the grid-building logic is unit-testable without SAM2."""
+    keys = list(grid)
+    return [dict(zip(keys, vals)) for vals in itertools.product(*(grid[k] for k in keys))]
+
+
+def _run_tune(args: argparse.Namespace) -> None:
+    """Grid-search AMG params against eval.perframe_score.objective, Approach 2's tuner.
+
+    Loads each of --frames once (frame_sam, node_index, membrane map), then for every grid
+    point builds an AMG (build_amg, on top of one shared SAM2 model) and runs
+    segment_frame_amg over the cached frames, scoring each with score_frame + objective.
+    Every trial's params, mean objective, and per-frame scores are written to
+    `<out>/trials.csv`. The best trial is then re-run through `_run_one` to also produce its
+    montages/scores.csv/config.json under `--out`, and a summary row (with a NOTE that the
+    objective can be gamed, since a degenerate small-mask trial can score well without
+    looking right) is appended to the experiments log.
+
+    Grid default: DEFAULT_TUNE_GRID; override with --tune-grid, a JSON object of
+    {param: [values, ...]}.
+    """
+    from eval import merge_metric
+
+    cfg = PerframeCfg(scale=args.scale, radius=args.radius, tau=args.tau,
+                      k_max_neg=args.k_max_neg, box_margin=args.box_margin)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    grid = dict(DEFAULT_TUNE_GRID)
+    if args.tune_grid:
+        grid.update(json.loads(args.tune_grid))
+    combos = _tune_grid_combos(grid)
+
+    annotate_df = merge_metric.load_node_table()
+    frame_cache = []
+    for z in args.frames:
+        frame_sam, _full_hw = pipeline.load_frame_sam(int(z), scale=cfg.scale)
+        gray = frame_sam.mean(axis=2) if frame_sam.ndim == 3 else frame_sam
+        mem = mb.membrane_map(gray)
+        node_index = pf.nodes_in_frame(annotate_df, int(z), cfg.scale)
+        if not node_index:
+            print(f"[run_perframe] tune z={z}: no nodes in frame, skipping")
+            continue
+        frame_cache.append((int(z), frame_sam, node_index, mem))
+
+    sam2_model, device = _build_sam2_model(args.model_size)
+
+    trial_rows: list[dict] = []
+    best: Optional[tuple[float, dict, dict]] = None
+    for i, params in enumerate(combos, start=1):
+        amg_params = dict(DEFAULT_AMG_PARAMS)
+        if args.amg_params:
+            amg_params.update(json.loads(args.amg_params))
+        amg_params.update(params)
+        amg = build_amg(sam2_model, **amg_params)
+
+        per_frame: list[dict] = []
+        for z, frame_sam, node_index, mem in frame_cache:
+            _cell_masks, _label_map, score = segment_frame_amg(
+                amg, frame_sam, node_index, mem, match=args.match,
+                resolver=args.resolver, cfg=cfg)
+            obj = objective(score)
+            per_frame.append({"z": z, "objective": obj,
+                              **{k: v for k, v in score.items() if k != "per_cell"}})
+
+        mean_obj = float(np.mean([r["objective"] for r in per_frame])) if per_frame else float("nan")
+        print(f"[run_perframe] tune {i}/{len(combos)} {params} mean_objective={mean_obj:.4f}")
+        trial_rows.append({**params, "mean_objective": mean_obj,
+                           "per_frame_scores": json.dumps(per_frame)})
+
+        if per_frame and (best is None or mean_obj > best[0]):
+            best = (mean_obj, params, amg_params)
+
+    pd.DataFrame(trial_rows).to_csv(out_dir / "trials.csv", index=False)
+    print(f"[run_perframe] wrote {out_dir / 'trials.csv'} ({len(trial_rows)} trial(s))")
+
+    if best is None:
+        print("[run_perframe] tune: no trial produced a score (empty --frames?), stopping "
+             "before montages/log")
+        return
+
+    best_mean_obj, best_params, best_amg_params = best
+    print(f"[run_perframe] tune: best {best_params} mean_objective={best_mean_obj:.4f}")
+
+    best_amg = build_amg(sam2_model, **best_amg_params)
+
+    def segment_fn(frame_sam, node_index, mem):
+        return segment_frame_amg(best_amg, frame_sam, node_index, mem,
+                                 match=args.match, resolver=args.resolver, cfg=cfg)
+
+    config_extra = {
+        "match": args.match, "amg_params": best_amg_params, "tune_grid": grid,
+        "tune_best_params": best_params, "tune_best_mean_objective": best_mean_obj,
+    }
+    rows = _run_one(segment_fn, annotate_df, cfg, out_dir, approach="amg",
+                    frames=args.frames, model_size=args.model_size, device=device,
+                    config_extra=config_extra)
+
+    notes = (f"tuned: best {best_params}, mean_objective={best_mean_obj:.4f}. "
+            f"NOTE: {_TUNE_GAMEABLE_NOTE}.")
+    _append_experiment_log(out_dir, approach="amg", negatives="-", selection=args.match,
+                           resolver=args.resolver, frames=args.frames, rows=rows, notes=notes)
+
+
 def _parse(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Per-frame neuron segmentation. Approach 1 (prompt-based): image-mode "
@@ -602,6 +739,17 @@ def _parse(argv=None) -> argparse.Namespace:
                          "12 combos) over --frames instead of running one combo; each combo "
                          "gets its own auto-named subdirectory of --out and its own row in "
                          "docs/explanation/perframe-experiments.md; prompt approach only")
+    ap.add_argument("--tune", action="store_true",
+                    help="grid-search AMG params (pred_iou_thresh x stability_score_thresh "
+                         "x points_per_side, or --tune-grid override) over --frames, "
+                         "maximising eval.perframe_score.objective; writes "
+                         "<out>/trials.csv (every trial), the winning params' montages, and "
+                         "a summary row (with a gameable-objective NOTE) to "
+                         "docs/explanation/perframe-experiments.md; amg approach only, "
+                         "mutually exclusive with --sweep")
+    ap.add_argument("--tune-grid", default=None,
+                    help="JSON object overriding DEFAULT_TUNE_GRID key-by-key, e.g. "
+                         "'{\"points_per_side\": [32]}' (values are lists)")
     ap.add_argument("--scale", type=int, default=8, help="downscale factor (_sam grid)")
     ap.add_argument("--model-size", default="tiny", help="SAM2 checkpoint size")
     ap.add_argument("--out", required=True,
@@ -620,7 +768,11 @@ def _parse(argv=None) -> argparse.Namespace:
 
 if __name__ == "__main__":
     _args = _parse()
-    if _args.sweep:
+    if _args.sweep and _args.tune:
+        raise ValueError("--sweep and --tune are mutually exclusive")
+    if _args.tune:
+        _run_tune(_args)
+    elif _args.sweep:
         _run_sweep(_args)
     else:
         _run(_args)

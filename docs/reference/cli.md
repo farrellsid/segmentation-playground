@@ -73,11 +73,12 @@ entry points (`eval.run_erl`, `eval.registration`, `eval.diag_registration`,
 
 ## run_perframe.py
 
-Per-frame neuron segmentation (Approach 1, prompt-based): for one or more CATMAID frames,
-image-mode SAM2 once per node, membrane-aware overlap resolution, F2 scoring. Writes
-`results/perframe/<run>/{config.json,scores.csv,montages/}` (gitignored, regenerable) and
-appends one summary row to [perframe-experiments.md](../explanation/perframe-experiments.md)
-(committed).
+Per-frame neuron segmentation, for one or more CATMAID frames: Approach 1 (`prompt`),
+image-mode SAM2 once per node, or Approach 2 (`amg`), `SAM2AutomaticMaskGenerator` matched to
+nodes with the rest kept as competitors. Both share membrane-aware overlap resolution and F2
+scoring. Writes `results/perframe/<run>/{config.json,scores.csv,montages/}` (gitignored,
+regenerable) and appends one summary row to
+[perframe-experiments.md](../explanation/perframe-experiments.md) (committed).
 
 ```bash
 py -3 run_perframe.py --approach prompt --frames 1400 1420 --negatives on \
@@ -87,12 +88,16 @@ py -3 run_perframe.py --approach prompt --frames 1400 1420 --negatives on \
 
 | Flag | Effect |
 |------|--------|
-| `--approach prompt` | Segmentation approach. Only `prompt` (Approach 1) exists so far. |
+| `--approach prompt\|amg` | Segmentation approach. `prompt` (Approach 1, image-mode SAM2 per node) or `amg` (Approach 2, auto-mask generator + match to nodes). Default `prompt`. |
 | `--frames Z [Z ...]` | CATMAID z's to segment. Required. |
-| `--negatives on\|off` | Pass other cells' nodes as negative points. Default `on`. Ignored with `--sweep`. |
-| `--selection pred_iou\|generous\|metric` | How to pick among SAM2's 3 multimask candidates. Default `metric`. Ignored with `--sweep`. |
+| `--negatives on\|off` | Prompt only: pass other cells' nodes as negative points. Default `on`. Ignored with `--sweep` or `--approach amg`. |
+| `--selection pred_iou\|generous\|metric` | Prompt only: how to pick among SAM2's 3 multimask candidates. Default `metric`. Ignored with `--sweep` or `--approach amg`. |
+| `--match area\|metric` | Amg only: how to match a node to one of the AMG masks. `area` picks the smallest containing mask (no cross-node foreign exclusion, prefer `metric` when the match itself needs to be trusted); `metric` uses the F2 composite. Default `metric`. |
+| `--amg-params <json>` | Amg only: JSON object overriding `DEFAULT_AMG_PARAMS` key-by-key, e.g. `'{"points_per_side": 32}'`. |
 | `--resolver argmax\|watershed` | Overlap-resolution method (F3). Default `argmax`. Ignored with `--sweep`. |
-| `--sweep` | Loop the Approach-1 knob grid (`negatives` x `selection` x `resolver`, 12 combos) over `--frames` instead of one combo. Each combo gets its own auto-named subdirectory of `--out` (e.g. `neg_on-sel_metric-res_argmax`) and its own experiments-log row. |
+| `--sweep` | Loop the Approach-1 knob grid (`negatives` x `selection` x `resolver`, 12 combos) over `--frames` instead of one combo. Each combo gets its own auto-named subdirectory of `--out` (e.g. `neg_on-sel_metric-res_argmax`) and its own experiments-log row. Prompt approach only; mutually exclusive with `--tune`. |
+| `--tune` | Grid-search AMG params (`pred_iou_thresh` x `stability_score_thresh` x `points_per_side`, or `--tune-grid` override) over `--frames`, maximising `eval.perframe_score.objective`. Writes every trial to `<out>/trials.csv`, the winning params' montages/scores/config to `--out`, and a summary row (with a gameable-objective NOTE) to the experiments log. Amg only; mutually exclusive with `--sweep`. |
+| `--tune-grid <json>` | JSON object overriding the default tune grid key-by-key, e.g. `'{"points_per_side": [32]}'` (values are lists). |
 | `--scale N` | Downscale factor for the `_sam` grid. Default 8. |
 | `--model-size <size>` | SAM2 checkpoint size. Default `tiny`. |
 | `--out <dir>` | Results dir, e.g. `results/perframe/<run>`. Required. With `--sweep`, the parent dir under which each combo's subdirectory is written. |
@@ -106,6 +111,13 @@ Sweep example, 12 combos over one frame:
 ```bash
 py -3 run_perframe.py --approach prompt --sweep --frames 1400 --scale 8 \
     --model-size tiny --out results/perframe/sweep_smoke
+```
+
+Tune example, default 12-combo AMG grid over one frame:
+
+```bash
+py -3 run_perframe.py --tune --frames 1400 --scale 8 \
+    --model-size tiny --out results/perframe/tune_smoke
 ```
 
 ## eval.merge_metric

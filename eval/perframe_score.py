@@ -58,3 +58,17 @@ def score_frame(cell_masks, node_index, membrane_map=None, *, radius=3, tau=0.5)
         "per_cell": per,
     }
     return summary
+
+
+def objective(score: dict) -> float:
+    """Scalar the AMG tuner maximises, from a score_frame dict. Rewards own-node coverage
+    and boundary-on-membrane; penalises foreign bleed, spanning, and pre-resolution overlap.
+    Membrane terms are dropped (treated as 0 contribution) when None so a no-membrane run
+    still ranks by coverage/bleed. Weights are a starting point, tune-able."""
+    bo = score.get("mean_boundary_on_membrane") or 0.0
+    sp = score.get("spanning_rate") or 0.0
+    return (1.0 * score["own_coverage"]
+            + 0.5 * bo
+            - 1.0 * score["foreign_frame_rate"]
+            - 0.5 * sp
+            - 0.5 * score["overlap_fraction"])
