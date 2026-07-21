@@ -1,16 +1,21 @@
-"""Per-frame neuron segmentation driver. Approach 1 (prompt-based) here; Approach 2 (AMG)
-in a later change. Segments every node-bearing cell in a frame, resolves overlaps
-membrane-aware, scores with eval.perframe_score, and writes results/montages. Design:
-docs/superpowers/specs/2026-07-20-perframe-segmentation-design.md
+"""Per-frame neuron segmentation driver. Approach 1 (prompt-based, image-mode SAM2 per
+node) and Approach 2 (SAM2AutomaticMaskGenerator, match to nodes, keep the rest as
+competitors) both live here. Segments every node-bearing cell in a frame, resolves
+overlaps membrane-aware, scores with eval.perframe_score, and writes results/montages.
+Design: docs/superpowers/specs/2026-07-20-perframe-segmentation-design.md
 
 This is a DRIVER (like batch.py / run_aval.py): it may import the library (pipeline,
 sam2_utils) and eval freely. The library must never import this file back
 (tests/test_import_direction.py enforces that direction).
 
-Run it directly, e.g.:
+Run it directly, e.g. Approach 1:
     py -3 run_perframe.py --approach prompt --frames 1400 1420 --negatives on \\
         --selection metric --resolver argmax --scale 8 --model-size tiny \\
         --out results/perframe/smoke
+
+Or Approach 2 (auto-mask):
+    py -3 run_perframe.py --approach amg --frames 1400 1420 --match metric \\
+        --resolver argmax --scale 8 --model-size tiny --out results/perframe/amg_smoke
 
 Or sweep the Approach-1 knob grid (12 combos) over the given frames, one subdirectory and one
 experiments-log row per combo:
@@ -149,6 +154,121 @@ def segment_frame_prompt(image_predictor, frame_sam, node_index, membrane_map, *
     return cell_masks, label_map, score
 
 
+# Approach 2's AMG defaults, matching the notebook's mask_generator_2. Overridable per run
+# via --amg-params <json>.
+DEFAULT_AMG_PARAMS = {
+    "points_per_side": 64,
+    "pred_iou_thresh": 0.7,
+    "stability_score_thresh": 0.92,
+    "stability_score_offset": 0.7,
+    "box_nms_thresh": 0.7,
+    "crop_n_layers": 1,
+    "crop_n_points_downscale_factor": 2,
+    "min_mask_region_area": 25,
+    "use_m2m": True,
+}
+
+
+def build_amg(sam2_model, **amg_params):
+    """Thin wrapper: SAM2AutomaticMaskGenerator(sam2_model, **amg_params). Kept here (driver)
+    so the library (sam2_utils/perframe.py) stays torch-free. amg_params: points_per_side,
+    pred_iou_thresh, stability_score_thresh, stability_score_offset, box_nms_thresh,
+    crop_n_layers, crop_n_points_downscale_factor, min_mask_region_area, use_m2m.
+    """
+    from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+    return SAM2AutomaticMaskGenerator(model=sam2_model, **amg_params)
+
+
+def _match_amg_to_nodes_area(amg_masks, node_index, *, radius: int):
+    """'area' matching: per node, the smallest AMG mask that contains it (ties broken by
+    scan order), independent of the F2 composite. Returns (labels, leftover), same shape
+    as pf.match_amg_to_nodes."""
+    labels: dict[str, np.ndarray] = {}
+    used = set()
+    for (x, y, cell, _nid) in node_index:
+        containing = [i for i, m in enumerate(amg_masks)
+                     if pipeline._point_in_mask(m, float(x), float(y), radius)]
+        if not containing:
+            continue
+        idx = min(containing, key=lambda i: int(amg_masks[i].sum()))
+        labels[cell] = amg_masks[idx]
+        used.add(idx)
+    leftover = [m for i, m in enumerate(amg_masks) if i not in used]
+    return labels, leftover
+
+
+def segment_frame_amg(amg, frame_sam, node_index, membrane_map, *,
+                      match: str, resolver: str, cfg):
+    """One frame, AMG mode. Runs amg.generate(frame_sam), matches each node to one of the
+    resulting masks, and keeps the rest as unlabelled competitors that still take part in
+    overlap resolution (so they can push bleed off a cell mask) before being dropped to
+    background in the returned label map.
+
+    match: 'metric' uses pf.match_amg_to_nodes (the F2-composite matcher); 'area' picks,
+    per node, the smallest AMG mask containing it. resolver: 'argmax' | 'watershed', same
+    as segment_frame_prompt. Returns (cell_masks, label_map, score); the returned label_map
+    is cell-only (0 background, competitor labels already zeroed out after resolution).
+    """
+    if match not in ("area", "metric"):
+        raise ValueError(f"unknown match {match!r}")
+    if resolver not in ("argmax", "watershed"):
+        raise ValueError(f"unknown resolver {resolver!r}")
+
+    h, w = frame_sam.shape[:2]
+    anns = amg.generate(frame_sam)
+    amg_masks = [np.asarray(a["segmentation"]).astype(bool) for a in anns]
+
+    if not amg_masks:
+        label_map = np.zeros((h, w), dtype=np.int32)
+        cell_masks: dict[str, np.ndarray] = {}
+        score = score_frame(cell_masks, node_index, membrane_map, radius=cfg.radius, tau=cfg.tau)
+        return cell_masks, label_map, score
+
+    if match == "metric":
+        labels, leftover = pf.match_amg_to_nodes(amg_masks, node_index, membrane_map,
+                                                  radius=cfg.radius, tau=cfg.tau)
+    else:
+        labels, leftover = _match_amg_to_nodes_area(amg_masks, node_index, radius=cfg.radius)
+
+    # Resolution order: labelled cells first (seed = their node's xy), then competitors
+    # (seed = their own mask centroid), so competitors take part in the fight for pixels
+    # and can push bleed off a cell, but never appear as a named cell afterwards.
+    order_masks: list[np.ndarray] = []
+    order_xy: list[tuple[float, float]] = []
+    order_names: list[Optional[str]] = []
+
+    for cell, mask in labels.items():
+        x, y = next((nx, ny) for (nx, ny, nc, _n) in node_index if nc == cell)
+        order_masks.append(mask)
+        order_xy.append((x, y))
+        order_names.append(cell)
+
+    for mask in leftover:
+        if not mask.any():
+            continue
+        ys, xs = np.where(mask)
+        order_masks.append(mask)
+        order_xy.append((float(xs.mean()), float(ys.mean())))
+        order_names.append(None)
+
+    if resolver == "argmax":
+        label_map_full = pf.resolve_overlaps_argmax(order_masks, order_xy, membrane_map)
+    else:
+        label_map_full = pf.resolve_overlaps_watershed(order_masks, order_xy, membrane_map)
+
+    cell_masks = {}
+    label_map = np.zeros((h, w), dtype=np.int32)
+    for i, name in enumerate(order_names):
+        if name is None:
+            continue
+        m = label_map_full == (i + 1)
+        cell_masks[name] = m
+        label_map[m] = i + 1
+
+    score = score_frame(cell_masks, node_index, membrane_map, radius=cfg.radius, tau=cfg.tau)
+    return cell_masks, label_map, score
+
+
 def _git(*args: str) -> Optional[str]:
     try:
         out = subprocess.run(["git", *args], cwd=Path(__file__).resolve().parent,
@@ -240,13 +360,15 @@ def _append_experiment_log(out_dir: Path, *, approach: str, negatives: str, sele
         fh.write(row)
 
 
-def _run_one(image_predictor, annotate_df, cfg: PerframeCfg, out_dir: Path, *, approach: str,
-            frames, negatives: bool, selection: str, resolver: str, model_size: str,
-            device) -> list[dict]:
+def _run_one(segment_fn, annotate_df, cfg: PerframeCfg, out_dir: Path, *, approach: str,
+            frames, model_size: str, device, config_extra: dict) -> list[dict]:
     """Segment `frames` with one knob combination, writing config.json / scores.csv /
-    montages under `out_dir`. Returns the per-frame score rows (the same rows written to
-    scores.csv), so callers (a single run or a sweep step) can summarise them into the
-    experiments log without redoing the segmentation.
+    montages under `out_dir`. `segment_fn(frame_sam, node_index, membrane_map) ->
+    (cell_masks, label_map, score)` carries all the approach-specific logic (a closure
+    over segment_frame_prompt or segment_frame_amg and its own knobs); `config_extra`
+    holds those same knobs for config.json. Returns the per-frame score rows (the same
+    rows written to scores.csv), so callers (a single run or a sweep step) can summarise
+    them into the experiments log without redoing the segmentation.
     """
     montage_dir = out_dir / "montages"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -262,9 +384,7 @@ def _run_one(image_predictor, annotate_df, cfg: PerframeCfg, out_dir: Path, *, a
             print(f"[run_perframe] {out_dir.name} z={z}: no nodes in frame, skipping")
             continue
 
-        _cell_masks, label_map, score = segment_frame_prompt(
-            image_predictor, frame_sam, node_index, mem,
-            negatives=negatives, selection=selection, resolver=resolver, cfg=cfg)
+        _cell_masks, label_map, score = segment_fn(frame_sam, node_index, mem)
 
         print(f"[run_perframe] {out_dir.name} z={z} n_cells={score['n_cells']} "
              f"own_coverage={score['own_coverage']:.3f} "
@@ -289,15 +409,11 @@ def _run_one(image_predictor, annotate_df, cfg: PerframeCfg, out_dir: Path, *, a
     config_json = {
         "approach": approach,
         "frames": list(frames),
-        "negatives": "on" if negatives else "off",
-        "selection": selection,
-        "resolver": resolver,
         "scale": cfg.scale,
         "model_size": model_size,
         "radius": cfg.radius,
         "tau": cfg.tau,
-        "k_max_neg": cfg.k_max_neg,
-        "box_margin": cfg.box_margin,
+        **config_extra,
         "device": str(device),
         "git_commit": _git("rev-parse", "HEAD"),
         "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
@@ -311,6 +427,62 @@ def _run_one(image_predictor, annotate_df, cfg: PerframeCfg, out_dir: Path, *, a
     return rows
 
 
+def _build_amg_from_args(args: argparse.Namespace):
+    """Build the raw SAM2 model + SAM2AutomaticMaskGenerator for --approach amg, from
+    --model-size and --amg-params (defaults: DEFAULT_AMG_PARAMS, overridden key-by-key by
+    the --amg-params JSON if given). Returns (amg, device, amg_params), the last one so
+    the caller can also record the resolved params in config.json.
+    """
+    from sam2.build_sam import build_sam2
+
+    device = setup.setup_device()
+    ckpt, model_cfg = setup.ensure_checkpoint(args.model_size)
+    sam2_model = build_sam2(model_cfg, str(ckpt), device=device)
+    amg_params = dict(DEFAULT_AMG_PARAMS)
+    if args.amg_params:
+        amg_params.update(json.loads(args.amg_params))
+    amg = build_amg(sam2_model, **amg_params)
+    return amg, device, amg_params
+
+
+def _make_segment_fn(args: argparse.Namespace, cfg: PerframeCfg):
+    """Build the (segment_fn, device, config_extra) triple for --approach prompt|amg, so
+    _run / _run_sweep stay approach-agnostic. segment_fn(frame_sam, node_index, mem) ->
+    (cell_masks, label_map, score); config_extra is the approach-specific knobs recorded
+    in config.json.
+    """
+    if args.approach == "prompt":
+        image_predictor, device = setup.build_predictor(size=args.model_size, kind="image")
+
+        def segment_fn(frame_sam, node_index, mem):
+            return segment_frame_prompt(
+                image_predictor, frame_sam, node_index, mem,
+                negatives=args.negatives == "on", selection=args.selection,
+                resolver=args.resolver, cfg=cfg)
+
+        config_extra = {
+            "negatives": args.negatives, "selection": args.selection,
+            "resolver": args.resolver, "k_max_neg": cfg.k_max_neg,
+            "box_margin": cfg.box_margin,
+        }
+        return segment_fn, device, config_extra
+
+    if args.approach == "amg":
+        amg, device, amg_params = _build_amg_from_args(args)
+
+        def segment_fn(frame_sam, node_index, mem):
+            return segment_frame_amg(
+                amg, frame_sam, node_index, mem,
+                match=args.match, resolver=args.resolver, cfg=cfg)
+
+        config_extra = {
+            "match": args.match, "resolver": args.resolver, "amg_params": amg_params,
+        }
+        return segment_fn, device, config_extra
+
+    raise ValueError(f"unknown approach {args.approach!r}")
+
+
 def _run(args: argparse.Namespace) -> None:
     from eval import merge_metric
 
@@ -318,16 +490,17 @@ def _run(args: argparse.Namespace) -> None:
                       k_max_neg=args.k_max_neg, box_margin=args.box_margin)
     out_dir = Path(args.out)
 
-    image_predictor, device = setup.build_predictor(size=args.model_size, kind="image")
+    segment_fn, device, config_extra = _make_segment_fn(args, cfg)
     annotate_df = merge_metric.load_node_table()
 
-    rows = _run_one(image_predictor, annotate_df, cfg, out_dir, approach=args.approach,
-                    frames=args.frames, negatives=args.negatives == "on",
-                    selection=args.selection, resolver=args.resolver,
-                    model_size=args.model_size, device=device)
+    rows = _run_one(segment_fn, annotate_df, cfg, out_dir, approach=args.approach,
+                    frames=args.frames, model_size=args.model_size, device=device,
+                    config_extra=config_extra)
 
-    _append_experiment_log(out_dir, approach=args.approach, negatives=args.negatives,
-                           selection=args.selection, resolver=args.resolver,
+    negatives = args.negatives if args.approach == "prompt" else "-"
+    selection = args.selection if args.approach == "prompt" else args.match
+    _append_experiment_log(out_dir, approach=args.approach, negatives=negatives,
+                           selection=selection, resolver=args.resolver,
                            frames=args.frames, rows=rows)
 
 
@@ -345,8 +518,13 @@ def _run_sweep(args: argparse.Namespace) -> None:
     """Loop the Approach-1 knob grid over `args.frames`, one `_run_one` call per combo,
     each writing to its own auto-named subdirectory of `args.out` and appending its own
     row to the experiments log. Thin by design: all the segmentation logic stays in
-    segment_frame_prompt / _run_one, this just drives the grid.
+    segment_frame_prompt / _run_one, this just drives the grid. Approach-1 (prompt) only;
+    Approach 2 (amg) has no knob grid here yet (that is Plan 2 Task 2's tuner).
     """
+    if args.approach != "prompt":
+        raise ValueError("--sweep only supports --approach prompt (the Approach-1 knob "
+                         "grid); Approach 2 has its own tuner (--tune, Plan 2 Task 2)")
+
     from eval import merge_metric
 
     cfg = PerframeCfg(scale=args.scale, radius=args.radius, tau=args.tau,
@@ -362,9 +540,18 @@ def _run_sweep(args: argparse.Namespace) -> None:
         out_dir = base_out / name
         print(f"[run_perframe] sweep {i}/{len(combos)}: {name}")
 
-        rows = _run_one(image_predictor, annotate_df, cfg, out_dir, approach=args.approach,
-                        frames=args.frames, negatives=negatives == "on", selection=selection,
-                        resolver=resolver, model_size=args.model_size, device=device)
+        def segment_fn(frame_sam, node_index, mem, _neg=negatives, _sel=selection, _res=resolver):
+            return segment_frame_prompt(
+                image_predictor, frame_sam, node_index, mem,
+                negatives=_neg == "on", selection=_sel, resolver=_res, cfg=cfg)
+
+        config_extra = {
+            "negatives": negatives, "selection": selection, "resolver": resolver,
+            "k_max_neg": cfg.k_max_neg, "box_margin": cfg.box_margin,
+        }
+        rows = _run_one(segment_fn, annotate_df, cfg, out_dir, approach=args.approach,
+                        frames=args.frames, model_size=args.model_size, device=device,
+                        config_extra=config_extra)
 
         _append_experiment_log(out_dir, approach=args.approach, negatives=negatives,
                                selection=selection, resolver=resolver,
@@ -374,22 +561,35 @@ def _run_sweep(args: argparse.Namespace) -> None:
 def _parse(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Per-frame neuron segmentation. Approach 1 (prompt-based): image-mode "
-                    "SAM2 once per node, membrane-aware overlap resolution, F2 scoring.")
-    ap.add_argument("--approach", choices=["prompt"], default="prompt",
-                    help="segmentation approach (only 'prompt' exists so far)")
+                    "SAM2 once per node. Approach 2 (amg): SAM2AutomaticMaskGenerator + "
+                    "match to nodes, competitors kept. Both share membrane-aware overlap "
+                    "resolution and F2 scoring.")
+    ap.add_argument("--approach", choices=["prompt", "amg"], default="prompt",
+                    help="segmentation approach: 'prompt' (Approach 1, image-mode SAM2 per "
+                         "node) or 'amg' (Approach 2, SAM2AutomaticMaskGenerator + match "
+                         "to nodes, keeping the rest as competitors)")
     ap.add_argument("--frames", nargs="+", type=int, required=True,
                     help="CATMAID z's to segment")
     ap.add_argument("--negatives", choices=["on", "off"], default="on",
-                    help="pass other cells' nodes as negative points (ignored with --sweep)")
+                    help="prompt only: pass other cells' nodes as negative points "
+                         "(ignored with --sweep or --approach amg)")
     ap.add_argument("--selection", choices=["pred_iou", "generous", "metric"], default="metric",
-                    help="how to pick among SAM2's 3 multimask candidates (ignored with --sweep)")
+                    help="prompt only: how to pick among SAM2's 3 multimask candidates "
+                         "(ignored with --sweep or --approach amg)")
+    ap.add_argument("--match", choices=["area", "metric"], default="metric",
+                    help="amg only: how to match a node to one of the AMG masks; 'area' "
+                         "picks the smallest containing mask, 'metric' uses the F2 "
+                         "composite (pf.match_amg_to_nodes)")
+    ap.add_argument("--amg-params", default=None,
+                    help="amg only: JSON object overriding DEFAULT_AMG_PARAMS key-by-key, "
+                         "e.g. '{\"points_per_side\": 32}'")
     ap.add_argument("--resolver", choices=["argmax", "watershed"], default="argmax",
                     help="overlap-resolution method, F3 (ignored with --sweep)")
     ap.add_argument("--sweep", action="store_true",
                     help="loop the Approach-1 knob grid (negatives x selection x resolver, "
                          "12 combos) over --frames instead of running one combo; each combo "
                          "gets its own auto-named subdirectory of --out and its own row in "
-                         "docs/explanation/perframe-experiments.md")
+                         "docs/explanation/perframe-experiments.md; prompt approach only")
     ap.add_argument("--scale", type=int, default=8, help="downscale factor (_sam grid)")
     ap.add_argument("--model-size", default="tiny", help="SAM2 checkpoint size")
     ap.add_argument("--out", required=True,
