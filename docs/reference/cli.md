@@ -78,7 +78,9 @@ image-mode SAM2 once per node, or Approach 2 (`amg`), `SAM2AutomaticMaskGenerato
 nodes with the rest kept as competitors. Both share membrane-aware overlap resolution and F2
 scoring. Writes `results/perframe/<run>/{config.json,scores.csv,montages/}` (gitignored,
 regenerable) and appends one summary row to
-[perframe-experiments.md](../explanation/perframe-experiments.md) (committed).
+[perframe-experiments.md](../explanation/perframe-experiments.md) (committed), which also carries
+the comparison protocol for judging Approach 1's best sweep knobs against Approach 2 default and
+Approach 2 tuned on the same frame sample.
 
 ```bash
 py -3 run_perframe.py --approach prompt --frames 1400 1420 --negatives on \

@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-21, per-frame segmentation: two approaches, an AMG tuner, membrane-aware arbitration](#r-2026-07-21)
 - [2026-07-20, Phase 1 close-out: blow-up guard + generous-first/negatives-in-crop bundle](#r-2026-07-20)
 - [2026-07-17, Phase 2 foundation: membrane map + membrane-aware bleed detection](#r-2026-07-17)
 - [2026-07-15, negatives round + measurement-first roadmap redesign](#r-2026-07-15)
@@ -33,6 +34,69 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-21"></a>
+## 2026-07-21, per-frame segmentation: two approaches, an AMG tuner, membrane-aware arbitration
+
+A supervisor-requested complementary view to per-chain propagation: segment everything present in
+one EM frame at once, and let the overlaps between cells do the work of resolving spills. Design:
+`docs/superpowers/specs/2026-07-20-perframe-segmentation-design.md`. New driver `run_perframe.py`;
+no change to the existing per-chain batch/GUI path.
+
+- **Why.** So far the pipeline segments one neuron chain at a time and propagates through z. This
+  round builds the opposite view instead: segment every node-bearing cell in a single frame, then
+  use the overlaps between cells to arbitrate spills. It deliberately delivers two roadmap items
+  early, because this experiment gives them a concrete use: Phase-2 item 2d (a principled
+  non-overlap resolve, in place of first-writer-wins) and a first, lightweight look at the R5
+  dense-path hedge (segmenting a whole frame at once with SAM2's own auto-mask generator, rather
+  than one prompted neuron at a time). Both are prototypes scoped to this experiment, not yet wired
+  into the main per-chain composite; see [roadmap.md](explanation/roadmap.md).
+- **Shared foundation.** A per-frame node index (`sam2_utils/perframe.py`'s `nodes_in_frame`,
+  extending `merge_metric.nodes_by_z` to every cell at one z) and a per-frame scoring metric
+  (`eval/perframe_score.py`'s `score_frame`), which reuses the Phase-2 membrane detectors
+  (`spanning_membrane`, `boundary_on_membrane`, `underfill_fraction`) alongside own-node coverage,
+  foreign-node bleed, and a pre-resolution pairwise-overlap scalar. Two overlap resolvers implement
+  2d: `resolve_overlaps_argmax` (membrane-respecting nearest-node rule) and
+  `resolve_overlaps_watershed` (seeded watershed on the membrane map), both pure array functions
+  over masks, node coordinates, and the membrane map.
+- **Approach 1, prompt-based (`--approach prompt`, the default).** Image-mode SAM2 once per node in
+  the frame (positive point plus box, optionally the other cells' nodes as negatives), with a
+  metric-guided multimask selector (`select_by_metric`) added alongside SAM2's own `pred_iou` and the
+  existing `generous` policy. Three swept knobs, 12 combos total: `--negatives on|off`,
+  `--selection pred_iou|generous|metric`, `--resolver argmax|watershed`. `--sweep` loops the whole
+  grid over `--frames` and logs one row per combo.
+- **Approach 2, auto-mask + match + keep-competitors (`--approach amg`).** Runs
+  `SAM2AutomaticMaskGenerator` over the whole frame, matches each node to one of the resulting masks
+  (`match_amg_to_nodes`, the F2 composite, or `--match area`, the smallest containing mask), and
+  keeps the unmatched masks as unlabelled competitors that still take part in overlap resolution
+  before being dropped to background. This is what lets a neighbour push bleed off a cell mask
+  without ever appearing as a named cell itself.
+- **AMG parameter tuner (`--tune`).** Grid-search over `pred_iou_thresh` x `stability_score_thresh`
+  x `points_per_side` (12 combos by default, `--tune-grid` overrides), scored by
+  `eval.perframe_score.objective`, a composite that rewards own-node coverage and
+  boundary-on-membrane while penalising foreign bleed, spanning, and overlap. Every trial's params
+  and per-frame scores land in `<out>/trials.csv`; the winning trial gets a full re-run for its
+  montages, and the logged summary carries an explicit note that the objective can be gamed (a
+  degenerate small-mask trial can score well on paper while under-covering the frame).
+- **Documentation, a first-class requirement of the design.** Every run writes
+  `results/perframe/<run>/{config.json,scores.csv,montages/}` (gitignored, regenerable); the
+  committed [perframe-experiments.md](explanation/perframe-experiments.md) logs one row per run plus
+  a "Comparison protocol" section describing how Approach 1's best sweep knobs, Approach 2 default,
+  and Approach 2 tuned are meant to be judged against each other on the same frame sample.
+- **Built as two plans, six-plus-three tasks, via subagents.** Plan 1 (foundation, F1 to F3, the
+  Approach-1 runner, the sweep) and Plan 2 (the Approach-2 runner, the tuner, this documentation
+  pass). 257 tests pass, ruff clean.
+- **The comparison is a documented protocol, not yet a finished result.** Approach 2's default AMG
+  parameters (`points_per_side=64`, `crop_n_layers=1`) proved too slow to finish even a single
+  target-worm frame in a short local wall-clock budget, and a `--tune` run multiplies that cost by
+  the grid size. The full three-way comparison on a 5-to-10-frame sample is realistically a CCDB
+  job; locally we have a single-frame worked example (frame 1400) showing how to read the numbers
+  against the montages once the full sample lands. See "Comparison protocol" in the experiments log
+  for the concrete caveats this surfaced, including that Approach 2's `own_coverage` only scores the
+  cells an AMG mask actually matched, and that `--match area` can let one merged blob wear two cells'
+  names.
 
 ---
 

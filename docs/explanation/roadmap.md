@@ -481,11 +481,27 @@ the move to Phase 2.
   signal and the `underfill_fraction` flood that 2b only measures, this time applying it to grow a
   mask to its bounding membrane. Also the route to de-bias the eroded cross-worm GT into a rough
   boundary ruler.
-- **2d, principled non-overlap resolve, queued as its own spec.** With the membrane signal in hand,
-  replace the composite's argmax / first-writer-wins with mutex watershed / multicut (skeletons as
-  attractive interiors, inter-neuron edges repulsive). Deferred out of Phase 1 because it needs the
-  boundary signal to beat the current argmax; on a raw EM gradient it would be a weak version of
-  itself. *(§4.3)*
+- **2d, principled non-overlap resolve, delivered early in prototype form (2026-07-21).** With the
+  membrane signal in hand, replace the composite's argmax / first-writer-wins with a
+  membrane-respecting resolver. The per-frame segmentation experiment
+  (`docs/superpowers/specs/2026-07-20-perframe-segmentation-design.md`,
+  [perframe-experiments.md](perframe-experiments.md)) built and compared two: a membrane-aware
+  nearest-node argmax and a seeded watershed on the membrane map, both pure functions over masks,
+  node coordinates, and the membrane map (`sam2_utils/perframe.py`'s
+  `resolve_overlaps_argmax`/`resolve_overlaps_watershed`). This is scoped to that per-frame
+  experiment for now, not yet wired into the main per-chain composite's aggregation step, so the
+  original Phase 1/2 sequencing (needing the boundary signal to beat the current first-writer-wins;
+  a raw EM gradient alone would be a weak version of itself) still applies to that wiring. *(§4.3)*
+- **An early, lightweight R5 dense-path probe rides along with the above.** The same per-frame
+  experiment's Approach 2 segments a whole EM frame at once with `SAM2AutomaticMaskGenerator`
+  (`run_perframe.py --approach amg`), then matches nodes to masks and keeps the rest as unlabelled
+  competitors that still push back during overlap resolution. That is a first, SAM2-only look at
+  what the §4.3 tier-3 dense/hybrid hedge is reaching for (segment the frame densely, then assign
+  identity), well short of a trained affinity model, but a cheap first read on whether frame-dense
+  segmentation is even usable on this data before committing to the heavier trained path. Early
+  finding, not yet a verdict: default AMG parameters are compute-heavy enough that a single
+  target-worm frame did not finish in a short local wall-clock budget, so judging this probe
+  properly is a CCDB job, tracked alongside 2d above. *(§4.3, §4.7 R5)*
 
 The landed foundation also helps disambiguate outer-vs-inner border for the nested-membrane ceiling.
 **Ask the supervisor whether a reusable membrane model or training data survives from the prior
@@ -531,8 +547,12 @@ Mapped to the phases above. DONE / READY / TODO.
 5. **Mutex-watershed / multicut non-overlap resolve** (Phase 1). TODO.
 6. **Membrane-probability map + membrane-aware bleed detection** (Phase 2 foundation, 2a + 2b).
    DONE: `sam2_utils/membrane.py` + `eval.merge_metric`'s membrane pass, `mild_bleed_rate`
-   headline. Still open: the supervisor conversation about reusing the prior lab model, and
-   grow-to-membrane refinement (2c) + non-overlap arbitration (2d), each queued as its own spec.
+   headline. Non-overlap arbitration (2d) DONE in prototype form via the per-frame segmentation
+   experiment (2026-07-21): two membrane-aware resolvers, argmax and watershed, not yet wired into
+   the main per-chain composite. That same experiment's AMG approach is an early R5-lite dense-path
+   probe, judged too compute-heavy to finish locally, so its real read is a CCDB step. Still open:
+   the supervisor conversation about reusing the prior lab model, grow-to-membrane refinement (2c),
+   and wiring 2d into the main composite's aggregation step.
 7. **Boundary-accurate benchmark + mask-decoder finetune / FGNet head** (Phase 3). TODO.
 
 `bigimg` (SAM2 `image_size` 2048) stays retired: it crashes off-distribution and its output would be
