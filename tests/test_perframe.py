@@ -24,6 +24,22 @@ def test_argmax_resolves_overlap_to_nearest_node():
     # uncontested
     assert lab[3, 3] == 1 and lab[16, 16] == 2 and lab[0, 0] == 0
 
+    # Off-diagonal case: catches an x/y transposition in the distance computation.
+    # node_xy is (x, y). Seeds are mirror images of each other across the diagonal:
+    # seedC=(x=1, y=19), seedD=(x=19, y=1). Contested pixel is (row=5, col=15), i.e.
+    # (x=15, y=5). Correct distance: d(C)=(1-15)^2+(19-5)^2=392, d(D)=(19-15)^2+(1-5)^2=32
+    # -> nearest is D (label 2). If x and y were swapped anywhere in the distance formula
+    # (or in unpacking the contested-pixel coordinates), the squared terms pair up with
+    # the wrong seed axis: d(C)'=(1-5)^2+(19-15)^2=32, d(D)'=(19-5)^2+(1-15)^2=392 -> nearest
+    # would flip to C (label 1). So this pixel is guaranteed to fail under an x/y swap.
+    c = np.zeros((20, 20), bool); c[:, 0:16] = True
+    d = np.zeros((20, 20), bool); d[0:11, 10:20] = True   # overlaps c in rows0:11, cols10:16
+    lab2 = pf.resolve_overlaps_argmax([c, d], [(1, 19), (19, 1)])
+    assert lab2[5, 15] == 2
+    # uncontested, off-diagonal sanity checks
+    assert lab2[19, 1] == 1   # only c claims (row != col)
+    assert lab2[1, 19] == 2   # only d claims (row != col)
+
 
 def test_watershed_labels_are_disjoint_and_seeded():
     a = np.zeros((20, 20), bool); a[2:12, 2:12] = True
@@ -32,4 +48,9 @@ def test_watershed_labels_are_disjoint_and_seeded():
     lab = pf.resolve_overlaps_watershed([a, b], [(6, 6), (13, 13)], mem)
     assert lab[6, 6] == 1 and lab[13, 13] == 2          # seeds keep their label
     assert set(np.unique(lab)) <= {0, 1, 2}
-    assert not ((lab == 1) & (lab == 2)).any()          # disjoint by construction
+    # Real partition check: every pixel in the union of the two masks must get exactly
+    # one of the two labels (the old `(lab == 1) & (lab == 2)` check was tautological,
+    # since a single int array can never equal both 1 and 2 at the same cell).
+    union = a | b
+    n1, n2 = int((lab == 1).sum()), int((lab == 2).sum())
+    assert n1 + n2 == int(union.sum())
