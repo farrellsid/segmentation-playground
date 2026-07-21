@@ -71,6 +71,43 @@ metrics only). See [../how-to/evaluate-against-gt.md](../how-to/evaluate-against
 entry points (`eval.run_erl`, `eval.registration`, `eval.diag_registration`,
 `eval.scale_registration`) are documented in `eval/README.md`.
 
+## run_perframe.py
+
+Per-frame neuron segmentation (Approach 1, prompt-based): for one or more CATMAID frames,
+image-mode SAM2 once per node, membrane-aware overlap resolution, F2 scoring. Writes
+`results/perframe/<run>/{config.json,scores.csv,montages/}` (gitignored, regenerable) and
+appends one summary row to [perframe-experiments.md](../explanation/perframe-experiments.md)
+(committed).
+
+```bash
+py -3 run_perframe.py --approach prompt --frames 1400 1420 --negatives on \
+    --selection metric --resolver argmax --scale 8 --model-size tiny \
+    --out results/perframe/smoke
+```
+
+| Flag | Effect |
+|------|--------|
+| `--approach prompt` | Segmentation approach. Only `prompt` (Approach 1) exists so far. |
+| `--frames Z [Z ...]` | CATMAID z's to segment. Required. |
+| `--negatives on\|off` | Pass other cells' nodes as negative points. Default `on`. Ignored with `--sweep`. |
+| `--selection pred_iou\|generous\|metric` | How to pick among SAM2's 3 multimask candidates. Default `metric`. Ignored with `--sweep`. |
+| `--resolver argmax\|watershed` | Overlap-resolution method (F3). Default `argmax`. Ignored with `--sweep`. |
+| `--sweep` | Loop the Approach-1 knob grid (`negatives` x `selection` x `resolver`, 12 combos) over `--frames` instead of one combo. Each combo gets its own auto-named subdirectory of `--out` (e.g. `neg_on-sel_metric-res_argmax`) and its own experiments-log row. |
+| `--scale N` | Downscale factor for the `_sam` grid. Default 8. |
+| `--model-size <size>` | SAM2 checkpoint size. Default `tiny`. |
+| `--out <dir>` | Results dir, e.g. `results/perframe/<run>`. Required. With `--sweep`, the parent dir under which each combo's subdirectory is written. |
+| `--radius N` | Node-containment radius in grid px. Default 3. |
+| `--tau T` | Membrane threshold on the normalised `[0, 1]` map. Default 0.5. |
+| `--k-max-neg N` | Cap on negative points per node, nearest first. Default 3. |
+| `--box-margin N` | Fixed px pad for the first-pass box. Default 10. |
+
+Sweep example, 12 combos over one frame:
+
+```bash
+py -3 run_perframe.py --approach prompt --sweep --frames 1400 --scale 8 \
+    --model-size tiny --out results/perframe/sweep_smoke
+```
+
 ## eval.merge_metric
 
 Ground-truth-free bleed / dropout scorer for the target worm (roadmap Phase 0 + Phase 2). For each
