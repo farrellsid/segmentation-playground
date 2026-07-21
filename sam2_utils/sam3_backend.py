@@ -7,6 +7,47 @@ from __future__ import annotations
 
 import numpy as np
 
+DEFAULT_CHECKPOINT_DIR = r"F:\sam3\huggingface"
+
+
+class Sam3ImagePredictor:
+    """Wraps `Sam3TrackerModel` behind the `SAM2ImagePredictor` surface.
+
+    Presents `set_image()` + `predict(...)` so `pipeline.predict.image_predict`
+    can drive SAM3 unchanged. torch and transformers are imported lazily here,
+    inside `__init__`, so importing this module stays CPU-only.
+    """
+
+    def __init__(self, checkpoint_dir: str = DEFAULT_CHECKPOINT_DIR, device=None):
+        import torch
+        from transformers import Sam3TrackerModel, Sam3TrackerProcessor
+
+        self._torch = torch
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = Sam3TrackerModel.from_pretrained(checkpoint_dir).to(self.device)
+        self.processor = Sam3TrackerProcessor.from_pretrained(checkpoint_dir)
+        self._image = None
+        self._hw = None
+
+    def set_image(self, image_rgb: np.ndarray) -> None:
+        self._image = np.asarray(image_rgb)
+        self._hw = (int(self._image.shape[0]), int(self._image.shape[1]))
+
+    def predict(self, point_coords=None, point_labels=None, box=None, multimask_output=False):
+        torch = self._torch
+        prompts = to_image_prompts(point_coords, point_labels, box)
+        inputs = self.processor(images=self._image, return_tensors="pt", **prompts)
+        inputs = inputs.to(self.device)
+        with torch.no_grad():
+            out = self.model(**inputs, multimask_output=multimask_output)
+        H, W = self._hw
+        full = self.processor.post_process_masks(out.pred_masks.cpu(), inputs["original_sizes"])[0]
+        masks = np.asarray(full).reshape(-1, H, W)
+        scores = out.iou_scores.detach().float().cpu().numpy().reshape(-1)
+        low = out.pred_masks.detach().float().cpu().numpy()
+        logits = low.reshape(-1, low.shape[-2], low.shape[-1])
+        return select_image_masks(masks, scores, logits, multimask_output)
+
 
 def select_image_masks(masks, scores, low_res_logits, multimask_output):
     """Select and reshape image masks and logits for SAM2 compatibility.

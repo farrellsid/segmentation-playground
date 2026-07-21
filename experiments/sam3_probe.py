@@ -152,5 +152,40 @@ def main():
     banner("PROBE DONE")
 
 
+def probe_image_predictor_adapter():
+    """Smoke-test Sam3ImagePredictor through pipeline.predict.image_predict.
+
+    Uses a synthetic 256x256 RGB image on purpose (no data dependency): this
+    checks the adapter's plumbing (set_image -> predict -> select_image_masks
+    round-trips into image_predict's expected return shape), not mask quality.
+    Real-frame quality is judged later in the bake-off.
+    """
+    banner("IMAGE adapter smoke (Sam3ImagePredictor via pipeline.predict.image_predict)")
+    try:
+        import sys
+        import pathlib
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+        from pipeline import Prompts, image_predict
+        from sam2_utils.sam3_backend import Sam3ImagePredictor
+
+        adapter = Sam3ImagePredictor(CKPT)
+        image = (np.random.rand(256, 256, 3) * 255).astype("uint8")
+        prompts = Prompts(
+            points_sam=np.array([[128.0, 128.0]]),
+            labels=np.array([1]),
+        )
+        mask, score, logits = image_predict(
+            adapter, image, prompts, multimask=True, select_area_bounds=(1e-5, 0.4))
+        assert mask.dtype == bool, f"mask dtype {mask.dtype}, expected bool"
+        assert mask.shape == (256, 256), f"mask shape {mask.shape}, expected (256, 256)"
+        assert np.isfinite(score), f"score {score} is not finite"
+        print(f"OK: mask shape {mask.shape} dtype {mask.dtype}, score {float(score):.4f}")
+    except Exception:
+        traceback.print_exc()
+    banner("IMAGE adapter smoke DONE")
+
+
 if __name__ == "__main__":
     main()
+    probe_image_predictor_adapter()
