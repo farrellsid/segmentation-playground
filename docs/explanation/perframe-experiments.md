@@ -9,13 +9,18 @@ docs/superpowers/specs/2026-07-20-perframe-segmentation-design.md
 
 Each table row summarises one run as the mean of its per-frame scores (`own_coverage`,
 `total_foreign`, `mean_boundary_on_membrane`, `overlap_fraction`; see `eval/perframe_score.py` for
-what each one measures). `notes` is for anything the numbers do not capture, filled in by hand.
+what each one measures). `own_coverage`, `total_foreign`, `mean_boundary_on_membrane`,
+`spanning_rate`, and `mean_underfill` are scored on the RESOLVED (post-`--resolver`) masks, so
+`--resolver` moves them; `overlap_fraction` is deliberately the exception, a PRE-resolution
+diagnostic (the raw masks' pairwise pixel fight before `--resolver` arbitrates it), since scoring
+it on the already-disjoint resolved masks would read near-zero regardless of how contested the raw
+step was. `notes` is for anything the numbers do not capture, filled in by hand.
 
 | run | approach | negatives | selection | resolver | frames | own_coverage | total_foreign | mean_boundary_on_membrane | overlap_fraction | notes |
 |-----|----------|-----------|-----------|----------|--------|---------------|----------------|----------------------------|-------------------|-------|
-| results/perframe/sweep_smoke/neg_on-sel_pred_iou-res_argmax | prompt | on | pred_iou | argmax | 1400 | 0.994 | 10997.00 | 0.716 | 13.2419 | |
-| results/perframe/smoke_fixed | prompt | on | metric | argmax | 1400 | 0.994 | 10981.00 | 0.721 | 13.2427 | comparison-protocol worked example below; beats the pred_iou row above on total_foreign and mean_boundary_on_membrane at equal coverage, so these are the "best knobs" used in the protocol |
-| results/perframe/tune_dryrun | amg | - | metric | argmax | 1400 | 0.974 | 0.00 | 0.677 | 0.0000 | single tune-grid point (points_per_side 16, below the 32/64 default grid, chosen for local speed); only 38 of the frame's ~160 nodes matched an AMG mask, so these numbers cover that matched subset only, not full-frame recall, see "the metric is incomplete" below |
+| results/perframe/sweep_smoke/neg_on-sel_pred_iou-res_argmax | prompt | on | pred_iou | argmax | 1400 | 0.994 | 10997.00 | 0.716 | 13.2419 | pre-fix, superseded: scored the raw pre-resolution union masks (a `--resolver` change would not have moved these numbers), see CHANGELOG 2026-07-21 |
+| results/perframe/smoke_fixed | prompt | on | metric | argmax | 1400 | 0.994 | 10981.00 | 0.721 | 13.2427 | comparison-protocol worked example below; beats the pred_iou row above on total_foreign and mean_boundary_on_membrane at equal coverage, so these were the "best knobs" used in the protocol. pre-fix, superseded (same caveat as the row above), see CHANGELOG 2026-07-21 |
+| results/perframe/tune_dryrun | amg | - | metric | argmax | 1400 | 0.974 | 0.00 | 0.677 | 0.0000 | single tune-grid point (points_per_side 16, below the 32/64 default grid, chosen for local speed); only 38 of the frame's ~160 nodes matched an AMG mask. pre-fix, superseded: predates both the AMG fairness fix (unmatched cells now count as uncovered) and the unified scoring contract, see "the metric is incomplete" below and CHANGELOG 2026-07-21 |
 
 ## Comparison protocol
 
@@ -37,8 +42,8 @@ py -3 run_perframe.py --approach amg --frames <same z's> --match metric --resolv
 
 # Approach 2, tuned (12-combo default grid over the same frames, maximising the composite
 # objective; --tune-grid narrows the grid if the default is too slow, see "compute cost" below).
-py -3 run_perframe.py --tune --frames <same z's> --match metric --resolver argmax \
-    --scale 8 --model-size tiny --out results/perframe/compare_amg_tuned
+py -3 run_perframe.py --approach amg --tune --frames <same z's> --match metric \
+    --resolver argmax --scale 8 --model-size tiny --out results/perframe/compare_amg_tuned
 ```
 
 **Status.** The full 5-to-10-frame, three-way run above has not completed on this box; see "compute
@@ -60,19 +65,31 @@ successful cleanup work after the fact. The montages settle it. Open
 `results/perframe/smoke_fixed/montages/1400.png` and `results/perframe/tune_dryrun/montages/` and
 look at how much of the frame is actually labelled, not just how the labelled part scores.
 
-**The metric is incomplete, in two ways.** First, the one the design calls out up front:
+These specific numbers are pre-fix (see the table notes above): re-run today, `smoke_fixed` would
+score its resolved masks rather than the raw pre-resolution unions, and `tune_dryrun` would count
+its 122 unmatched nodes as uncovered rather than dropping them from the mean. The qualitative point
+of the worked example (numbers alone are not enough, check the montage) still holds either way, but
+the exact figures above should not be quoted as current behaviour.
+
+**The metric is incomplete, in one remaining way.** The design calls this out up front:
 `score_frame` rewards a mask for containing its own node and staying off foreign nodes, not for
 sitting on the true membrane. A mask that swallows its node and a chunk of surrounding tissue scores
 identically to one that traces the cell precisely, as long as neither reaches a neighbour's node.
 `mean_boundary_on_membrane` and `spanning_rate` push back on this somewhat, since they do read the raw
 EM, but they are still comparative signals, not ground truth. So the montages, not the numbers, are
-the deciding evidence for any claim about which approach segments better. Second, and more subtly,
-found while building this comparison: Approach 2's `own_coverage` is computed only over the cells that
-matched an AMG mask (`n_cells` in `scores.csv` is the size of `cell_masks`, the matched set, not the
-frame's full node count). A node with no matching AMG mask never enters the score at all. It is not
-counted as a dropout; it is simply absent. So a tuning trial that matches few nodes but matches them
-cleanly can look better than one that matches most of the frame with some mess. Always read `n_cells`
-next to `own_coverage` for an AMG run, and check the montage for how much of the frame is unlabelled.
+the deciding evidence for any claim about which approach segments better.
+
+A second gap, found while building the first version of this comparison, has since been fixed: a
+node with no matching AMG mask used to be silently absent from `cell_masks`, so it never entered
+`own_coverage`'s mean instead of counting as a dropout. Both approaches now guarantee a key for
+every node-bearing cell (an empty mask when nothing was matched or nothing survived overlap
+resolution), and both score `own_coverage`/`total_foreign`/`mean_boundary_on_membrane`/
+`spanning_rate`/`mean_underfill` on their RESOLVED masks, so the two approaches' numbers mean the
+same thing and a `--resolver` sweep actually moves them. `overlap_fraction` stays a pre-resolution
+diagnostic on purpose (see the note above the table); read it as "how much the raw step fought over
+pixels before `--resolver` sorted it out," not as a property of the final segmentation. Still read
+`n_cells` next to `own_coverage` for an AMG run, and check the montage for how much of the frame is
+unlabelled.
 
 **The `--match area` caveat.** Approach 2's `--match area` picks the smallest AMG mask containing a
 node, with no cross-node exclusion. If one under-segmented AMG blob is the smallest mask containing

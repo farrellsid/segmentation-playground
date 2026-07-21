@@ -1,4 +1,6 @@
 import numpy as np
+import pytest
+
 import run_perframe
 
 
@@ -91,3 +93,28 @@ def test_segment_frame_amg_unmatched_cell_counts_as_uncovered():
     assert cell_masks["A"].sum() > 0
     assert cell_masks["B"].sum() == 0
     assert score["own_coverage"] == 0.5
+
+
+def test_segment_frame_amg_overlap_fraction_is_pre_resolution():
+    """The other half of the unify-scoring fix: Approach 2 used to build cell_masks from
+    the already-resolved (disjoint by construction) label map and score overlap_fraction
+    on THAT, so it read ~0 no matter how much the matched masks originally fought over
+    pixels. Here two matched masks (one per node, each containing only its own node) share
+    a 10-column band before resolution; overlap_fraction must reflect that pre-resolution
+    fight (200 shared px / 800 total px = 0.25), even though the returned cell_masks are
+    disjoint.
+    """
+    shape = (20, 30)
+    frame = np.full(shape + (3,), 128, np.uint8)
+    node_index = [(5, 10, "A", "a"), (25, 10, "B", "b")]
+    mem = np.zeros(shape, np.float32)
+    mask_a = np.zeros(shape, bool); mask_a[:, 0:20] = True     # contains A, not B
+    mask_b = np.zeros(shape, bool); mask_b[:, 10:30] = True    # contains B, not A
+    amg = FakeAMG([mask_a, mask_b])
+
+    cell_masks, _lab, score = run_perframe.segment_frame_amg(
+        amg, frame, node_index, mem, match="metric", resolver="argmax",
+        cfg=run_perframe.PerframeCfg(scale=8))
+
+    assert score["overlap_fraction"] == pytest.approx(0.25)
+    assert not (cell_masks["A"] & cell_masks["B"]).any()

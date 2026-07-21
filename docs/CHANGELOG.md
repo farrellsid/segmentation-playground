@@ -94,9 +94,22 @@ no change to the existing per-chain batch/GUI path.
   the grid size. The full three-way comparison on a 5-to-10-frame sample is realistically a CCDB
   job; locally we have a single-frame worked example (frame 1400) showing how to read the numbers
   against the montages once the full sample lands. See "Comparison protocol" in the experiments log
-  for the concrete caveats this surfaced, including that Approach 2's `own_coverage` only scores the
-  cells an AMG mask actually matched, and that `--match area` can let one merged blob wear two cells'
-  names.
+  for the concrete caveats this surfaced, including that `--match area` can let one merged blob wear
+  two cells' names.
+- **Fixed: fair own_coverage for Approach 2, then a unified pre/post scoring contract for both.**
+  Two follow-up fixes to the metric above, landed the same day. First, Approach 2's `own_coverage`
+  used to score only the cells an AMG mask actually matched, so an unmatched node was simply absent
+  from the mean instead of counting as a dropout; unmatched cells now get an empty resolved mask and
+  count as uncovered, matching Approach 1. Second, and more fundamentally, Approach 1 was scoring its
+  raw pre-resolution union masks (so `--resolver` never moved a single number) while Approach 2 was
+  already scoring its resolved, post-`--resolver` masks (so its `overlap_fraction` read ~0 by
+  construction); the two approaches now share one contract, `own_coverage`/`total_foreign`/
+  `mean_boundary_on_membrane`/`spanning_rate`/`mean_underfill` are always scored on the RESOLVED
+  masks for both, and `overlap_fraction` is deliberately overridden to a pre-resolution diagnostic
+  (the raw masks' pairwise pixel fight before `--resolver` sorts it out) computed the same way for
+  both approaches. This makes `--resolver` an actual knob for Approach 1 and makes the two
+  approaches' numbers comparable. See [perframe-experiments.md](explanation/perframe-experiments.md)
+  for the updated worked example and the note that its older table rows predate this fix.
 
 ---
 

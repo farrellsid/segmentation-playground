@@ -118,7 +118,7 @@ py -3 run_perframe.py --approach prompt --sweep --frames 1400 --scale 8 \
 Tune example, default 12-combo AMG grid over one frame:
 
 ```bash
-py -3 run_perframe.py --tune --frames 1400 --scale 8 \
+py -3 run_perframe.py --approach amg --tune --frames 1400 --scale 8 \
     --model-size tiny --out results/perframe/tune_smoke
 ```
 

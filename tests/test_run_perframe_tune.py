@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import pipeline
 import run_perframe
@@ -27,6 +28,17 @@ def _disk(cx, cy, r, shape=(40, 40)):
 def test_tune_grid_combos_is_a_cartesian_product():
     combos = run_perframe._tune_grid_combos({"a": (1, 2), "b": (3,)})
     assert combos == [{"a": 1, "b": 3}, {"a": 2, "b": 3}]
+
+
+def test_tune_rejects_approach_prompt(tmp_path):
+    """--tune is Approach 2's tuner; --approach prompt (Approach 1's own knob grid is
+    --sweep) must fail loudly instead of silently building an AMG anyway."""
+    args = run_perframe._parse([
+        "--tune", "--approach", "prompt", "--frames", "1400",
+        "--out", str(tmp_path / "tune_out"),
+    ])
+    with pytest.raises(ValueError, match="--tune only supports --approach amg"):
+        run_perframe._run_tune(args)
 
 
 def test_tune_loop_builds_grid_writes_trials_and_logs_winner(tmp_path, monkeypatch):
@@ -62,8 +74,8 @@ def test_tune_loop_builds_grid_writes_trials_and_logs_winner(tmp_path, monkeypat
     grid = {"pred_iou_thresh": [0.7, 0.8], "stability_score_thresh": [0.9],
             "points_per_side": [32]}
     args = run_perframe._parse([
-        "--tune", "--frames", "1400", "--scale", "8", "--model-size", "tiny",
-        "--out", str(out_dir), "--tune-grid", json.dumps(grid),
+        "--tune", "--approach", "amg", "--frames", "1400", "--scale", "8",
+        "--model-size", "tiny", "--out", str(out_dir), "--tune-grid", json.dumps(grid),
     ])
 
     run_perframe._run_tune(args)

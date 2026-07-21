@@ -24,7 +24,7 @@ experiments-log row per combo:
 
 Or tune Approach 2's AMG params (12-combo default grid, or --tune-grid) over the given frames,
 keeping the trial that maximises eval.perframe_score.objective:
-    py -3 run_perframe.py --tune --frames 1400 1420 --scale 8 \\
+    py -3 run_perframe.py --approach amg --tune --frames 1400 1420 --scale 8 \\
         --model-size tiny --out results/perframe/tune
 """
 from __future__ import annotations
@@ -45,7 +45,7 @@ import pandas as pd
 
 import pipeline
 from sam2_utils import perframe as pf, membrane as mb, setup
-from eval.perframe_score import score_frame, objective
+from eval.perframe_score import score_frame, objective, pairwise_overlap_fraction
 
 try:
     import torch
@@ -78,13 +78,21 @@ def segment_frame_prompt(image_predictor, frame_sam, node_index, membrane_map, *
     """One frame, prompt mode. For each node: set_image, predict with a positive point (+
     box, + the OTHER cells' nodes as negatives when `negatives`), take SAM2's 3 candidates,
     pick one by `selection` (pred_iou | generous | metric), collect labelled masks, resolve
-    overlaps by `resolver` (argmax | watershed), score. Returns (cell_masks, label_map, score).
+    overlaps by `resolver` (argmax | watershed), score. Returns
+    (resolved_cell_masks, label_map, score).
 
     negatives / selection / foreign nodes are all computed per node from `node_index`
     (a list of (x, y, cell_name, node_id) in `frame_sam`'s space, e.g. pf.nodes_in_frame's
     output); "foreign" means a node belonging to a DIFFERENT cell, never a second node of
     the same cell. When several nodes share a cell (a branch point in this frame), each
-    node gets its own chosen mask and the cell's final mask is their union.
+    node gets its own chosen mask and the cell's raw (pre-resolution) mask is their union.
+
+    Scoring contract (shared with segment_frame_amg, so the two approaches are comparable):
+    `score_frame` grades the RESOLVED masks (`label_map == i+1` per cell, unioned over that
+    cell's nodes), not the raw pre-resolution unions, so `resolver` actually moves
+    own_coverage/foreign/boundary/spanning/underfill. `overlap_fraction` is then overridden
+    with a pre-resolution diagnostic (the pairwise overlap of the raw per-cell union masks),
+    since it would otherwise read ~0 by construction on the disjoint resolved masks.
     """
     if selection not in ("pred_iou", "generous", "metric"):
         raise ValueError(f"unknown selection {selection!r}")
@@ -97,7 +105,8 @@ def segment_frame_prompt(image_predictor, frame_sam, node_index, membrane_map, *
 
     masks_in_order: list[np.ndarray] = []
     node_xy_in_order: list[tuple[float, float]] = []
-    cell_masks: dict[str, np.ndarray] = {}
+    cell_in_order: list[str] = []
+    raw_cell_masks: dict[str, np.ndarray] = {}
 
     for (x, y, cell, _node_id) in node_index:
         foreign_xy = [(fx, fy) for (fx, fy, fc, _fn) in node_index if fc != cell]
@@ -146,7 +155,8 @@ def segment_frame_prompt(image_predictor, frame_sam, node_index, membrane_map, *
         chosen = cands[idx]
         masks_in_order.append(chosen)
         node_xy_in_order.append((x, y))
-        cell_masks[cell] = (cell_masks[cell] | chosen) if cell in cell_masks else chosen
+        cell_in_order.append(cell)
+        raw_cell_masks[cell] = (raw_cell_masks[cell] | chosen) if cell in raw_cell_masks else chosen
 
     image_predictor.reset_predictor()
 
@@ -155,8 +165,23 @@ def segment_frame_prompt(image_predictor, frame_sam, node_index, membrane_map, *
     else:
         label_map = pf.resolve_overlaps_watershed(masks_in_order, node_xy_in_order, membrane_map)
 
-    score = score_frame(cell_masks, node_index, membrane_map, radius=cfg.radius, tau=cfg.tau)
-    return cell_masks, label_map, score
+    # Resolved per-cell masks, per the shared scoring contract: label_map is indexed by
+    # NODE (i+1 = masks_in_order[i]), so a cell with several nodes (a branch point) unions
+    # its nodes' resolved slices back together. Every node-bearing cell keeps a key here
+    # even if its node lost the whole overlap fight (an all-False mask), matching
+    # segment_frame_amg's fairness fix for unmatched cells.
+    resolved_cell_masks: dict[str, np.ndarray] = {cell: np.zeros((h, w), dtype=bool)
+                                                  for cell in raw_cell_masks}
+    for i, cell in enumerate(cell_in_order):
+        resolved_cell_masks[cell] |= (label_map == (i + 1))
+
+    score = score_frame(resolved_cell_masks, node_index, membrane_map,
+                        radius=cfg.radius, tau=cfg.tau)
+    # overlap_fraction on resolved (disjoint-by-construction) masks would read ~0
+    # regardless of resolver, so override it with the pre-resolution diagnostic: how much
+    # the raw per-cell union masks fought over the same pixels before resolution.
+    score["overlap_fraction"] = pairwise_overlap_fraction(list(raw_cell_masks.values()))
+    return resolved_cell_masks, label_map, score
 
 
 # Approach 2's AMG defaults, matching the notebook's mask_generator_2. Overridable per run
@@ -220,14 +245,22 @@ def segment_frame_amg(amg, frame_sam, node_index, membrane_map, *,
 
     match: 'metric' uses pf.match_amg_to_nodes (the F2-composite matcher); 'area' picks,
     per node, the smallest AMG mask containing it. resolver: 'argmax' | 'watershed', same
-    as segment_frame_prompt. Returns (cell_masks, label_map, score); the returned label_map
-    is cell-only (0 background, competitor labels already zeroed out after resolution).
+    as segment_frame_prompt. Returns (resolved_cell_masks, label_map, score); the returned
+    label_map is cell-only (0 background, competitor labels already zeroed out after
+    resolution).
 
-    Every distinct cell name in node_index is guaranteed a key in cell_masks, even one AMG
-    never matched: unmatched cells get an all-False mask of the frame shape, so score_frame
-    counts them as uncovered rather than omitting them from own_coverage's mean. This keeps
-    Approach 2 comparable to Approach 1, which attempts every node and already lands an
-    empty prediction in cell_masks the same way.
+    Every distinct cell name in node_index is guaranteed a key in the returned cell_masks,
+    even one AMG never matched: unmatched cells get an all-False mask of the frame shape,
+    so score_frame counts them as uncovered rather than omitting them from own_coverage's
+    mean. This keeps Approach 2 comparable to Approach 1, which attempts every node and
+    already lands an empty prediction in cell_masks the same way.
+
+    Scoring contract (shared with segment_frame_prompt, so the two approaches are
+    comparable): `score_frame` grades these already-resolved masks (disjoint by
+    construction, the resolve_overlaps_* output), so `resolver` moves own_coverage/foreign/
+    boundary/spanning/underfill here too. `overlap_fraction` is overridden with a
+    pre-resolution diagnostic (the pairwise overlap of the matched-but-not-yet-resolved
+    per-cell masks, i.e. `labels` below), since it would otherwise read ~0 by construction.
     """
     if match not in ("area", "metric"):
         raise ValueError(f"unknown match {match!r}")
@@ -243,6 +276,7 @@ def segment_frame_amg(amg, frame_sam, node_index, membrane_map, *,
         label_map = np.zeros((h, w), dtype=np.int32)
         cell_masks: dict[str, np.ndarray] = {c: np.zeros((h, w), dtype=bool) for c in all_cells}
         score = score_frame(cell_masks, node_index, membrane_map, radius=cfg.radius, tau=cfg.tau)
+        score["overlap_fraction"] = 0.0
         return cell_masks, label_map, score
 
     if match == "metric":
@@ -250,6 +284,11 @@ def segment_frame_amg(amg, frame_sam, node_index, membrane_map, *,
                                                   radius=cfg.radius, tau=cfg.tau)
     else:
         labels, leftover = _match_amg_to_nodes_area(amg_masks, node_index, radius=cfg.radius)
+
+    # Pre-resolution overlap diagnostic, taken before the matched masks compete in
+    # resolve_overlaps below: the same representation Approach 1 uses for its raw
+    # per-cell union masks, so the two approaches' overlap_fraction means the same thing.
+    raw_overlap_fraction = pairwise_overlap_fraction(list(labels.values()))
 
     # Resolution order: labelled cells first (seed = their node's xy), then competitors
     # (seed = their own mask centroid), so competitors take part in the fight for pixels
@@ -297,6 +336,7 @@ def segment_frame_amg(amg, frame_sam, node_index, membrane_map, *,
             cell_masks[cell] = np.zeros((h, w), dtype=bool)
 
     score = score_frame(cell_masks, node_index, membrane_map, radius=cfg.radius, tau=cfg.tau)
+    score["overlap_fraction"] = raw_overlap_fraction
     return cell_masks, label_map, score
 
 
@@ -638,6 +678,10 @@ def _run_tune(args: argparse.Namespace) -> None:
     Grid default: DEFAULT_TUNE_GRID; override with --tune-grid, a JSON object of
     {param: [values, ...]}.
     """
+    if args.approach != "amg":
+        raise ValueError("--tune only supports --approach amg (Approach 2's own tuner); "
+                         "Approach 1 has its own knob grid (--sweep)")
+
     from eval import merge_metric
 
     cfg = PerframeCfg(scale=args.scale, radius=args.radius, tau=args.tau,
