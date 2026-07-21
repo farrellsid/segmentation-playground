@@ -109,3 +109,26 @@ montage pass), so the full three-way, multi-frame comparison this section descri
 a CCDB job, not a local one. This matches the design's own risk note (per-frame AMG over many frames
 is compute-heavy) and is the reason the full comparison stays a documented protocol here rather than
 a finished result.
+
+## Results (2026-07-21): local A1-vs-A2 and A1-measures, scale 8, tiny model
+
+First real per-frame runs. Figures under `docs/figures/perframe/`:
+`approach1-vs-approach2-comparison.png` (5 frames) and `approach1-measures-grid.png` (z=1326), with
+their scores CSVs. All are scale 8, tiny model, no per-cell crop.
+
+A1 vs A2 (5 frames, 94 to 188 cells). Approach 1 (prompt, negatives on, metric, argmax) gives
+near-complete coverage (own_coverage 0.98 to 1.00) but bleeds (total_foreign 10 to 51, pre-resolution
+overlap 5 to 17). Approach 2 (auto-mask, light params points_per_side=16, no crops, match metric)
+finds only 8 to 17% of cells (own_coverage 0.08 to 0.17); the masks it does find are clean, but it
+misses most cells. A2's low coverage is partly the light local params: a full AMG (64 points plus
+crops) on CCDB, plus the tuner, is needed for a fair A2 verdict.
+
+A1 measures (z=1326). Negatives on halves the pre-resolution overlap (1.1 to 0.4) at almost no
+coverage cost. Metric selection edges pred_iou on boundary-on-membrane, and both beat generous
+(blockier, spillier, boundary 0.59 to 0.61). Resolver is a tradeoff: watershed snaps boundaries onto
+membranes (boundary-on-membrane 0.87 to 0.90) but over-floods across the coarse scale-8 membrane map,
+raising foreign bleed four to five fold (9 to 38-45), while argmax keeps foreign low with geometric
+boundaries. Solid A1 default: negatives-on, metric selection, argmax. Open levers: per-cell cropping
+for A1 (the per-chain resolution win, not yet in the runner), a sharper trained membrane map to make
+watershed safe, and grow-to-membrane fill (Phase-2 item 2c) for underfill and A2 coverage rescue. The
+metric is incomplete (rewards node-containment, not true boundaries), so read these with the montages.
