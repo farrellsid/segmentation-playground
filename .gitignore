@@ -16,6 +16,10 @@ output/
 references/
 documentation/
 
+# run_perframe.py results (config.json / scores.csv / montages): regenerable per run.
+# The headline of each run is kept instead in docs/explanation/perframe-experiments.md.
+results/
+
 # Generated run logs from experiments/ are disposable (findings live in PIPELINE_HISTORY old §8).
 experiments/*.log
 
