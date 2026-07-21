@@ -43,3 +43,31 @@ def video_logits_to_mask(logit_hw):
         array of shape (H, W) as bool, True where logit_hw > 0.0
     """
     return np.asarray(logit_hw, dtype=float) > 0.0
+
+
+def to_image_prompts(point_coords, point_labels, box):
+    """Shape pipeline prompt arrays into SAM3 image-processor kwargs (one image, one object)."""
+    out: dict = {}
+    if point_coords is not None and len(point_coords):
+        pts = np.asarray(point_coords, dtype=float).tolist()
+        labs = np.asarray(point_labels, dtype=int).tolist()
+        out["input_points"] = [[pts]]
+        out["input_labels"] = [[labs]]
+    if box is not None:
+        b = np.asarray(box, dtype=float).ravel().tolist()
+        out["input_boxes"] = [[b]]
+    return out
+
+
+def to_video_prompt(frame_idx, obj_id, box, points, labels):
+    """Shape pipeline prompt into SAM3 video-session add-input kwargs."""
+    out: dict = {"frame_idx": frame_idx, "obj_ids": obj_id}
+    if points is not None and len(points):
+        pts = np.asarray(points, dtype=float).tolist()
+        labs = np.asarray(labels, dtype=int).tolist()
+        out["input_points"] = [[pts]]
+        out["input_labels"] = [[labs]]
+    if box is not None:
+        b = np.asarray(box, dtype=float).ravel().tolist()
+        out["input_boxes"] = [[b]]
+    return out
