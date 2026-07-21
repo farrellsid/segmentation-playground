@@ -67,3 +67,27 @@ def test_segment_frame_amg_competitor_pushback_shrinks_target():
     # the competitor's whole footprint (its exclusive area plus the overlap lens it won)
     # never survives as a named cell: it is background in the returned cell-only label map.
     assert not lab_with[competitor].any()
+
+
+def test_segment_frame_amg_unmatched_cell_counts_as_uncovered():
+    """Fairness regression: a cell WITH a node in this frame that AMG fails to match must
+    still appear in cell_masks as an empty mask, so score_frame's own_coverage counts it as
+    uncovered. Before this fix, an unmatched cell was simply absent from cell_masks and
+    score_frame's mean over cell_masks.keys() silently skipped it, inflating own_coverage
+    (here it would have read 1.0 instead of the correct 0.5).
+    """
+    shape = (40, 40)
+    frame = np.full(shape + (3,), 128, np.uint8)
+    # B has a node in the frame, but no AMG mask anywhere near it: unmatchable.
+    node_index = [(10, 10, "A", "a"), (30, 30, "B", "b")]
+    mem = np.zeros(shape, np.float32)
+    amg = FakeAMG([_disk(10, 10, 5, shape=shape)])  # only covers A's node
+
+    cell_masks, _lab, score = run_perframe.segment_frame_amg(
+        amg, frame, node_index, mem, match="metric", resolver="argmax",
+        cfg=run_perframe.PerframeCfg(scale=8))
+
+    assert set(cell_masks) == {"A", "B"}
+    assert cell_masks["A"].sum() > 0
+    assert cell_masks["B"].sum() == 0
+    assert score["own_coverage"] == 0.5

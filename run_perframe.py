@@ -222,6 +222,12 @@ def segment_frame_amg(amg, frame_sam, node_index, membrane_map, *,
     per node, the smallest AMG mask containing it. resolver: 'argmax' | 'watershed', same
     as segment_frame_prompt. Returns (cell_masks, label_map, score); the returned label_map
     is cell-only (0 background, competitor labels already zeroed out after resolution).
+
+    Every distinct cell name in node_index is guaranteed a key in cell_masks, even one AMG
+    never matched: unmatched cells get an all-False mask of the frame shape, so score_frame
+    counts them as uncovered rather than omitting them from own_coverage's mean. This keeps
+    Approach 2 comparable to Approach 1, which attempts every node and already lands an
+    empty prediction in cell_masks the same way.
     """
     if match not in ("area", "metric"):
         raise ValueError(f"unknown match {match!r}")
@@ -229,12 +235,13 @@ def segment_frame_amg(amg, frame_sam, node_index, membrane_map, *,
         raise ValueError(f"unknown resolver {resolver!r}")
 
     h, w = frame_sam.shape[:2]
+    all_cells = {cell for (_x, _y, cell, _n) in node_index}
     anns = amg.generate(frame_sam)
     amg_masks = [np.asarray(a["segmentation"]).astype(bool) for a in anns]
 
     if not amg_masks:
         label_map = np.zeros((h, w), dtype=np.int32)
-        cell_masks: dict[str, np.ndarray] = {}
+        cell_masks: dict[str, np.ndarray] = {c: np.zeros((h, w), dtype=bool) for c in all_cells}
         score = score_frame(cell_masks, node_index, membrane_map, radius=cfg.radius, tau=cfg.tau)
         return cell_masks, label_map, score
 
@@ -278,6 +285,16 @@ def segment_frame_amg(amg, frame_sam, node_index, membrane_map, *,
         m = label_map_full == (i + 1)
         cell_masks[name] = m
         label_map[m] = i + 1
+
+    # Fairness fix: a cell with a node in this frame that AMG failed to match must still
+    # show up in cell_masks, as an empty mask, so score_frame counts it as uncovered
+    # (own_contained=False) instead of silently dropping it and inflating own_coverage.
+    # Approach 1 has no such gap (it attempts every node, so an empty prediction there
+    # already lands in cell_masks); this keeps the two approaches comparable. Never added
+    # to label_map, since an empty mask contributes no pixels there anyway.
+    for cell in all_cells:
+        if cell not in cell_masks:
+            cell_masks[cell] = np.zeros((h, w), dtype=bool)
 
     score = score_frame(cell_masks, node_index, membrane_map, radius=cfg.radius, tau=cfg.tau)
     return cell_masks, label_map, score
