@@ -1,0 +1,10 @@
+selection,negatives,resolver,own_coverage,total_foreign,overlap_fraction,boundary_on_membrane,seconds
+pred_iou,off,argmax,1.0,9,1.12,0.728,28.9
+pred_iou,on,argmax,0.979,9,0.36,0.72,32.0
+pred_iou,on,watershed,0.968,38,0.36,0.865,38.0
+generous,off,argmax,1.0,1,2.09,0.586,55.3
+generous,on,argmax,0.989,9,0.9,0.607,48.3
+generous,on,watershed,1.0,45,0.9,0.899,37.3
+metric,off,argmax,1.0,9,1.11,0.745,60.0
+metric,on,argmax,0.979,10,0.38,0.738,52.9
+metric,on,watershed,0.968,39,0.38,0.872,48.4
