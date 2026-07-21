@@ -18,6 +18,7 @@ import argparse
 import json
 import subprocess
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,22 @@ import pandas as pd
 import pipeline
 from sam2_utils import perframe as pf, membrane as mb, setup
 from eval.perframe_score import score_frame
+
+try:
+    import torch
+except ImportError:  # torch-free environments (e.g. the FakePred smoke test)
+    torch = None
+
+
+def _predict_ctx(image_predictor):
+    """torch.inference_mode() around predict calls, skipped for torch-free/fake predictors.
+
+    A real SAM2ImagePredictor holds its model at `.model`; the smoke test's FakePred
+    does not, so this stays a no-op there and the torch-free path keeps working.
+    """
+    if torch is not None and hasattr(image_predictor, "model"):
+        return torch.inference_mode()
+    return nullcontext()
 
 
 @dataclass
@@ -59,7 +76,8 @@ def segment_frame_prompt(image_predictor, frame_sam, node_index, membrane_map, *
         raise ValueError(f"unknown resolver {resolver!r}")
 
     h, w = frame_sam.shape[:2]
-    image_predictor.set_image(frame_sam)
+    with _predict_ctx(image_predictor):
+        image_predictor.set_image(frame_sam)
 
     masks_in_order: list[np.ndarray] = []
     node_xy_in_order: list[tuple[float, float]] = []
@@ -80,15 +98,19 @@ def segment_frame_prompt(image_predictor, frame_sam, node_index, membrane_map, *
         else:
             pts, labs = pos, pos_labels
 
-        # first-pass single mask on the positive point alone, to size a box (mirrors
-        # pipeline.box_from_mask's normal use: box AFTER a raw anchor mask, not before).
-        m0, _s0, _l0 = image_predictor.predict(
-            point_coords=pos, point_labels=pos_labels, box=None, multimask_output=False)
-        mask0 = np.asarray(m0[0]).astype(bool)
-        box = pipeline.box_from_mask(mask0, margin=cfg.box_margin, image_hw_sam=(h, w))
+        # first-pass single mask on the FULL prompt set (positive + negatives, capped), to
+        # size a box: mirrors pipeline/orchestrator.py's pattern of building the box-seeding
+        # mask from the full prompt set, not the positive point alone (an oversized/bled box
+        # in crowded frames would badly condition the real multimask predict below). Then
+        # box_from_mask AFTER, exactly as pipeline.box_from_mask's normal use.
+        with _predict_ctx(image_predictor):
+            m0, _s0, _l0 = image_predictor.predict(
+                point_coords=pts, point_labels=labs, box=None, multimask_output=False)
+            mask0 = np.asarray(m0[0]).astype(bool)
+            box = pipeline.box_from_mask(mask0, margin=cfg.box_margin, image_hw_sam=(h, w))
 
-        masks, scores, _logits = image_predictor.predict(
-            point_coords=pts, point_labels=labs, box=box, multimask_output=True)
+            masks, scores, _logits = image_predictor.predict(
+                point_coords=pts, point_labels=labs, box=box, multimask_output=True)
         cands = [np.asarray(m).astype(bool) for m in masks]
         scores = np.asarray(scores, dtype=float).ravel()
 
