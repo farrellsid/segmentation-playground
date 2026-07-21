@@ -158,6 +158,7 @@ def segment_frame_prompt(image_predictor, frame_sam, node_index, membrane_map, *
 # via --amg-params <json>.
 DEFAULT_AMG_PARAMS = {
     "points_per_side": 64,
+    "points_per_batch": 128,
     "pred_iou_thresh": 0.7,
     "stability_score_thresh": 0.92,
     "stability_score_offset": 0.7,
@@ -182,7 +183,15 @@ def build_amg(sam2_model, **amg_params):
 def _match_amg_to_nodes_area(amg_masks, node_index, *, radius: int):
     """'area' matching: per node, the smallest AMG mask that contains it (ties broken by
     scan order), independent of the F2 composite. Returns (labels, leftover), same shape
-    as pf.match_amg_to_nodes."""
+    as pf.match_amg_to_nodes.
+
+    Unlike pf.match_amg_to_nodes, this has no cross-node foreign exclusion: if one
+    under-segmented AMG blob is the smallest containing mask for two different nodes,
+    both cells match that same blob here, and the resolver later splits it by nearest
+    seed. That yields a deceptively perfect own_coverage on what is really a merged
+    blob, so treat 'area' results with suspicion and prefer 'metric' when the match
+    itself needs to be trusted.
+    """
     labels: dict[str, np.ndarray] = {}
     used = set()
     for (x, y, cell, _nid) in node_index:
@@ -579,7 +588,10 @@ def _parse(argv=None) -> argparse.Namespace:
     ap.add_argument("--match", choices=["area", "metric"], default="metric",
                     help="amg only: how to match a node to one of the AMG masks; 'area' "
                          "picks the smallest containing mask, 'metric' uses the F2 "
-                         "composite (pf.match_amg_to_nodes)")
+                         "composite (pf.match_amg_to_nodes). 'area' has no cross-node "
+                         "foreign exclusion, so a fused blob can match two different "
+                         "cells and inflate own_coverage; prefer 'metric' when the match "
+                         "itself needs to be trusted")
     ap.add_argument("--amg-params", default=None,
                     help="amg only: JSON object overriding DEFAULT_AMG_PARAMS key-by-key, "
                          "e.g. '{\"points_per_side\": 32}'")
