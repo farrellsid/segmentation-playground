@@ -54,3 +54,31 @@ def test_watershed_labels_are_disjoint_and_seeded():
     union = a | b
     n1, n2 = int((lab == 1).sum()), int((lab == 2).sum())
     assert n1 + n2 == int(union.sum())
+
+
+def _disk(cx, cy, r, shape=(40, 40)):
+    yy, xx = np.ogrid[:shape[0], :shape[1]]
+    return ((xx - cx) ** 2 + (yy - cy) ** 2) <= r * r
+
+
+def test_select_by_metric_prefers_node_containing_membrane_aligned():
+    node = (20, 20)
+    small = _disk(20, 20, 4)          # contains node, tight
+    big = _disk(20, 20, 15)           # contains node, but engulfs a foreign node
+    off = _disk(35, 35, 4)            # does not contain node
+    mem = np.zeros((40, 40), np.float32)
+    # membrane ridge on the small disk's rim -> high boundary_on_membrane for `small`
+    from sam2_utils.perframe import _rim
+    mem[_rim(small)] = 1.0
+    idx = pf.select_by_metric([off, big, small], node, foreign_xy=[(20, 30)], membrane_map=mem)
+    assert idx == 2                   # `small`: contains node, no foreign, best boundary
+
+
+def test_match_amg_assigns_nodes_and_keeps_leftover():
+    node_index = [(10, 10, "AVAL", "a"), (30, 30, "AVAR", "b")]
+    m_a = _disk(10, 10, 5); m_b = _disk(30, 30, 5); junk = _disk(20, 5, 3)
+    mem = np.zeros((40, 40), np.float32)
+    labels, leftover = pf.match_amg_to_nodes([junk, m_a, m_b], node_index, mem)
+    assert set(labels) == {"AVAL", "AVAR"}
+    assert int(labels["AVAL"].sum()) == int(m_a.sum())
+    assert len(leftover) == 1 and int(leftover[0].sum()) == int(junk.sum())
