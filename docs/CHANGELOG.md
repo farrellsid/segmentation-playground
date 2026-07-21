@@ -148,8 +148,18 @@ default pipeline behavior changed.
   tier-2 overrides turn negatives on for the crop pass.
 - **Built as three TDD tasks via subagents** (the guard, the seed overrides, the presets), then this
   documentation pass. Tests and ruff stayed green throughout.
-- **Deferred to the CCDB batch.** The A/B against the guard-off / bundle-off trees on `eval.merge_metric`
-  is not run yet; the Phase-1 exit decision (close out Phase 1 or iterate further) waits on it.
+- **CCDB A/B verdict (2026-07-21): per-slice + guard graduates, the genfirst bundle is dropped.** The
+  three presets ran on Narval and were scored on `eval.merge_metric` (membrane included) over the
+  629-chain subset. The blow-up guard cut per-slice's gross tail (`total_foreign`) by 73%: 17,481 to
+  4,776 for `perslice_only`, 28,769 to 7,702 for `perslice`, with dropout still near 0. `perslice_only
+  + guard` (no generous) beats the `tier2_s1forced_neg` baseline on foreign-frame-rate (0.109 vs 0.321),
+  dropout (0.001 vs 0.130), and mild-bleed (0.016 vs 0.029); its residual tail (4,776) sits near the
+  baseline's 3,570, and its only weak column is underfill (0.616 vs 0.483, the cost of tight masks).
+  Generous still hurts (`perslice_only + guard` beats `perslice + guard`, 0.109 / 4,776 vs 0.182 /
+  7,702). `genfirst_negcrop` ties the baseline (foreign 0.328, dropout 0.114, total_foreign 3,583) at
+  about 2.5x the compute, so it is rejected. Phase-1 exit decision: per-slice re-seeding plus the
+  blow-up guard, without generous, is the leading candidate; the residual underfill points to
+  grow-to-membrane (Phase-2 item 2c) as the next lever.
 
 ---
 

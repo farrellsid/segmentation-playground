@@ -451,18 +451,22 @@ merge-metric**, scored against our own CATMAID skeletons, GT-free:
   hard-reject any candidate above the max-area cap (SAM2's largest is often the whole frame), with
   resolution-aware leeway. No negative point in the nucleus, that would exclude it. Same spec as above.
   *(§4.5)*
-- **Close-out levers, landed, awaiting their A/B.** Two more fixes on top of the two above, both
-  gated off by default: a per-slice blow-up guard that caps the gross per-slice tail (median-area-factor
-  cap, nearest-accepted-neighbour fallback, guarded frames flagged for review), and a generous-first,
+- **Close-out levers, landed and measured.** Two more fixes on top of the two above, both gated off by
+  default: a per-slice blow-up guard that caps the gross per-slice tail (median-area-factor cap,
+  nearest-accepted-neighbour fallback, guarded frames flagged for review), and a generous-first,
   negatives-in-crop bundle that sizes the tier-2 crop from a generous first pass, then turns negatives on
   once inside the crop. Shipped as three CCDB presets, `original_perslice_only_guard`,
   `original_perslice_guard`, `original_genfirst_negcrop`. Spec:
   `docs/superpowers/specs/2026-07-17-phase1-blowup-guard-and-genfirst-negcrop-design.md`. *(§4.3, §4.5)*
 
-*Gate:* merge rate (foreign-node containment) down vs the tier2_s1forced_neg baseline, dropout not up.
-Whether Phase 1 is done or needs another round hinges on the CCDB A/B of these three close-out presets
-against their guard-off / bundle-off counterparts; that comparison, not this writeup, is what decides
-the move to Phase 2.
+*Gate (resolved 2026-07-21, Phase 1 closed):* the CCDB A/B settled it. The blow-up guard cut per-slice's
+gross tail 73% (`total_foreign` 17,481 to 4,776 for `perslice_only`) with dropout still near 0, and
+`perslice_only + guard` (no generous) beats the `tier2_s1forced_neg` baseline on foreign-frame-rate
+(0.109 vs 0.321), dropout, and mild-bleed. `genfirst_negcrop` tied the baseline at about 2.5x the
+compute (rejected), and generous still adds bleed (rejected). Decision: **per-slice re-seeding plus the
+blow-up guard, without generous, is the leading candidate.** Its residual underfill (0.616 vs the
+baseline's 0.483) is the honest cost of tight masks and points to Phase-2 item 2c (grow-to-membrane) as
+the next lever. Full numbers in the CHANGELOG (2026-07-20 entry).
 
 **Phase 2, the per-frame membrane / boundary map (supervisor's near-term request; the lab's own method).**
 
