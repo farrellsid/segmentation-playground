@@ -11,6 +11,7 @@ trusting the README snippets.
 """
 from __future__ import annotations
 
+import gc
 import inspect
 import traceback
 
@@ -18,6 +19,22 @@ import numpy as np
 import torch
 
 CKPT = r"F:\sam3\huggingface"
+
+
+def _free_gpu():
+    """Best-effort GPU memory reclaim between probe stages.
+
+    Each stage below loads its own SAM3 model instance (none are shared, on
+    purpose, so each smoke is a clean end-to-end construction); on a 6GB card
+    the four sequential loads (image tracker x2, video tracker x2) are tight
+    enough that a stale reference from a prior stage can push a later `.to(cuda)`
+    over budget. `gc.collect()` drops any Python-side refs to the previous
+    stage's model/processor before `empty_cache()` returns their CUDA blocks
+    to the allocator.
+    """
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def banner(msg):
@@ -186,6 +203,72 @@ def probe_image_predictor_adapter():
     banner("IMAGE adapter smoke DONE")
 
 
+def probe_video_predictor_adapter():
+    """Smoke-test Sam3VideoPredictor through pipeline.propagate.propagate.
+
+    Writes ~10 synthetic 128x128 RGB frames to a temp dir (no data dependency: this
+    checks the adapter's plumbing, not mask quality, same spirit as the image-adapter
+    smoke above), seeds a box at the MIDDLE frame, and asserts propagate() ran BOTH
+    directions from that anchor (frames below AND above the anchor appear in
+    video_segments). Confirms the anchor-frame default (SAM3 doesn't auto-infer
+    start_frame_idx, see docs/explanation/sam3-bakeoff-findings.md) actually lets
+    PropagationSession.run_bidirectional's two no-start_frame_idx calls work.
+    """
+    banner("VIDEO adapter smoke (Sam3VideoPredictor via pipeline.propagate.propagate)")
+    try:
+        import shutil
+        import sys
+        import pathlib
+        import tempfile
+
+        import cv2
+
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+        from pipeline import Prompts, propagate
+        from sam2_utils.sam3_backend import Sam3VideoPredictor
+
+        n_frames = 10
+        anchor = 5
+        tmpdir = tempfile.mkdtemp(prefix="sam3_probe_video_")
+        try:
+            for i in range(n_frames):
+                frame = (np.random.rand(128, 128, 3) * 255).astype("uint8")
+                cv2.imwrite(str(pathlib.Path(tmpdir) / f"{i:05d}.jpg"), frame)
+
+            adapter = Sam3VideoPredictor(CKPT)
+            prompts = Prompts(
+                points_sam=np.empty((0, 2)),
+                labels=np.empty((0,), dtype=int),
+                box_sam=np.array([30.0, 30.0, 90.0, 90.0]),
+            )
+            video_segments, frame_conf, pred_iou = propagate(
+                adapter, tmpdir, prompts, anchor_frame_idx=anchor, obj_id=1,
+                seed_points=False, seed_box=True)
+
+            assert isinstance(video_segments, dict) and len(video_segments) > 1, (
+                f"expected a multi-frame video_segments dict, got {video_segments!r}")
+            below = [fi for fi in video_segments if fi < anchor]
+            above = [fi for fi in video_segments if fi > anchor]
+            assert below, f"no frames BELOW the anchor in {sorted(video_segments)}"
+            assert above, f"no frames ABOVE the anchor in {sorted(video_segments)}"
+            for fi, segs in video_segments.items():
+                assert isinstance(segs, dict) and 1 in segs, f"frame {fi} missing obj 1: {segs}"
+                m = segs[1]
+                assert m.dtype == bool and m.shape == (128, 128), (
+                    f"frame {fi} mask shape {m.shape} dtype {m.dtype}")
+            print(f"OK: {len(video_segments)} frames, "
+                  f"below-anchor={sorted(below)} above-anchor={sorted(above)}")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+    except Exception:
+        traceback.print_exc()
+    banner("VIDEO adapter smoke DONE")
+
+
 if __name__ == "__main__":
     main()
+    _free_gpu()
     probe_image_predictor_adapter()
+    _free_gpu()
+    probe_video_predictor_adapter()
