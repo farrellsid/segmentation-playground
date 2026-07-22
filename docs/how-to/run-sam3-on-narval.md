@@ -71,6 +71,12 @@ pip install --no-index torch            # the Alliance wheelhouse build: prebuil
                                          # CUDA-matched to the modules above, no torch.org URL needed
 pip install transformers>=5.13          # not in the wheelhouse, pulled from PyPI, login node only
                                          # (compute nodes are offline, same rule as the SAM2 install)
+# batch.py's own non-module deps: requests (sam2_utils.catmaid, imported at package init, so a
+# missing it fails every batch.py/make_chunks call immediately), plus skimage and h5py the
+# pipeline uses. numpy/scipy/pandas/matplotlib/Pillow/cv2/psutil come from the modules above,
+# not the venv, so they are NOT listed here. GUI deps (PyQt5/napari/magicgui) are not needed
+# for the headless batch and are skipped.
+pip install --no-index requests scikit-image h5py torchvision
 ```
 
 `run_array.sh` activates `${VENV:-$HOME/sam2env}`, so every SAM3 `sbatch` below passes
