@@ -14,6 +14,9 @@
 # Submit:
 #   cd ~/projects/def-mzhen/fsid/segmentation-playground
 #   sbatch cluster/run_array.sh
+#
+# Optional SAM3 A/B (unset means an unchanged SAM2 run, same as before these existed):
+#   sbatch --export=ALL,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,OUT_ROOT=/scratch/$USER/target_shards_sam3 cluster/run_array.sh
 
 #SBATCH --job-name=sam2-target
 #SBATCH --account=def-mzhen        # bare account; Slurm auto-routes to _gpu via --gres
@@ -51,14 +54,33 @@ if [ -z "$NEURONS" ]; then
 fi
 echo "[run_array] task $SLURM_ARRAY_TASK_ID neurons: $NEURONS"
 
+# --- optional backend pass-through --------------------------------------------
+# Unset, these reproduce the SAM2 baseline run exactly: SAM_BACKEND defaults to
+# sam2 (explicit, but the same effective value the preset already sets), and
+# SAM3_CKPT/OUT_ROOT stay empty so neither extra flag is appended below.
+SAM_BACKEND=${SAM_BACKEND:-sam2}
+SAM3_CKPT=${SAM3_CKPT:-}
+OUT_ROOT=${OUT_ROOT:-}
+
+BACKEND_ARGS=(--backend "$SAM_BACKEND")
+if [ -n "$SAM3_CKPT" ]; then
+    BACKEND_ARGS+=(--sam3-checkpoint "$SAM3_CKPT")
+fi
+if [ -n "$OUT_ROOT" ]; then
+    BACKEND_ARGS+=(--output-root "$OUT_ROOT")
+fi
+
 # --- run ---------------------------------------------------------------------
 # Frame cache goes to node-local $SLURM_TMPDIR (fast, private, auto-cleaned) so
 # concurrent tasks do not contend on the network filesystem regenerating JPEGs.
+# Any --output-root in BACKEND_ARGS comes after the default below, so argparse's
+# last-wins store overrides it only when OUT_ROOT was actually set.
 python batch.py \
     --preset original \
     --neurons $NEURONS \
     --output-root "$SHARD_ROOT/chunk_${SLURM_ARRAY_TASK_ID}" \
-    --frames-root "$SLURM_TMPDIR/frames"
+    --frames-root "$SLURM_TMPDIR/frames" \
+    "${BACKEND_ARGS[@]}"
 
 echo "[run_array] task $SLURM_ARRAY_TASK_ID done"
 
