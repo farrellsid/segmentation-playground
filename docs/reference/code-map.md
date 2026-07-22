@@ -14,7 +14,7 @@ as few files as possible.
 | The default knobs for a named run (which worm, model, paths, tier-2) | `sam2_utils/presets.py` | `--preset original` (target worm) and `--preset eval` (cross-worm GT). Any CLI flag overrides. |
 | A filesystem path, model checkpoint, affine constant, or CATMAID setting | `sam2_utils/config.py` | Central constants. Import-light: no torch or cv2 at module load. |
 | Any coordinate transform (`_tif` / `_sam` / `_crop` / `_pcrop` / `_cm`, z maps, nm to px, crop windows) | `sam2_utils/alignment.py` | The single home for space conversions. Do not write `/ scale` inline anywhere else. |
-| How the headless batch runs, resumes, or builds the triage queue | `batch.py` | The headless driver. Builds predictors once, runs every chain, writes the manifest. |
+| How the headless batch runs, resumes, or builds the triage queue | `batch.py` | The headless driver. Builds predictors once, runs every chain, writes the manifest. `--backend {sam2,sam3}` (default `sam2`, unchanged) plus `--sam3-checkpoint PATH` route through `build_predictors(cfg)` to the SAM3 adapters instead of `setup.build_predictor`; see the sam3_backend.py row below and [../how-to/run-sam3-on-narval.md](../how-to/run-sam3-on-narval.md) for the cluster run. |
 | The review GUI (layers, keys, correction tools) | `gui.py` | The napari driver, per-CHAIN paradigm. Composes `review`, `review_queue`, `labels`, and `pipeline`. |
 | The neuron-level review GUI (whole neuron on one crop canvas) | `gui_neuron.py` | The second paradigm: opens a whole neuron, branches as labels in one Labels layer on a per-neuron `_ncrop` crop. Imports shared pieces from `gui.py`. See the 2026-06-23 spec/plan under `docs/superpowers/`. |
 | The work queue or review-status ledger the GUI reads and writes | `sam2_utils/review_queue.py` | Owns `_review.csv`, separate from the batch's `_manifest.csv`. |
@@ -28,14 +28,14 @@ as few files as possible.
 | Ground-truth evaluation (region IoU, VOI, ARAND, ERL, registration) | `eval/` | `score_batch.py`, `metrics.py`, `erl.py`, `registration.py`, `gt_dataset.py`. The GT-free target-worm bleed / dropout scorer is `merge_metric.py`: it owns `MembraneSource` (the EM-patch loader that feeds the membrane pass) and the membrane-aware scoring, on top of the Phase-0 foreign-skeleton-node containment. |
 | The per-pixel membrane signal and its detector primitives (bleed/underfill detection against the raw EM) | `sam2_utils/membrane.py` | `membrane_map` (v1 dark-ridge filter, swappable interface for a trained model later) plus the pure detector scalars `spanning_membrane`, `boundary_on_membrane`, `underfill_fraction`. Library-side (not `eval/`) because the deferred grow-to-membrane refinement and non-overlap arbitration reuse this same signal from `pipeline/`. See [ADR 0016](../adr/0016-membrane-map-border-to-border-bleed-detection.md). |
 | The single-chain regression run | `run_aval.py` | Runs one chain end to end. The worked example and reproduction harness. |
-| Running the batch in parallel on the Narval cluster | `cluster/` | Slurm array over `batch.py`: `make_chunks.py` (neurons to chunks), `run_array.sh` (the array job), `merge_shards.py` + `run_merge.sh` (stitch shards). See [../how-to/run-on-narval.md](../how-to/run-on-narval.md). |
+| Running the batch in parallel on the Narval cluster | `cluster/` | Slurm array over `batch.py`: `make_chunks.py` (neurons to chunks), `run_array.sh` (the array job, forwards `PRESET`/`SAM_BACKEND`/`SAM3_CKPT`/`OUT_ROOT` so it can drive either backend), `merge_shards.py` + `run_merge.sh` (stitch shards, SAM2's default sharded path only). See [../how-to/run-on-narval.md](../how-to/run-on-narval.md) and, for the SAM3 whole-set comparison, [../how-to/run-sam3-on-narval.md](../how-to/run-sam3-on-narval.md). |
 
 ## The four entry points
 
 | Run this | What it does |
 |----------|--------------|
 | `py -3 run_aval.py` | One chain, headless. The smallest end-to-end run. Start here. |
-| `py -3 batch.py --preset original --neurons AVAL` | The headless batch over selected chains, with resume. |
+| `py -3 batch.py --preset original --neurons AVAL` | The headless batch over selected chains, with resume. Add `--backend sam3 --sam3-checkpoint PATH` to run the same chains through SAM3 instead of SAM2 (default `sam2`, unchanged). |
 | `py -3 gui.py` | The napari review and correction GUI on flagged chains. |
 | `py -3 -m eval.score_batch --preset eval` | Score predictions against the cross-worm ground truth. |
 

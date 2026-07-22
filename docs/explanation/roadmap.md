@@ -558,6 +558,15 @@ Mapped to the phases above. DONE / READY / TODO.
    the supervisor conversation about reusing the prior lab model, grow-to-membrane refinement (2c),
    and wiring 2d into the main composite's aggregation step.
 7. **Boundary-accurate benchmark + mask-decoder finetune / FGNet head** (Phase 3). TODO.
+8. **SAM3 whole-set cluster comparison** (parallel track, not a numbered phase). The 2-chain
+   SAM3-vs-SAM2 bake-off (2026-07-21) found SAM 3 per-slice leads on foreign-node bleed and
+   dropout; its own next-step note was a broader run before productionizing. The plumbing for
+   that now exists: a `--backend sam3` switch on `batch.py`, `cluster/run_array.sh` wired to
+   forward it, and a Narval runbook (`docs/how-to/run-sam3-on-narval.md`); see the CHANGELOG's
+   same-day entry for the detail. TODO, still queued: running SAM3 per-slice and propagation
+   over the whole target-worm set on Narval and scoring both with `eval.merge_metric` against
+   the existing SAM2 baselines, to confirm the 2-chain win holds at scale. Human-executed,
+   Duo-MFA blocks a headless submission.
 
 `bigimg` (SAM2 `image_size` 2048) stays retired: it crashes off-distribution and its output would be
 unvalidated; the resolution goal is served by cropping / tiling.

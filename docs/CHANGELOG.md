@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-21, SAM3 Phase 2: `--backend sam3` switch, cluster wiring, and the Narval runbook](#r-2026-07-21-sam3-cluster)
 - [2026-07-21, SAM3 vs SAM2 bake-off: HF-transformers PVS adapters + 2x2 comparison](#r-2026-07-21-sam3)
 - [2026-07-21, per-frame segmentation: two approaches, an AMG tuner, membrane-aware arbitration](#r-2026-07-21)
 - [2026-07-20, Phase 1 close-out: blow-up guard + generous-first/negatives-in-crop bundle](#r-2026-07-20)
@@ -35,6 +36,55 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-21-sam3-cluster"></a>
+## 2026-07-21, SAM3 Phase 2: `--backend sam3` switch, cluster wiring, and the Narval runbook
+
+The bake-off below (same day, read that entry first) left one open question: does SAM3's
+2-chain win hold over the whole target-worm set. This round builds the plumbing to answer it,
+without touching SAM2's default behavior anywhere. Spec
+`docs/superpowers/specs/2026-07-21-sam3-cluster-whole-set-eval-design.md`, plan
+`docs/superpowers/plans/2026-07-21-sam3-cluster-whole-set-eval.md`.
+
+**What landed.** `batch.py` gained a `build_predictors(cfg)` helper and two `PipelineConfig`
+fields, `backend: str = "sam2"` and `sam3_checkpoint: Optional[str] = None`, plus `--backend
+{sam2,sam3}` and `--sam3-checkpoint PATH` on the CLI. `sam2` stays the default and is
+byte-identical to before, the routing test asserts it, and a full-suite run confirms no prior
+test changed. `cluster/run_array.sh` forwards `PRESET`, `SAM_BACKEND`, `SAM3_CKPT`, and
+`OUT_ROOT` from the `sbatch --export` line through to `batch.py`, so a SAM3 run needs no file
+edit, only different env vars on the submit line. A local single-chain `--backend sam3
+batch.py` run confirmed the on-disk masks save and score through `eval.merge_metric` exactly
+like SAM2's (the mask-format parity gate the plan called for before any cluster work), after one
+small fix: `Sam3ImagePredictor.reset_predictor` was missing, and `batch.py`'s per-chain path
+calls it between chains.
+
+**The two whole-set runs, matched to the Phase-1 SAM2 baselines for a clean model swap:**
+
+```
+sbatch --export=ALL,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,SAM3_CKPT=<ckpt>,OUT_ROOT=<scratch>/target_perslice_only_guard_sam3 cluster/run_array.sh
+sbatch --export=ALL,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=<ckpt>,OUT_ROOT=<scratch>/target_tier2_s1forced_neg_sam3 cluster/run_array.sh
+```
+
+**The runbook.** `docs/how-to/run-sam3-on-narval.md` is the SAM3-specific delta on top of the
+general `run-on-narval.md`, checkpoint upload, a fresh venv (`module load python`, `pip install
+--no-index torch`, `pip install transformers>=5.13`, recorded once it works) with an Apptainer
+container as the documented fallback built from the known-good local stack, smoke one chunk
+(`--array=0-0`) before sizing the full array, then merge/download/score. Because `OUT_ROOT`
+makes every array task write straight into one shared tree instead of per-chunk shards, the
+runbook flags that `merge_shards.py` does not apply to these two runs (nothing to merge) and
+that the shared tree's top-level `_manifest.csv` can go stale under concurrent writes, though
+neither the masks nor the `eval.merge_metric` score depend on it.
+
+**Honest caveats, carried into the runbook.** SAM3 is roughly 3 to 4x slower per cell than SAM2
+(the bake-off's own timing, so the smoke chunk gates the allocation ask), `pred_iou` is NaN for
+SAM3 propagation (inert for the mask-only merge metric, but treat it as disabled for anything
+else that reads it), and SAM3 must write to its own `OUT_ROOT`, never a SAM2 baseline tree: no
+code enforces that beyond the path you choose.
+
+**Not done here.** The actual whole-set numbers. That is the Narval run itself, human-executed
+because Duo-MFA blocks headless login, tracked as the next step below.
 
 ---
 
