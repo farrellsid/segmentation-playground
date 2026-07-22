@@ -52,7 +52,7 @@ without touching SAM2's default behavior anywhere. Spec
 fields, `backend: str = "sam2"` and `sam3_checkpoint: Optional[str] = None`, plus `--backend
 {sam2,sam3}` and `--sam3-checkpoint PATH` on the CLI. `sam2` stays the default and is
 byte-identical to before, the routing test asserts it, and a full-suite run confirms no prior
-test changed. `cluster/run_array.sh` forwards `PRESET`, `SAM_BACKEND`, `SAM3_CKPT`, and
+test changed. `cluster/run_array.sh` forwards `VENV`, `PRESET`, `SAM_BACKEND`, `SAM3_CKPT`, and
 `OUT_ROOT` from the `sbatch --export` line through to `batch.py`, so a SAM3 run needs no file
 edit, only different env vars on the submit line. A local single-chain `--backend sam3
 batch.py` run confirmed the on-disk masks save and score through `eval.merge_metric` exactly
@@ -63,8 +63,8 @@ calls it between chains.
 **The two whole-set runs, matched to the Phase-1 SAM2 baselines for a clean model swap:**
 
 ```
-sbatch --export=ALL,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,SAM3_CKPT=<ckpt>,OUT_ROOT=<scratch>/target_perslice_only_guard_sam3 cluster/run_array.sh
-sbatch --export=ALL,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=<ckpt>,OUT_ROOT=<scratch>/target_tier2_s1forced_neg_sam3 cluster/run_array.sh
+sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,SAM3_CKPT=<ckpt>,OUT_ROOT=<scratch>/target_perslice_only_guard_sam3 cluster/run_array.sh
+sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=<ckpt>,OUT_ROOT=<scratch>/target_tier2_s1forced_neg_sam3 cluster/run_array.sh
 ```
 
 **The runbook.** `docs/how-to/run-sam3-on-narval.md` is the SAM3-specific delta on top of the

@@ -17,8 +17,8 @@
 #
 # Optional SAM3 A/B (unset means an unchanged SAM2 run, same as before these existed).
 # PRESET selects the config; the two SAM3 whole-set runs are:
-#   sbatch --export=ALL,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,OUT_ROOT=/scratch/$USER/target_perslice_only_guard_sam3 cluster/run_array.sh
-#   sbatch --export=ALL,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3 cluster/run_array.sh
+#   sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,OUT_ROOT=/scratch/$USER/target_perslice_only_guard_sam3 cluster/run_array.sh
+#   sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3 cluster/run_array.sh
 
 #SBATCH --job-name=sam2-target
 #SBATCH --account=def-mzhen        # bare account; Slurm auto-routes to _gpu via --gres
@@ -45,7 +45,10 @@ CHUNKS=$REPO/cluster/neuron_chunks.txt
 # psutil (they live in modules, not the venv), so load them BEFORE activating the venv.
 module load StdEnv/2023 gcc/12.3 python/3.11 cuda/12.2 cudnn/9.2.1.18 \
     opencv/4.13.0 scipy-stack/2026a ipykernel/2026a
-source $HOME/sam2env/bin/activate
+# VENV is configurable so the SAM3 A/B activates ~/sam3env (transformers>=5.13) without
+# touching the SAM2 ~/sam2env. Unset defaults to sam2env, so the baseline run is unchanged.
+VENV=${VENV:-$HOME/sam2env}
+source "$VENV/bin/activate"
 
 cd "$REPO"
 mkdir -p cluster/logs "$SHARD_ROOT"

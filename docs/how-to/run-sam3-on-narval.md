@@ -73,6 +73,10 @@ pip install transformers>=5.13          # not in the wheelhouse, pulled from PyP
                                          # (compute nodes are offline, same rule as the SAM2 install)
 ```
 
+`run_array.sh` activates `${VENV:-$HOME/sam2env}`, so every SAM3 `sbatch` below passes
+`VENV=$HOME/sam3env` in its `--export` list to select this environment. A SAM2 run leaves `VENV`
+unset and activates `~/sam2env` exactly as before.
+
 **Record what worked.** Before submitting the smoke chunk, capture the exact combination that
 imported and ran cleanly, `module list` plus `pip freeze | grep -Ei
 'torch|transformers|tokenizers|safetensors|huggingface'`, so a future re-provision (a new
@@ -120,7 +124,7 @@ py -3 cluster/make_chunks.py       # writes cluster/neuron_chunks.txt, prints th
 
 ```bash
 sbatch --array=0-0 \
-  --export=ALL,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,\
+  --export=ALL,VENV=$HOME/sam3env,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,\
 SAM3_CKPT=$HOME/projects/def-mzhen/<user>/sam3_checkpoint,\
 OUT_ROOT=/scratch/$USER/target_perslice_only_guard_sam3_smoke \
   cluster/run_array.sh
@@ -144,13 +148,13 @@ Once the smoke chunk confirms the environment and gives a walltime estimate, siz
 
 ```bash
 sbatch --array=0-<N-1>%<concurrency> \
-  --export=ALL,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,\
+  --export=ALL,VENV=$HOME/sam3env,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,\
 SAM3_CKPT=$HOME/projects/def-mzhen/<user>/sam3_checkpoint,\
 OUT_ROOT=/scratch/$USER/target_perslice_only_guard_sam3 \
   cluster/run_array.sh
 
 sbatch --array=0-<N-1>%<concurrency> \
-  --export=ALL,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,\
+  --export=ALL,VENV=$HOME/sam3env,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,\
 SAM3_CKPT=$HOME/projects/def-mzhen/<user>/sam3_checkpoint,\
 OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3 \
   cluster/run_array.sh
