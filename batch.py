@@ -653,14 +653,31 @@ def run_batch(
 # Bootstrap  (mirror run_aval.py's setup, then loop instead of single-chain)
 # =============================================================================
 
+def build_predictors(cfg: PipelineConfig):
+    """Build (image_predictor, video_predictor) for the configured backend.
+
+    sam2 (default): the existing setup.build_predictor path, byte-identical to before.
+    sam3: the HuggingFace SAM3 PVS adapters, which present the SAM2 predictor interface
+    so run_chain / per-slice / propagation / save_masks all run unchanged.
+    """
+    if cfg.backend == "sam3":
+        from sam2_utils import sam3_backend
+        ckpt = cfg.sam3_checkpoint or sam3_backend.DEFAULT_CHECKPOINT_DIR
+        return sam3_backend.Sam3ImagePredictor(ckpt), sam3_backend.Sam3VideoPredictor(ckpt)
+    if cfg.backend != "sam2":
+        raise ValueError(f"unknown backend {cfg.backend!r}; expected 'sam2' or 'sam3'")
+    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image",
+                                               image_size=cfg.image_size)
+    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video",
+                                               image_size=cfg.image_size)
+    return image_predictor, video_predictor
+
+
 def _build_session(cfg: PipelineConfig) -> Session:
     """One-time session setup. Lift this almost verbatim from run_aval.py."""
     # Predictors built ONCE, above the driver (cfg.model_size consumed here, not
     # inside run_chain).
-    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image",
-                                                image_size=cfg.image_size)
-    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video",
-                                               image_size=cfg.image_size)
+    image_predictor, video_predictor = build_predictors(cfg)
     diagnostics.snapshot("after model load")
 
     # annotate_df: CATMAID pull (or cached CSV), then apply the stack->tif affine.
@@ -692,10 +709,7 @@ def _build_gt_session(cfg: PipelineConfig,
     from eval import gt_dataset
     from sam2_utils.skeletons import normalize_name
 
-    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image",
-                                                image_size=cfg.image_size)
-    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video",
-                                               image_size=cfg.image_size)
+    image_predictor, video_predictor = build_predictors(cfg)
     diagnostics.snapshot("after model load")
 
     annotate_df, chains, frame_store = gt_dataset.build_gt_session_inputs(
@@ -785,6 +799,10 @@ def main() -> None:
     ap.add_argument("--output-root", type=Path, default=None, help="override the preset output root")
     ap.add_argument("--frames-root", type=Path, default=None, help="override the preset frames root")
     ap.add_argument("--model-size", default=None, help="override the preset model size")
+    ap.add_argument("--backend", choices=["sam2", "sam3"], default=None,
+                    help="segmentation backend (default: the preset's, which is sam2)")
+    ap.add_argument("--sam3-checkpoint", default=None,
+                    help="SAM3 HuggingFace checkpoint dir (default: sam3_backend.DEFAULT_CHECKPOINT_DIR)")
     ap.add_argument("--gif-mode", choices=["off", "flagged", "all"], default=None,
                     help="override the preset gif mode")
     ap.add_argument("--no-tier2", action="store_true",
@@ -801,6 +819,10 @@ def main() -> None:
         pipe["model_size"] = args.model_size
     if args.postprocess is not None:
         pipe["postprocess_masks"] = args.postprocess
+    if args.backend is not None:
+        pipe["backend"] = args.backend
+    if args.sam3_checkpoint is not None:
+        pipe["sam3_checkpoint"] = args.sam3_checkpoint
     cfg = PipelineConfig(**pipe,
                          output_root=args.output_root or p["output_root"],
                          frames_root=args.frames_root or p["frames_root"])

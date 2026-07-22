@@ -22,6 +22,8 @@ class PipelineConfig:
     drift later.
     """
     # model / resolution
+    backend: str = "sam2"                  # "sam2" (default, unchanged) or "sam3"
+    sam3_checkpoint: Optional[str] = None  # SAM3 HF checkpoint dir; None -> adapter default
     model_size: str = "large"          # tiny / small / base_plus / large; read at predictor-build
     scale: int = 8                     # SAM2 input downscale (1 = full-res)
     save_downscale: int = 8            # on-disk mask downscale; == scale is canonical.
