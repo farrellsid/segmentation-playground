@@ -61,3 +61,19 @@ def test_to_video_prompt_points():
     assert out["obj_ids"] == 2
     assert out["input_points"] == [[[[7.0, 8.0]]]]
     assert out["input_labels"] == [[[1]]]
+
+
+def test_module_import_is_torch_free():
+    """Importing sam2_utils.sam3_backend must NOT pull torch (the adapters import it
+    lazily inside methods). Checked in a fresh interpreter so a torch import already
+    triggered by another test in this process cannot mask a regression."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    code = ("import sys; import sam2_utils.sam3_backend; "
+            "assert 'torch' not in sys.modules, 'torch imported at module load'")
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, cwd=str(repo_root))
+    assert result.returncode == 0, result.stderr

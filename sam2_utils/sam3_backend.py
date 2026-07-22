@@ -58,7 +58,8 @@ def select_image_masks(masks, scores, low_res_logits, multimask_output):
         masks: array of shape (num_masks, H, W) or (H, W)
         scores: array of shape (num_masks,)
         low_res_logits: array of shape (num_masks, h, w) or (h, w)
-        multimask_output: bool, whether to keep all masks
+        multimask_output: accepted for call-site parity with the model call; candidate
+            selection happens upstream in pipeline._select_anchor_mask, so it is inert here
 
     Returns:
         tuple of (masks, scores, logits) with shapes:
@@ -191,7 +192,10 @@ class Sam3VideoPredictor:
             # (hit empirically in the video-adapter smoke) unless cast to float32 first.
             pp = torch.as_tensor(pp).float()             # frame-res logits, (num_objs, num_masks, H, W)
             obj_ids = [int(o) for o in out.object_ids]
-            mask_logits = [pp[i].reshape(H, W) for i in range(len(obj_ids))]
+            # reshape(-1, H, W)[0] takes the single tracking mask per object robustly,
+            # whether post_process returns (num_objs, H, W) or (num_objs, 1, H, W); a
+            # bare reshape(H, W) would raise cryptically if a multimask ever slipped through.
+            mask_logits = [pp[i].reshape(-1, H, W)[0] for i in range(len(obj_ids))]
             yield int(out.frame_idx), obj_ids, mask_logits
 
 
