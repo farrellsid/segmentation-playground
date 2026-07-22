@@ -67,8 +67,13 @@ module load StdEnv/2023 gcc/12.3 python/3.11 cuda/12.2 cudnn/9.2.1.18 \
 
 virtualenv --no-download ~/sam3env && source ~/sam3env/bin/activate
 pip install --no-index --upgrade pip
-pip install --no-index torch            # the Alliance wheelhouse build: prebuilt and already
-                                         # CUDA-matched to the modules above, no torch.org URL needed
+pip install --no-index torch==2.12.1+computecanada torchvision==0.27.1+computecanada
+# PIN these versions. They are what the working sam2env uses and what actually sees the GPU
+# with the cuda/12.2 module above (check with `~/sam2env/bin/pip freeze | grep torch`). A bare
+# `pip install --no-index torch` pulls a newer build (torch 2.13.0+computecanada) whose CUDA
+# does NOT match cuda/12.2, so `torch.cuda.is_available()` returns False and SAM3 silently runs
+# on CPU: about 50s per image-mode call and `peak_vram_gb` near 0 in the timing CSV, unusably slow.
+# Verify on a GPU node (salloc --gres=gpu:1) with: python -c "import torch; print(torch.cuda.is_available())"
 pip install transformers>=5.13          # not in the wheelhouse, pulled from PyPI, login node only
                                          # (compute nodes are offline, same rule as the SAM2 install)
 # batch.py's own non-module deps: requests (sam2_utils.catmaid, imported at package init, so a
@@ -76,7 +81,7 @@ pip install transformers>=5.13          # not in the wheelhouse, pulled from PyP
 # pipeline uses. numpy/scipy/pandas/matplotlib/Pillow/cv2/psutil come from the modules above,
 # not the venv, so they are NOT listed here. GUI deps (PyQt5/napari/magicgui) are not needed
 # for the headless batch and are skipped.
-pip install --no-index requests scikit-image h5py torchvision
+pip install --no-index requests scikit-image h5py
 ```
 
 `run_array.sh` activates `${VENV:-$HOME/sam2env}`, so every SAM3 `sbatch` below passes
