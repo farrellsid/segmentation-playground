@@ -161,35 +161,25 @@ picks the matching SAM2 baseline config (`original_perslice_only_guard` for per-
 `original_tier2_s1forced_neg` for propagation) so the only thing that changes between a SAM3
 tree and its SAM2 counterpart is the backend.
 
-**Important difference from the default (SAM2) array flow.** When `OUT_ROOT` is set,
-`run_array.sh` passes it as a second `--output-root`, which wins over the default
-`chunk_<i>` shard path (argparse's usual last-flag-wins). That means every array task in a SAM3
-submission writes directly into the same `$OUT_ROOT`, not into its own `chunk_<i>/` shard: there
-is no `chunk_*` layout to merge. Concretely, this changes two things from the general runbook:
+**Merging and downloading (same shape as the SAM2 flow).** `OUT_ROOT` is the SHARD ROOT:
+`run_array.sh` points its `SHARD_ROOT` at `OUT_ROOT`, so each array task writes its own
+`$OUT_ROOT/chunk_<i>/` shard, exactly like the default SAM2 run and with no shared-tree
+contention (no two tasks touch the same file or manifest). After the array finishes, merge and
+download each SAM3 variant with the existing tools:
 
-- **Skip `cluster/merge_shards.py` / `cluster/run_merge.sh` for these two runs.** They stitch
-  `chunk_*/` shards together, and there are none here (`chunk_<i>` only exists for the default,
-  no-`OUT_ROOT` path). `$OUT_ROOT` already holds the full merged tree once the array finishes,
-  since each task's neurons are disjoint by construction (`make_chunks.py` guarantees it).
-- **`cluster/stage_download.sh` will not pick these trees up as written**, it globs
-  `/scratch/$USER/*_merged` and tars with `-h` to dereference the shard symlinks the merge step
-  creates. Neither applies here (no `_merged` suffix, no symlinks to begin with, since nothing
-  was merged). Pull `$OUT_ROOT` directly instead, plain `rsync -avz` or `scp -r`, or a manual
-  `tar -czf <name>.tar.gz -C /scratch/$USER <name>` if you want one file for the transfer.
+- **Merge.** `cluster/merge_shards.py` is already parameterized, so call it directly (rather than
+  `run_merge.sh`, which hardcodes the SAM2 paths):
 
-**Known cost of that same shortcut.** Because every task in the array writes to the same
-`$OUT_ROOT`, the top-level `_manifest.csv` / `_timing.csv` there can end up stale: each task
-loads the manifest once at its own start and rewrites the whole file after every chain it
-completes, so a task that has been running the longest can overwrite rows that a faster,
-later-starting task already finished writing (last full-file write wins). This does not touch
-the actual per-chain mask files (each task only ever writes its own disjoint neurons' dirs), and
-it does not affect the score in the next section: `eval.merge_metric` reads the `<neuron>/
-chain_*/` directories directly, never the manifest. It only risks undercounting rows if you
-later read `_manifest.csv`/`_triage.csv` directly, or feed the tree to `eval.retro_eval`'s
-compute/QC columns. If you need a trustworthy manifest after the fact, resubmit the same
-`batch.py` invocation once more, single-process, over the finished `$OUT_ROOT`, finished chains
-are skipped (`status=done`), and the one pass at the end rewrites a complete, consistent
-manifest and triage with no GPU work redone.
+```bash
+py -3 cluster/merge_shards.py --shard-root /scratch/$USER/target_perslice_only_guard_sam3 \
+    --out /scratch/$USER/target_perslice_only_guard_sam3_merged
+py -3 cluster/merge_shards.py --shard-root /scratch/$USER/target_tier2_s1forced_neg_sam3 \
+    --out /scratch/$USER/target_tier2_s1forced_neg_sam3_merged
+```
+
+- **Download.** `cluster/stage_download.sh` auto-globs `/scratch/$USER/*_merged`, so it picks up
+  both `*_sam3_merged` trees with no edit and tars each (dereferencing the shard symlinks) into
+  `/scratch/$USER/downloads/`. Pull those tarballs with Globus or scp.
 
 ## 5. Score locally
 
@@ -199,9 +189,9 @@ trees, then score all four in one call so the comparison table is generated cons
 ```bash
 py -3 -m eval.merge_metric \
   --root <local>/original_perslice_only_guard \
-  --root <local>/target_perslice_only_guard_sam3 \
+  --root <local>/target_perslice_only_guard_sam3_merged \
   --root <local>/original_tier2_s1forced_neg \
-  --root <local>/target_tier2_s1forced_neg_sam3
+  --root <local>/target_tier2_s1forced_neg_sam3_merged
 ```
 
 This prints one summary line per tree: `foreign_frame_rate`, `dropout_rate`,

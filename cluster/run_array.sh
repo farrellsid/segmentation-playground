@@ -34,7 +34,10 @@ set -euo pipefail
 # --- paths (edit for your account) -------------------------------------------
 REPO=$HOME/projects/def-mzhen/fsid/segmentation-playground
 export SAM2_WORM_PATH=$HOME/projects/def-mzhen/fsid/SAM2_test_NR_raw
-SHARD_ROOT=/scratch/$USER/target_shards
+# Each array task writes its own chunk_<id> shard here, merged afterwards. The SAM3
+# runs set OUT_ROOT to point this at a SAM3-specific root, so shards stay per-task
+# (no shared-tree contention) and merge_shards.py / stage_download.sh work unchanged.
+SHARD_ROOT=${OUT_ROOT:-/scratch/$USER/target_shards}
 CHUNKS=$REPO/cluster/neuron_chunks.txt
 
 # --- environment -------------------------------------------------------------
@@ -59,27 +62,23 @@ echo "[run_array] task $SLURM_ARRAY_TASK_ID neurons: $NEURONS"
 # --- optional backend pass-through --------------------------------------------
 # Unset, these reproduce the SAM2 baseline run exactly: PRESET defaults to original,
 # SAM_BACKEND defaults to sam2 (explicit, the same effective value the preset already
-# sets), and SAM3_CKPT/OUT_ROOT stay empty so neither extra flag is appended below.
+# sets), and SAM3_CKPT stays empty so no extra flag is appended. OUT_ROOT (the shard
+# root) is handled above where SHARD_ROOT is set, so SAM3 shards stay per-task like SAM2.
 # The two SAM3 whole-set runs set PRESET to the matching baseline preset
 # (original_perslice_only_guard for per-slice, original_tier2_s1forced_neg for propagation).
 PRESET=${PRESET:-original}
 SAM_BACKEND=${SAM_BACKEND:-sam2}
 SAM3_CKPT=${SAM3_CKPT:-}
-OUT_ROOT=${OUT_ROOT:-}
 
 BACKEND_ARGS=(--backend "$SAM_BACKEND")
 if [ -n "$SAM3_CKPT" ]; then
     BACKEND_ARGS+=(--sam3-checkpoint "$SAM3_CKPT")
 fi
-if [ -n "$OUT_ROOT" ]; then
-    BACKEND_ARGS+=(--output-root "$OUT_ROOT")
-fi
 
 # --- run ---------------------------------------------------------------------
 # Frame cache goes to node-local $SLURM_TMPDIR (fast, private, auto-cleaned) so
 # concurrent tasks do not contend on the network filesystem regenerating JPEGs.
-# Any --output-root in BACKEND_ARGS comes after the default below, so argparse's
-# last-wins store overrides it only when OUT_ROOT was actually set.
+# Each task writes its own shard: $SHARD_ROOT/chunk_<id> (SHARD_ROOT = OUT_ROOT when set).
 python batch.py \
     --preset "$PRESET" \
     --neurons $NEURONS \
