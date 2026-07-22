@@ -35,6 +35,14 @@ class Sam3ImagePredictor:
         self._image = np.asarray(image_rgb)
         self._hw = (int(self._image.shape[0]), int(self._image.shape[1]))
 
+    def reset_predictor(self) -> None:
+        """Drop the cached image. Parity with SAM2ImagePredictor.reset_predictor, which
+        pipeline.orchestrator.run_chain calls between chains to release the set image. The
+        HF processor takes the image fresh on every predict() call, so there is no encoder
+        state to clear beyond our own cached frame."""
+        self._image = None
+        self._hw = None
+
     def predict(self, point_coords=None, point_labels=None, box=None, multimask_output=False):
         torch = self._torch
         prompts = to_image_prompts(point_coords, point_labels, box)
