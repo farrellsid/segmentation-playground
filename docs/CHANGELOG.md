@@ -71,11 +71,11 @@ sbatch --export=ALL,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKP
 general `run-on-narval.md`, checkpoint upload, a fresh venv (`module load python`, `pip install
 --no-index torch`, `pip install transformers>=5.13`, recorded once it works) with an Apptainer
 container as the documented fallback built from the known-good local stack, smoke one chunk
-(`--array=0-0`) before sizing the full array, then merge/download/score. Because `OUT_ROOT`
-makes every array task write straight into one shared tree instead of per-chunk shards, the
-runbook flags that `merge_shards.py` does not apply to these two runs (nothing to merge) and
-that the shared tree's top-level `_manifest.csv` can go stale under concurrent writes, though
-neither the masks nor the `eval.merge_metric` score depend on it.
+(`--array=0-0`) before sizing the full array, then merge/download/score. `OUT_ROOT` is the shard
+root, so each array task writes its own `chunk_<i>` shard exactly like the SAM2 baseline (no
+shared-tree or manifest contention), and the runbook merges with `merge_shards.py --shard-root
+$OUT_ROOT --out ..._merged` then downloads with `stage_download.sh` (which auto-globs
+`*_merged`), the same flow the SAM2 runs use.
 
 **Honest caveats, carried into the runbook.** SAM3 is roughly 3 to 4x slower per cell than SAM2
 (the bake-off's own timing, so the smoke chunk gates the allocation ask), `pred_iou` is NaN for

@@ -159,7 +159,9 @@ OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3 \
 Both runs read the same uploaded checkpoint and differ only in `PRESET` and `OUT_ROOT`. `PRESET`
 picks the matching SAM2 baseline config (`original_perslice_only_guard` for per-slice,
 `original_tier2_s1forced_neg` for propagation) so the only thing that changes between a SAM3
-tree and its SAM2 counterpart is the backend.
+tree and its SAM2 counterpart is the backend. Always set `SAM3_CKPT` when `SAM_BACKEND=sam3`:
+without it the adapter falls back to its local dev default path, which does not exist on Narval
+and fails at model load.
 
 **Merging and downloading (same shape as the SAM2 flow).** `OUT_ROOT` is the SHARD ROOT:
 `run_array.sh` points its `SHARD_ROOT` at `OUT_ROOT`, so each array task writes its own
