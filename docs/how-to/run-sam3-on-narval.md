@@ -119,7 +119,7 @@ Before sizing or submitting the full array, confirm the environment loads, SAM3 
 checkpoint, and one chunk of chains runs end to end, and measure how long it actually takes:
 
 ```bash
-py -3 cluster/make_chunks.py       # writes cluster/neuron_chunks.txt, prints the chunk count N
+python cluster/make_chunks.py      # writes cluster/neuron_chunks.txt, prints the chunk count N
 ```
 
 ```bash
@@ -177,9 +177,9 @@ download each SAM3 variant with the existing tools:
   `run_merge.sh`, which hardcodes the SAM2 paths):
 
 ```bash
-py -3 cluster/merge_shards.py --shard-root /scratch/$USER/target_perslice_only_guard_sam3 \
+python cluster/merge_shards.py --shard-root /scratch/$USER/target_perslice_only_guard_sam3 \
     --out /scratch/$USER/target_perslice_only_guard_sam3_merged
-py -3 cluster/merge_shards.py --shard-root /scratch/$USER/target_tier2_s1forced_neg_sam3 \
+python cluster/merge_shards.py --shard-root /scratch/$USER/target_tier2_s1forced_neg_sam3 \
     --out /scratch/$USER/target_tier2_s1forced_neg_sam3_merged
 ```
 
