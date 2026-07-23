@@ -38,7 +38,11 @@ export SAM2_WORM_PATH=$HOME/projects/def-mzhen/fsid/SAM2_test_NR_raw
 # runs set OUT_ROOT to point this at a SAM3-specific root, so shards stay per-task
 # (no shared-tree contention) and merge_shards.py / stage_download.sh work unchanged.
 SHARD_ROOT=${OUT_ROOT:-/scratch/$USER/target_shards}
-CHUNKS=$REPO/cluster/neuron_chunks.txt
+# Which neuron chunk file to read. Defaults to the full-run manifest (neuron_chunks.txt,
+# all ALL_NEURONS). Override with CHUNKS=$REPO/cluster/exp_neuron_chunks.txt to restrict a
+# run to the 16 EXP_NEURONS (e.g. the SAM3 A/B and full-res SAM3 rounds), matching the
+# array size to that file's line count, without mutating the full-run manifest.
+CHUNKS=${CHUNKS:-$REPO/cluster/neuron_chunks.txt}
 
 # --- environment -------------------------------------------------------------
 # opencv/scipy-stack/ipykernel supply cv2, numpy/scipy/pandas/matplotlib/Pillow, and

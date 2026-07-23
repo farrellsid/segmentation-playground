@@ -149,57 +149,13 @@ def score_chain(chain_dir: Path, neuron: str,
     return recs
 
 
-def run_scale(root: Path) -> int:
-    """Read resolution.scale from <root>/_run_meta.json, check it matches save_downscale."""
-    meta = json.loads((Path(root) / "_run_meta.json").read_text())
-    res = meta.get("resolution", {})
-    scale = int(res["scale"])
-    sd = int(res.get("save_downscale", scale))
-    if sd != scale:
-        raise ValueError(
-            f"{root}: scale ({scale}) != save_downscale ({sd}); the node grid "
-            "assumption does not hold, extend the scorer before trusting it.")
-    return scale
+def summarize(per: pd.DataFrame) -> dict:
+    """Aggregate a per-frame merge-metric DataFrame into the summary dict.
 
-
-def score_run(root, annotate_df: pd.DataFrame | None = None,
-              radius: int = DEFAULT_RADIUS, membrane_source="auto",
-              tau: float = membrane.DEFAULT_TAU, tol: int = membrane.DEFAULT_TOL,
-              scale: int | None = None
-              ) -> tuple[pd.DataFrame, dict]:
-    """Aggregate per-chain records, write CSV, return per-frame DataFrame and summary.
-
-    The n_chains count includes only chains that produced at least one scored frame;
-    a chain with no frames (empty masks/ directory) is not counted. No CSV is written
-    if the run has zero scored frames.
-
-    scale: the _sam grid scale for this tree. Defaults to reading it from the
-    tree's _run_meta.json (run_scale); pass an explicit value to score a tree
-    that has no _run_meta.json (e.g. a merged shard tree).
-
-    membrane_source: "auto" builds a MembraneSource for the run scale; None
-    disables the membrane pass (Phase-0-only); or pass an object with map_for()
-    for tests. When membrane scalars are absent, the membrane summary keys are
-    None and the Phase-0 keys are unchanged."""
-    root = Path(root)
-    scale = run_scale(root) if scale is None else int(scale)
-    if annotate_df is None:
-        annotate_df = load_node_table()
-    nbz = nodes_by_z(annotate_df, scale)
-    if membrane_source == "auto":
-        membrane_source = MembraneSource(scale)
-
-    rows: list[dict] = []
-    for neuron_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        neuron = neuron_dir.name
-        for chain_dir in sorted(neuron_dir.glob("chain_*")):
-            cidx = int(chain_dir.name.split("_")[-1])
-            for rec in score_chain(chain_dir, neuron, nbz, radius,
-                                   membrane_source, tau=tau, tol=tol):
-                rec.update(neuron=neuron, chain_idx=cidx)
-                rows.append(rec)
-
-    per = pd.DataFrame(rows)
+    Split out of score_run so the sharded-eval concat step (eval.concat_merge_shards)
+    can recompute the same summary from stitched shard CSVs without re-reading masks.
+    The membrane keys stay None unless the frames carry membrane scalars (a non-NaN
+    spanning_merge column)."""
     n_frames = len(per)
     have_mem = bool(n_frames) and per["spanning_merge"].notna().any()
     summary = {
@@ -220,10 +176,79 @@ def score_run(root, annotate_df: pd.DataFrame | None = None,
         summary["mild_bleed_rate"] = float((span & (scored["n_foreign"] == 0)).mean())
         summary["mean_boundary_on_membrane"] = float(scored["boundary_on_membrane"].mean())
         summary["mean_underfill_fraction"] = float(scored["underfill_fraction"].mean())
-    if n_frames:
+    return summary
+
+
+def run_scale(root: Path) -> int:
+    """Read resolution.scale from <root>/_run_meta.json, check it matches save_downscale."""
+    meta = json.loads((Path(root) / "_run_meta.json").read_text())
+    res = meta.get("resolution", {})
+    scale = int(res["scale"])
+    sd = int(res.get("save_downscale", scale))
+    if sd != scale:
+        raise ValueError(
+            f"{root}: scale ({scale}) != save_downscale ({sd}); the node grid "
+            "assumption does not hold, extend the scorer before trusting it.")
+    return scale
+
+
+def score_run(root, annotate_df: pd.DataFrame | None = None,
+              radius: int = DEFAULT_RADIUS, membrane_source="auto",
+              tau: float = membrane.DEFAULT_TAU, tol: int = membrane.DEFAULT_TOL,
+              scale: int | None = None, neurons=None, out_csv=None
+              ) -> tuple[pd.DataFrame, dict]:
+    """Aggregate per-chain records, write CSV, return per-frame DataFrame and summary.
+
+    The n_chains count includes only chains that produced at least one scored frame;
+    a chain with no frames (empty masks/ directory) is not counted. No CSV is written
+    if the run has zero scored frames.
+
+    scale: the _sam grid scale for this tree. Defaults to reading it from the
+    tree's _run_meta.json (run_scale); pass an explicit value to score a tree
+    that has no _run_meta.json (e.g. a merged shard tree).
+
+    neurons: when given, score ONLY these neuron dirs (a subset of the tree). This
+    is how the sharded eval array (cluster/run_eval_array.sh) splits one tree across
+    CPUs: each task scores its own neurons into its own shard CSV. None scores every
+    neuron dir, the whole-tree default.
+
+    out_csv: where to write the per-frame CSV. None writes the canonical
+    <root>/_merge_metric.csv; a shard task passes an explicit path
+    (<root>/_merge_metric.shard_<i>.csv) so parallel tasks never clobber each other
+    or the final file, which concat_merge_shards stitches together afterwards.
+
+    membrane_source: "auto" builds a MembraneSource for the run scale; None
+    disables the membrane pass (Phase-0-only); or pass an object with map_for()
+    for tests. When membrane scalars are absent, the membrane summary keys are
+    None and the Phase-0 keys are unchanged."""
+    root = Path(root)
+    scale = run_scale(root) if scale is None else int(scale)
+    if annotate_df is None:
+        annotate_df = load_node_table()
+    nbz = nodes_by_z(annotate_df, scale)
+    if membrane_source == "auto":
+        membrane_source = MembraneSource(scale)
+    want = set(neurons) if neurons is not None else None
+
+    rows: list[dict] = []
+    for neuron_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        neuron = neuron_dir.name
+        if want is not None and neuron not in want:
+            continue
+        for chain_dir in sorted(neuron_dir.glob("chain_*")):
+            cidx = int(chain_dir.name.split("_")[-1])
+            for rec in score_chain(chain_dir, neuron, nbz, radius,
+                                   membrane_source, tau=tau, tol=tol):
+                rec.update(neuron=neuron, chain_idx=cidx)
+                rows.append(rec)
+
+    per = pd.DataFrame(rows)
+    summary = summarize(per)
+    if len(per):
         per_out = per.copy()
         per_out["foreign_ids"] = per_out["foreign_ids"].apply(lambda ids: ";".join(ids))
-        per_out.to_csv(root / "_merge_metric.csv", index=False)
+        dest = Path(out_csv) if out_csv is not None else root / "_merge_metric.csv"
+        per_out.to_csv(dest, index=False)
     return per, summary
 
 
@@ -253,14 +278,28 @@ def main(argv=None) -> int:
                     help="px tolerance for boundary-on-membrane")
     ap.add_argument("--scale", type=int, default=None,
                     help="override the _sam grid scale (for merged trees with no _run_meta.json)")
+    ap.add_argument("--neurons", default=None,
+                    help="score only these neuron dirs (comma- or space-separated); "
+                         "used by the sharded eval array to split one tree across CPUs")
+    ap.add_argument("--out-csv", default=None,
+                    help="write the per-frame CSV here instead of <root>/_merge_metric.csv "
+                         "(a shard task passes <root>/_merge_metric.shard_<i>.csv). Only "
+                         "valid with a single --root.")
     args = ap.parse_args(argv)
+
+    neurons = None
+    if args.neurons is not None:
+        neurons = [n for n in args.neurons.replace(",", " ").split() if n]
+    if args.out_csv is not None and len(args.roots) != 1:
+        ap.error("--out-csv is only valid with exactly one --root")
 
     annotate_df = load_node_table()
     for root in args.roots:
         scale = args.scale if args.scale is not None else run_scale(root)
         src = None if args.no_membrane else MembraneSource(scale)
         _per, summ = score_run(root, annotate_df=annotate_df, radius=args.radius,
-                               membrane_source=src, tau=args.tau, tol=args.tol, scale=scale)
+                               membrane_source=src, tau=args.tau, tol=args.tol,
+                               scale=scale, neurons=neurons, out_csv=args.out_csv)
         print(format_summary(Path(root).name, summ))
     return 0
 

@@ -259,6 +259,49 @@ PRESETS = {
         "clean": False, "neurons": EXP_NEURONS,
         "score_out": None,
     },
+    # --- SAM3 config A/B (2026-07 queued round): does dropping negatives help SAM3? -----
+    # SAM3 is more conservative than SAM2, so negatives may hurt rather than help it. This
+    # is a 2x2 sweep, k_max_neg in {0, 3} x multimask_generous in {False, True}, on the
+    # per-slice + blow-up-guard config (original_perslice_only_guard), run with --backend
+    # sam3 at submit. The other three corners of the grid are already named presets, so only
+    # the two k_max_neg=0 corners are added here:
+    #   k_max_neg=3, generous off -> original_perslice_only_guard   (existing)
+    #   k_max_neg=3, generous on  -> original_perslice_guard        (existing)
+    #   k_max_neg=0, generous off -> original_perslice_only_guard_kneg0   (below)
+    #   k_max_neg=0, generous on  -> original_perslice_guard_kneg0        (below)
+    # k_max_neg=0 fully removes negatives: build_prompts caps them at min(count, k_max_neg)=0
+    # and propagate only seeds negatives when k_max_neg>0, so seed_negatives becomes a no-op.
+    # generous still requires multimask_anchor=True to have any effect (config.py), so the
+    # generous corners set both, matching original_perslice_guard.
+    "original_perslice_only_guard_kneg0": {
+        # A/B partner of original_perslice_only_guard with negatives off (k_max_neg=0).
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True, "blowup_guard": True,
+                     "k_max_neg": 0},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_only_guard_kneg0",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_perslice_guard_kneg0": {
+        # A/B partner of original_perslice_guard (generous multimask) with negatives off.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True, "multimask_anchor": True,
+                     "multimask_generous": True, "blowup_guard": True,
+                     "k_max_neg": 0},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_guard_kneg0",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
     "original_genfirst_negcrop": {
         # Generous-first-pass, negatives-in-crop bundle (Phase 1 close-out). TIER2_ALL two-pass:
         # a generous, negative-free _sam first pass sizes the crop (chain_crop_from_mask), then
