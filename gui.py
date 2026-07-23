@@ -261,19 +261,22 @@ class ReviewGUI:
 
     def __init__(self, ctx: ReviewContext, *, reviewer: str = "", viewer=None,
                  point_size: float = 4.0, auto_zoom: bool = True, zoom_pad: float = 3.0,
-                 hires_em: bool = False):
+                 hires_em: bool = False, em_scale: Optional[int] = None):
         """
         point_size : default diameter of prompt/skeleton points, in _sam px (was 10;
                      4 is unobtrusive at scale-8). Tune live via the dock spinbox.
         auto_zoom  : on open and on jump-to-flagged, zoom the camera to the mask's
                      bounding box (+ zoom_pad× margin) so you land on the object,
                      not the whole frame.
-        hires_em   : load the *full-resolution* EM tifs as the background instead of
-                     the scale-8 JPEGs (lazy, opt-in; see _load_hires_stack and the
-                     "Why low-res" note in the header). The MASK stays scale-8 (that
-                     is the only resolution it was propagated/saved at; sharper masks
-                     need the tier-2 per-chain crop), but it is scaled
-                     to overlay the full-res image so the EM context is crisp.
+        hires_em   : shorthand for em_scale=1 (kept for back-compat).
+        em_scale   : load the raw EM tifs as the background at this downscale instead of
+                     the scale-8 JPEGs (lazy, opt-in; see _load_hires_stack). 1 = full res
+                     (crisp, memory-heavy), 2 = half, 4 = quarter (much lighter memory).
+                     None uses the scale-8 JPEGs SAM2 saw. Handy on cluster runs where the
+                     JPEG frames were not saved, so the raw EM is the only backdrop source.
+                     The MASK stays scale-8 either way (the only resolution it was
+                     propagated/saved at; sharper masks need the tier-2 per-chain crop); it
+                     is scaled to overlay whatever EM resolution is loaded.
         """
         import napari
         self.ctx = ctx
@@ -281,7 +284,11 @@ class ReviewGUI:
         self.point_size = float(point_size)
         self.auto_zoom = bool(auto_zoom)
         self.zoom_pad = float(zoom_pad)
-        self.hires_em = bool(hires_em)
+        # em_scale selects the raw-EM backdrop downscale: 1 = full res (the old --hires-em),
+        # 2 = half, 4 = quarter. None means the scale-8 JPEGs. An explicit em_scale wins over
+        # --hires-em; --hires-em alone means em_scale=1.
+        self.em_scale = em_scale if em_scale is not None else (1 if hires_em else None)
+        self.hires_em = self.em_scale is not None
         self._em_world = 1.0   # world units (EM px) per _sam px; set per chain in open_chain
         self.viewer = viewer if viewer is not None else napari.Viewer(title="SAM2 review (M4)")
         self.queue = review_queue.ReviewQueue(ctx.output_root)
@@ -352,7 +359,7 @@ class ReviewGUI:
         # round-trip (_prompts_for_frame) is unchanged: with scale=(1,s,s), a click's
         # data coordinate is world/s = _sam (see "Why low-res" in the header).
         if self.hires_em:
-            em = self._load_hires_stack(self.data.frame_to_z, t)
+            em = self._load_hires_stack(self.data.frame_to_z, t, self.em_scale)
         else:
             em = _load_frame_stack(self.data.frames_dir, t)
         # world units (EM px) per mask px. Both EM axes are the mask scaled uniformly
@@ -511,13 +518,13 @@ class ReviewGUI:
         print("[gui] box draw mode: drag a rectangle on this frame, then 'R' to re-predict")
 
     # -- view helpers ----------------------------------------------------------
-    def _load_hires_stack(self, frame_to_z: dict, t: int):
-        """Lazy full-res EM stack (T, H_full, W_full, 3) over the chain's frames,
-        read from the original WORM_PATH tifs (NOT the scale-8 JPEGs). Opt-in via
-        ``hires_em``; see the "Why low-res" note in the header: this sharpens only
-        the *underlying image*; the saved masks remain scale-8 (sharper masks need
-        the tier-2 per-chain crop). Falls back to the scale-8 stack if dask is
-        unavailable, so a missing optional dep degrades, not crashes."""
+    def _load_hires_stack(self, frame_to_z: dict, t: int, em_scale: int = 1):
+        """Lazy raw-EM stack (T, H, W, 3) over the chain's frames, read from the original
+        WORM_PATH tifs (NOT the scale-8 JPEGs) and downscaled by ``em_scale`` (1 = full res,
+        2 = half, 4 = quarter). Opt-in via ``em_scale`` / ``hires_em``: this sharpens only
+        the *underlying image*; the saved masks remain scale-8 (sharper masks need the
+        tier-2 per-chain crop). Falls back to the scale-8 JPEG stack if dask is unavailable,
+        so a missing optional dep degrades, not crashes."""
         order = [frame_to_z[i] for i in range(t) if i in frame_to_z]
         if not order:
             return _load_frame_stack(self.data.frames_dir, t)
@@ -526,7 +533,7 @@ class ReviewGUI:
             from dask import delayed
 
             def _read(z):
-                img, _ = pipeline.load_frame_sam(int(z), scale=1)   # full-res RGB
+                img, _ = pipeline.load_frame_sam(int(z), scale=int(em_scale))   # raw EM at em_scale
                 if self._cw is not None:
                     img = img[self._cw.slice_tif()]   # tier-2: crop to the chain window
                 return img
@@ -534,10 +541,11 @@ class ReviewGUI:
             sample = _read(order[0])                                # one eager read for shape/dtype
             lazy = [da.from_delayed(delayed(_read)(z), shape=sample.shape, dtype=sample.dtype)
                     for z in order]
-            print(f"[gui] hires_em: lazy full-res EM {sample.shape[1]}x{sample.shape[0]} per frame")
+            print(f"[gui] em backdrop: lazy raw EM scale-{em_scale} "
+                  f"{sample.shape[1]}x{sample.shape[0]} per frame")
             return da.stack(lazy, axis=0)
         except Exception as e:
-            print(f"[gui] hires_em unavailable ({e}); using scale-{self.ctx.cfg.scale} frames")
+            print(f"[gui] em backdrop unavailable ({e}); using scale-{self.ctx.cfg.scale} frames")
             return _load_frame_stack(self.data.frames_dir, t)
 
     def _zoom_to_mask(self, frame_idx: Optional[int], *, pad: Optional[float] = None) -> None:
@@ -1343,7 +1351,8 @@ class ReviewGUI:
 def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
            chain_idx: Optional[int] = None, reviewer: str = "",
            cfg: Optional[pipeline.PipelineConfig] = None, block: bool = True,
-           point_size: float = 4.0, auto_zoom: bool = True, hires_em: bool = False) -> ReviewGUI:
+           point_size: float = 4.0, auto_zoom: bool = True, hires_em: bool = False,
+           em_scale: Optional[int] = None) -> ReviewGUI:
     """Open the review GUI. With ``neuron``/``chain_idx`` it opens straight onto a
     chain; otherwise it opens on the first pending chain (or an empty viewer if the
     queue is empty). ``block=True`` runs napari's event loop (call from a script);
@@ -1354,7 +1363,7 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
     import napari
     ctx = ReviewContext(Path(output_root) if output_root else config.OUTPUT_ROOT, cfg)
     gui = ReviewGUI(ctx, reviewer=reviewer, point_size=point_size,
-                    auto_zoom=auto_zoom, hires_em=hires_em)
+                    auto_zoom=auto_zoom, hires_em=hires_em, em_scale=em_scale)
     if neuron is not None and chain_idx is not None:
         gui.open_chain(neuron, int(chain_idx))
     else:
@@ -1379,11 +1388,16 @@ def main() -> None:
     ap.add_argument("--point-size", type=float, default=4.0, help="prompt/skeleton point diameter (_sam px)")
     ap.add_argument("--no-auto-zoom", action="store_true", help="don't zoom to the mask on open/jump")
     ap.add_argument("--hires-em", action="store_true",
-                    help="full-res EM background (lazy; mask stays scale-8, see gui.py header)")
+                    help="full-res EM background (lazy; mask stays scale-8, see gui.py header). "
+                         "Shorthand for --em-scale 1.")
+    ap.add_argument("--em-scale", type=int, default=None,
+                    help="raw-EM backdrop downscale: 1=full (= --hires-em), 2=half, 4=quarter "
+                         "(lighter memory). Wins over --hires-em when both are given.")
     args = ap.parse_args()
     launch(Path(args.output_root) if args.output_root else None,
            neuron=args.neuron, chain_idx=args.chain, reviewer=args.reviewer,
-           point_size=args.point_size, auto_zoom=not args.no_auto_zoom, hires_em=args.hires_em)
+           point_size=args.point_size, auto_zoom=not args.no_auto_zoom, hires_em=args.hires_em,
+           em_scale=args.em_scale)
 
 
 if __name__ == "__main__":

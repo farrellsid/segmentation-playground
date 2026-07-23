@@ -42,7 +42,8 @@ The napari review and correction GUI.
 | `--reviewer <name>` | Stamp labels with a reviewer name. |
 | `--point-size <n>` | Prompt point size in grid pixels. |
 | `--no-auto-zoom` | Do not auto-zoom to the mask on open. |
-| `--hires-em` | Load the full-resolution EM as the background. |
+| `--hires-em` | Load the full-resolution EM as the background. Shorthand for `--em-scale 1`. |
+| `--em-scale <n>` | Load the raw EM backdrop downscaled by `n` (1 = full res, same as `--hires-em`; 2 = half; 4 = quarter), for a lighter-memory backdrop. Useful on cluster runs where the scale-8 JPEG frames were not saved. Wins over `--hires-em` when both are given. |
 
 See [../how-to/review-flagged-chains.md](../how-to/review-flagged-chains.md).
 
