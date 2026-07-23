@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-23, sharded parallel scoring, the SAM3 config A/B presets, and a documentation sweep](#r-2026-07-23)
 - [2026-07-21, SAM3 Phase 2: `--backend sam3` switch, cluster wiring, and the Narval runbook](#r-2026-07-21-sam3-cluster)
 - [2026-07-21, SAM3 vs SAM2 bake-off: HF-transformers PVS adapters + 2x2 comparison](#r-2026-07-21-sam3)
 - [2026-07-21, per-frame segmentation: two approaches, an AMG tuner, membrane-aware arbitration](#r-2026-07-21)
@@ -38,6 +39,38 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-07-23"></a>
+## 2026-07-23, sharded parallel scoring, the SAM3 config A/B presets, and a documentation sweep
+
+Follow-on plumbing for the SAM3 whole-set round, plus a documentation reconciliation.
+
+**Sharded, parallel scoring.** `eval.merge_metric` used to score a whole tree on one core. It now
+takes `--neurons` (a comma- or space-separated subset) and `--out-csv` (a per-shard destination), so
+`cluster/run_eval_array.sh` splits one merged tree across CPU array tasks, each scoring its own
+neuron(s) into `<tree>/_merge_metric.shard_<i>.csv`. `eval.concat_merge_shards` then stitches those
+shards into the canonical `<tree>/_merge_metric.csv`, identical to what a single-core run writes, and
+prints the whole-tree summary. `cluster/run_py.sh` runs any CPU step (merge, concat, retro-eval) as a
+dependency job so nothing heavy lands on the login node, and `cluster/submit_sam3_round.sh` queues the
+whole SAM3 test round (segmentation, merge, score, concat, retro-eval) in one shot with `afterok`
+dependencies.
+
+**SAM3 config A/B presets.** Two `k_max_neg = 0` presets, `original_perslice_only_guard_kneg0` and
+`original_perslice_guard_kneg0`, complete a 2x2 sweep of `k_max_neg` in `{0, 3}` by
+`multimask_generous` in `{off, on}` run with `--backend sam3`, to test whether a more conservative
+model does better with negatives switched off. The two `k_max_neg = 3` corners are the existing
+per-slice guard presets. `k_max_neg = 0` removes negatives entirely (build_prompts caps them at zero
+and propagation only seeds negatives when `k_max_neg > 0`).
+
+**Documentation sweep.** Reconciled the reference docs against the code: the `batch.py --backend` /
+`--sam3-checkpoint` flags, the `merge_metric --neurons` / `--out-csv` / `--scale` flags, and the new
+`eval.concat_merge_shards` and `eval.retro_eval` entry points are now in
+[reference/cli.md](reference/cli.md); the `backend` / `sam3_checkpoint` config fields, the `kneg0`
+presets, and the `k_max_neg = 0` semantics are in [reference/configuration.md](reference/configuration.md);
+the new cluster and eval scripts are in [reference/code-map.md](reference/code-map.md); and the GUI's
+`--em-scale` backdrop flag is in [how-to/review-flagged-chains.md](how-to/review-flagged-chains.md).
+The submission plans (`run-sam3-on-narval.md`, `queued-sam3-narval-tests.md`) already carried the
+run-time detail and are cross-linked from the reference pages.
 
 <a id="r-2026-07-21-sam3-cluster"></a>
 ## 2026-07-21, SAM3 Phase 2: `--backend sam3` switch, cluster wiring, and the Narval runbook

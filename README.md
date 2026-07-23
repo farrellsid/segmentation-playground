@@ -38,10 +38,15 @@ py -3 -m eval.score_batch --preset eval        # score against the cross-worm gr
 py -3 -m pytest                                # the CPU-only test suite
 ```
 
+The batch runs SAM2 by default and can swap in SAM3 as a drop-in backend with `--backend sam3
+--sam3-checkpoint <dir>`, unchanged everywhere else in the pipeline. See
+[run SAM3 on Narval](docs/how-to/run-sam3-on-narval.md).
+
 How-to guides: [run a batch](docs/how-to/run-a-batch.md),
 [review flagged chains](docs/how-to/review-flagged-chains.md),
 [evaluate against GT](docs/how-to/evaluate-against-gt.md),
-[add a pipeline phase](docs/how-to/add-a-pipeline-phase.md).
+[add a pipeline phase](docs/how-to/add-a-pipeline-phase.md),
+[run on the Narval cluster](docs/how-to/run-on-narval.md).
 
 ## Repository layout
 

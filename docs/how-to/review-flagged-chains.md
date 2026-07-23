@@ -22,7 +22,9 @@ py -3 gui.py --reviewer sf             # stamp your name on the labels you creat
 ```
 
 Other flags: `--output-root <dir>` (which output tree to review), `--point-size N`,
-`--no-auto-zoom`, `--hires-em` (full-res EM background, see §6). From a notebook:
+`--no-auto-zoom`, `--hires-em` (full-res EM background, see §6), `--em-scale N` (the same raw-EM
+backdrop at a chosen downscale: 1 = full res like `--hires-em`, 2 = half, 4 = quarter, for lighter
+memory; see §6). From a notebook:
 
 ```python
 from gui import launch
@@ -208,6 +210,11 @@ whole chain was propagated and saved in that crop. The GUI detects this from the
 - `--hires-em` loads the **full-resolution EM** as the background (lazy) and scales
   the still-scale-8 mask/points to overlay it, so the EM context is crisp for judging
   a fix. The mask stays blocky, that's expected.
+- `--em-scale N` is the same raw-EM backdrop at a chosen downscale: `1` is full res (identical to
+  `--hires-em`), `2` is half, `4` is quarter, each lighter on memory. An explicit `--em-scale` wins
+  over `--hires-em`. This is read straight from the raw EM tifs rather than the scale-8 JPEG frames,
+  so it is the way to get a backdrop at all on a cluster run where the JPEG frames were never saved.
+  The mask still overlays at its saved resolution regardless of the backdrop scale.
 
 Note: the GUI's re-predict (`R`) uses the legacy full-frame scale-8 path (it matches
 the displayed frame), so it won't reproduce the batch's high-res-crop anchor

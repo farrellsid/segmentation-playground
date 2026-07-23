@@ -28,8 +28,11 @@ The headless batch over many chains, with resume.
 | `--gif-mode <off\|flagged\|all>` | Override the preset's overlay-gif policy. |
 | `--no-tier2` | Disable the tier-2 auto second-pass on flagged chains. |
 | `--postprocess` / `--no-postprocess` | Force mask post-processing on/off (overrides the preset). Use the pair to A/B outputs with vs without cleanup; see [configuration.md](configuration.md). |
+| `--backend <sam2\|sam3>` | Segmentation backend. Defaults to the preset's value, which is `sam2`. `sam3` routes prompts, propagation, and mask save through the HuggingFace SAM3 adapters in `sam2_utils/sam3_backend.py`, unchanged everywhere else. |
+| `--sam3-checkpoint <dir>` | Path to the SAM3 HuggingFace checkpoint directory. Only read when `--backend sam3`. Defaults to `sam3_backend.DEFAULT_CHECKPOINT_DIR` (a local dev path that does not exist on the cluster), so a cluster SAM3 run must set it explicitly. |
 
-See [../how-to/run-a-batch.md](../how-to/run-a-batch.md).
+See [../how-to/run-a-batch.md](../how-to/run-a-batch.md). To run SAM3 on the cluster, see
+[../how-to/run-sam3-on-narval.md](../how-to/run-sam3-on-narval.md).
 
 ## gui.py
 
@@ -143,6 +146,9 @@ py -3 -m eval.merge_metric --root <merged_run> [--root <other> ...] [--radius N]
 | `--no-membrane` | Skip the Phase-2 membrane pass (Phase-0-only, no EM reads). |
 | `--tau T` | Membrane threshold on the normalised `[0, 1]` map (default 0.5). See [configuration.md](configuration.md). |
 | `--tol PX` | Tolerance in px for `boundary_on_membrane` (default 2). See [configuration.md](configuration.md). |
+| `--scale N` | Override the `_sam` grid scale, for a merged tree with no `_run_meta.json` to read it from. |
+| `--neurons "A B ..."` | Score only these neuron dirs (comma- or space-separated). Used by the sharded eval array to split one tree across CPUs. |
+| `--out-csv <path>` | Write the per-frame CSV here instead of `<root>/_merge_metric.csv`. Only valid with a single `--root`; a shard task passes `<root>/_merge_metric.shard_<i>.csv`. |
 
 Summary line fields: `foreign_frame_rate` (fraction of frames whose mask contains another neuron's
 node), `dropout_rate` (fraction whose mask lost its own node), `total_foreign`, this part is the
@@ -159,3 +165,36 @@ when `--no-membrane` is passed or the EM could not be read for any frame.
 blank for a frame the membrane pass could not score (EM unavailable, or `--no-membrane`).
 
 Repeat `--root` to compare runs on a single node-table load.
+
+## eval.concat_merge_shards
+
+Stitches a sharded merge-metric run back into one CSV. The sharded eval array
+(`cluster/run_eval_array.sh`) splits one tree across CPUs, each task writing its own
+`<tree>/_merge_metric.shard_<i>.csv`; this concatenates those shards into the canonical
+`<tree>/_merge_metric.csv` (identical to what a single-core `merge_metric` run would write) and
+prints the whole-tree summary.
+
+```bash
+py -3 -m eval.concat_merge_shards --tree /scratch/$USER/<tree>_merged
+```
+
+| Flag | Effect |
+|------|--------|
+| `--tree <dir>` | The merged tree whose `_merge_metric.shard_*.csv` to stitch. Required. |
+| `--out <path>` | Output CSV (default: `<tree>/_merge_metric.csv`). |
+| `--shard-glob <glob>` | Glob for the shard CSVs (default: `_merge_metric.shard_*.csv`). |
+
+## eval.retro_eval
+
+One unified table over several run trees: the merge-metric numbers plus compute columns (from each
+tree's `_timing.csv`) and legacy QC columns (from `_manifest.csv`), one row per tree. Useful for a
+per-chain wall-clock comparison alongside the accuracy numbers, for example SAM2 versus SAM3.
+
+```bash
+py -3 -m eval.retro_eval --membrane --root <tree> [--root <other> ...] --out <dir>
+py -3 -m eval.retro_eval --membrane --glob "/scratch/$USER/*_merged" --out <dir>
+```
+
+`--membrane` runs the Phase-2 membrane pass; `--min-scale N` (default 4) skips the merge-metric for
+trees coarser than that (a full-res scale-1 tree needs a lot of RAM), while still reporting its
+compute and QC columns. Membrane numbers only compare within one `_sam` scale.

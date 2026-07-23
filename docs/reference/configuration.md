@@ -24,6 +24,12 @@ Paths and constants that change per machine or per dataset, not per run:
 Everything you would tune for a run lives here, in one place. Defaults reproduce the original
 single-chain run.
 
+- Backend: `backend` (default `"sam2"`) selects the segmentation model. `"sam3"` routes the image
+  and video phases through the HuggingFace SAM3 adapters (`sam2_utils/sam3_backend.py`), which present
+  the SAM2 predictor interface so the rest of the pipeline runs unchanged; `sam3_checkpoint` (default
+  `None`) is the SAM3 HuggingFace checkpoint directory, falling back to `sam3_backend.DEFAULT_CHECKPOINT_DIR`
+  when unset. `batch.py --backend {sam2,sam3}` and `--sam3-checkpoint PATH` set these on the CLI. See
+  [../how-to/run-sam3-on-narval.md](../how-to/run-sam3-on-narval.md).
 - Spaces and resolution: `scale` (SAM2 input downscale), `save_downscale` (on-disk mask downscale;
   equal to `scale` is canonical, see [ADR 0006](../adr/0006-canonical-mask-space.md)), `image_size`
   (override SAM2's internal input resolution, default 1024; None keeps the checkpoint default). SAM2
@@ -64,7 +70,11 @@ single-chain run.
   no-op on a chain with too few accepted masks or a zero median, and it has no effect on the
   video-propagate path. See the close-out spec under `docs/superpowers/specs/`.
 - Prompts and seed: `k_max_neg`, `box_margin`, `box_margin_frac`, `seed_negatives`, plus the seed
-  shape knobs. See [ADR 0008](../adr/0008-video-seed-box-vs-mask.md).
+  shape knobs. See [ADR 0008](../adr/0008-video-seed-box-vs-mask.md). `k_max_neg` caps the negative
+  neighbour points per node, nearest first; `k_max_neg = 0` removes negatives entirely, since
+  `build_prompts` caps them at `min(count, k_max_neg) = 0` and propagation only seeds negatives when
+  `k_max_neg > 0`, so `seed_negatives` becomes a no-op. The SAM3 A/B presets use this to test whether
+  a more conservative model does better without negatives.
 - Per-pass tier-2 seed overrides (default inherit): `tier2_k_max_neg`, `tier2_seed_negatives`, and
   `tier2_multimask_generous` let the tier-2 rerun (`batch._run_one_chain`, under `tier2_all` or
   `tier2_on_flagged`) seed differently from the first `_sam` pass. Each defaults to `None`, meaning
@@ -104,6 +114,18 @@ The Phase 1 close-out adds three measurement presets, each isolating one lever f
 
 See `docs/superpowers/specs/2026-07-17-phase1-blowup-guard-and-genfirst-negcrop-design.md` for the
 full design and [roadmap.md](../explanation/roadmap.md) for where this sits in the plan.
+
+The SAM3 config A/B round adds two more, the `k_max_neg = 0` (negatives-off) partners of the two
+per-slice guard presets, so a 2x2 sweep of `k_max_neg` in `{0, 3}` by `multimask_generous` in
+`{off, on}` runs with `--backend sam3`:
+
+- `original_perslice_only_guard_kneg0`: `original_perslice_only_guard` with `k_max_neg = 0`, negatives off.
+- `original_perslice_guard_kneg0`: `original_perslice_guard` (generous multimask) with `k_max_neg = 0`.
+
+The two `k_max_neg = 3` corners of that grid are the existing `original_perslice_only_guard` and
+`original_perslice_guard`. The generous corners set both `multimask_generous` and `multimask_anchor`,
+since generosity only takes effect when the multimask selection is on. See
+[../how-to/queued-sam3-narval-tests.md](../how-to/queued-sam3-narval-tests.md) for the submission plan.
 
 ## Membrane metric parameters (`sam2_utils/membrane.py`)
 

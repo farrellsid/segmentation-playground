@@ -75,7 +75,10 @@ It prints the chain's final status, `done` or `flagged`, and writes the masks, `
 ## Where to go next
 
 - To run many chains, see [../how-to/run-a-batch.md](../how-to/run-a-batch.md).
-- To review and correct flagged chains, see
+- To review and correct flagged chains in the napari GUI, see
   [../how-to/review-flagged-chains.md](../how-to/review-flagged-chains.md).
 - To score against ground truth, see [../how-to/evaluate-against-gt.md](../how-to/evaluate-against-gt.md).
+- To run the batch in parallel on the cluster, see [../how-to/run-on-narval.md](../how-to/run-on-narval.md).
+- To swap in the SAM3 backend (`--backend sam3`), see
+  [../how-to/run-sam3-on-narval.md](../how-to/run-sam3-on-narval.md).
 - To add a new pipeline phase, see [../../CONTRIBUTING.md](../../CONTRIBUTING.md).
