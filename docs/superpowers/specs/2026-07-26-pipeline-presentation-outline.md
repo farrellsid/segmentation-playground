@@ -94,7 +94,11 @@ Each slide: the lead visual, the on-screen bullets, and the spoken beat.
     about 1.0) beside the 4-way SAM2/SAM3 table and a dense-overlay image. Bullets: bleed severity
     down about 5x; coverage from about two-thirds to nearly always; per-slice beats propagation; SAM3
     beats SAM2 (about 84% less bleed severity) at about 3-4x compute; whole worm, about 124 neurons.
-    Beat: the journey, not a single number, and honest about SAM3's compute cost.
+    Beat: the journey, not a single number, and honest about SAM3's compute cost. Pair the statistics
+    with a concrete before/after mask overlay on one real frame: an older mask bleeding into a
+    neighbour (whose node is marked) next to the newer mask staying clean, so the audience sees the
+    improvement instead of only reading it. The foreign node is exactly what the metric counts, so the
+    picture and the number are the same thing.
 
 11. Where it still breaks. Visual: three EM crops, nucleus capture (the mask is the round nucleus), a
     thin faint neurite fading, a branch point. Bullets: nucleus/soma capture; thin faint neurites at
@@ -127,6 +131,11 @@ Build:
 - Dense-and-overlaps panel (slide 9): one frame as raw EM, Sato ridge map, dense segmentation,
   automask, plus an argmax-vs-watershed inset. Ridge map from `sam2_utils/membrane.py`; dense
   labelmap from `experiments/dense_overlay.py`; argmax/watershed from `sam2_utils/perframe.py`.
+- Before/after bleed overlay (slide 10): a real frame where an older config's mask contains a
+  foreign neighbour node (a measured merge) and the newer config's mask on the same chain and frame
+  does not, both drawn with the own node (green) and the foreign node (red) marked, so the metric is
+  visible. Built from the per-frame merge-metric CSVs plus the overlay tooling in
+  `experiments/sam3_overlay_disk.py`.
 - Optional failure-mode crops for slide 11 (nucleus capture, faint neurite, branch point).
 
 ## Open items to confirm
