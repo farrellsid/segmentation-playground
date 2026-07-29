@@ -23,7 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
-- [2026-07-29, temporal membrane projection: register/project crops land, the gate comes back negative](#r-2026-07-29-temporal)
+- [2026-07-29, temporal membrane projection: register/project crops land, a gate confound found and corrected](#r-2026-07-29-temporal)
 - [2026-07-29, SAM3-vs-SAM2 scorecard consolidated, default backend decided](#r-2026-07-29)
 - [2026-07-23, sharded parallel scoring, the SAM3 config A/B presets, and a documentation sweep](#r-2026-07-23)
 - [2026-07-21, SAM3 Phase 2: `--backend sam3` switch, cluster wiring, and the Narval runbook](#r-2026-07-21-sam3-cluster)
@@ -43,29 +43,65 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 <a id="r-2026-07-29-temporal"></a>
-## 2026-07-29, temporal membrane projection: register/project crops land, the gate comes back negative
+## 2026-07-29, temporal membrane projection: register/project crops land, a gate confound found and corrected
 
 `sam2_utils/membrane.py` gained `register_crops` and `project_crops` (Task 1), and
 `experiments/dense_membrane_fill.py` gained `--mm-window`/`--mm-combine` to route a small window of
 adjacent z-slices through them before the ridge filter (Task 2), plus a `--sweep-temporal` flag that
 grids `window in {0, 1, 2}` x `combine in {median, mean, max}` and prints the same bleed/underfill
-table as `--sweep` (Task 3). `--mm-window 0`, the default, is verified byte-identical to the
-pre-existing single-slice path.
+table as `--sweep`, now with a `filled` population column (Task 3, extended during a final whole-plan
+review). `--mm-window 0`, the default, is verified byte-identical to the pre-existing single-slice
+path. The review also caught a real bug in `register_crops` (it picked `crops[len(crops) // 2]` as the
+alignment reference even when the caller's true center crop was elsewhere, e.g. after a frame load
+failed near the stack edge) and two missing files (`experiments/dense_overlay.py` and
+`experiments/membrane_autofill_demo.py`, both untracked dependencies of `dense_membrane_fill.py`); both
+are fixed and committed separately.
 
-The real gate run (`--z 1456 --uf-min 0.6 --sweep-temporal`, 117 neurons) answers item 2b.5's open
-question: does averaging organelles out across z drop the ~40% bleed-per-fill floor found in the
-2026-07-27 dense-frame sweep. It does not, and it does not sit flat either. Every non-baseline setting
-comes out worse than window=0 (foreign 39, bleed_cells 28/117, mean_uf 0.403, area +12%) on every axis
-at once: window=1 roughly doubles foreign-node bleed (76-82, bleed_cells 39-41/117) and pushes mean
-underfill to 0.55-0.82; window=2 is worse again (foreign 110-124, bleed_cells 42-54/117, mean_uf
-0.66-0.95, area growth up to +54%). Underfill, bleed, and area all move the wrong way together as the
-window widens, so this is a straight regression rather than a trade-off between metrics. One plausible
-but unverified read: registering and projecting the crop blurs the already-thin scale-8 ridge signal
-faster than it suppresses organelle noise, weakening the membrane wall instead of cleaning it up.
+The first gate run (`--z 1456 --uf-min 0.6 --sweep-temporal`, 117 neurons) answered item 2b.5's open
+question, does averaging organelles out across z drop the ~40% bleed-per-fill floor found in the
+2026-07-27 dense-frame sweep, and reported every non-baseline setting worse than window=0 (foreign 39,
+bleed_cells 28/117, mean_uf 0.403, area +12%) on every axis at once: window=1 roughly doubling
+foreign-node bleed (76-82, bleed_cells 39-41/117), window=2 worse again (foreign 110-124, bleed_cells
+42-54/117). The write-up called this a straight regression.
+
+The whole-plan review flagged that conclusion as under-supported: the 0.6 underfill threshold is
+compared against EACH row's own membrane map, so a blurrier temporal map reads as more underfilled even
+where a mask did not really change, and the fixed threshold quietly pulled more cells into the grow
+step as the window widened (`filled`, now printed in the table, rises from 17/117 at window=0 to
+40-49/117 at window=2). That alone could explain most of the apparent regression, independent of
+whether any individual grow got worse.
+
+A second gate run (`--z 1456 --uf-min 0 --sweep-temporal`) grows every underfill-eligible cell
+regardless of window, holding the grown population much closer to constant (a 5x runaway-area cap
+still reverts a few grows back to raw, so `filled` still moves a little, from 90/117 at window=0 down
+to 61-77/117 as the window widens, i.e. fewer cells effectively grown, not more). Under this fairer
+test, window=1 comes out close to flat on foreign-node bleed (136-148 vs the baseline's 139,
+bleed_cells 54-55/117 vs 55/117) despite growing fewer cells, and window=2 is moderately, not
+dramatically, worse (foreign 161-189, bleed_cells up to 61/117). Because window=2's worse numbers show
+up with fewer cells grown than baseline, that part of the regression cannot be explained by gate
+membership and is a real per-fill effect; window=1's near-flat read means the first write-up's "roughly
+doubles" claim does not survive population control.
+
+A shift-clamp diagnostic was also added to `grow_all` (prints once per `grow_all` call when
+window > 0): `register_crops` clamps every estimated shift to +/- 5px before applying it, and the
+diagnostic logs the raw, pre-clamp shift magnitude for every crop pair. At window=1, 32 of 234 crop
+pairs (14%) had a raw shift larger than the clamp, with raw magnitudes up to 173px; at window=2, 139 of
+468 (30%) were clamped, up to 269px. Those magnitudes are far beyond any plausible real slice-to-slice
+jitter at scale 8, so they most likely mean phase correlation locked onto a spurious peak on some crops
+rather than found real drift, and the clamp then truncates and applies that bogus shift rather than
+skipping the crop, actively misaligning it before the combine step. Misregistration via the clamp is
+therefore a demonstrated contributor, not the "plausible but unverified" blur-only guess from the first
+write-up. Blur from combining otherwise-aligned crops may still also play a part, the evidence here does
+not separate the two mechanisms cleanly, but the clamped fraction roughly doubling from window=1 to
+window=2 lines up with where the regression is worst. The frame-loading loops now also print which z's
+actually loaded vs were skipped, so a degraded window shows up in the log instead of silently changing
+what the sweep measured.
 
 Item 2b.5 stays open, and 2c/2d/2e stay gated on it, now pointed at the deferred intensity/texture blob
 filter (2e's nucleus-detection idea, out of scope for this plan) instead of the temporal lever, since
-this negative result rules that lever out rather than leaving it untested. See
+temporal projection never clears the window=0 baseline at either window even under the fairer,
+population-controlled test. One untested, cheap follow-up worth a look before writing off the lever
+entirely: reject spurious large-shift crops instead of clamping and applying them. See
 [[membrane-temporal-projection-idea]] and the roadmap's item 2b.5 and queue item 10 for the recorded
 outcome.
 

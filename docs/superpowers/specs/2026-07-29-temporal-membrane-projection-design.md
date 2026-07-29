@@ -4,6 +4,12 @@ Status: design, approved 2026-07-29. Scope: the temporal projection lever only. 
 intensity/texture blob filter (also part of roadmap item 2b.5) is deferred to its own spec, informed
 by whatever failure mode this lever leaves over.
 
+Outcome (2026-07-29): measured negative, temporal projection does not move the bleed-per-fill floor.
+The first gate run overstated the size of the regression due to a gate-membership confound; a
+population-controlled re-run and a shift-clamp diagnostic gave a smaller, better-supported picture.
+See `docs/explanation/roadmap.md` item 2b.5 and queue item 10, and the CHANGELOG's 2026-07-29 temporal
+membrane projection entry, for the numbers.
+
 ## Why this, why now
 
 The dense-frame grow-to-membrane sweep (`experiments/dense_membrane_fill.py`, 2026-07-27) found the

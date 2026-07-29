@@ -545,25 +545,53 @@ every frame, ordered cheap to expensive:
   and [cli.md](../reference/cli.md). The signature is a swappable interface: a trained model (the
   Mulcahy/Witvliet skeleton-to-membrane expansion, or a small U-Net) can drop in behind
   `membrane_map` later without touching the detectors or the scorer.
-- **2b.5, improve the membrane map by suppressing organelles, MEASURED 2026-07-29: temporal projection
-  alone makes the bleed floor worse, not better.** The autofill finding (problem 8 above) says the
-  scale-8 Sato ridge map is the ceiling: organelles and vesicles create the false walls and gaps that
-  make ~40% of grown cells leak, and no amount of grow or arbitration tuning moves that floor. The
+- **2b.5, improve the membrane map by suppressing organelles, MEASURED 2026-07-29, revised 2026-07-29
+  after a gate-membership confound was found and corrected: temporal projection alone still does not
+  help, but the first measurement overstated how badly.** The autofill finding (problem 8 above) says
+  the scale-8 Sato ridge map is the ceiling: organelles and vesicles create the false walls and gaps
+  that make ~40% of grown cells leak, and no amount of grow or arbitration tuning moves that floor. The
   cheap classical lever tried first was a temporal median/mean/max projection over adjacent z-slices
   (organelles are transient across z, membranes are nearly stationary), landed as `register_crops` /
   `project_crops` in `sam2_utils/membrane.py` and wired into `experiments/dense_membrane_fill.py` via
-  `--mm-window`/`--mm-combine` and a `--sweep-temporal` grid. The real gate run (z=1456, uf_min 0.6,
-  117 neurons) shows every non-baseline `(window, combine)` setting doing worse than the window=0
-  baseline (foreign 39, bleed_cells 28/117, mean_uf 0.403, area +12%) on every axis at once: window=1
-  roughly doubles foreign-node bleed (76-82, bleed_cells 39-41/117) and pushes mean underfill up to
-  0.55-0.82; window=2 is worse again (foreign 110-124, bleed_cells 42-54/117, mean_uf 0.66-0.95, area
-  growth up to +54%). Because underfill, bleed, and area all move the wrong way together as the window
-  widens, this is a straight regression, not a trade-off between metrics. A plausible but unverified
-  read is that registering and projecting the crop blurs the already-thin scale-8 ridge signal faster
-  than it suppresses organelle noise, weakening the membrane wall rather than cleaning it. **2c, 2d, and
-  2e stay gated, now on the deferred intensity/texture blob filter instead of this lever**, informed by
-  a real negative result rather than starting cold. See [[membrane-temporal-projection-idea]].
-  *(§4.3 tier-2 bottleneck)*
+  `--mm-window`/`--mm-combine` and a `--sweep-temporal` grid.
+
+  The first gate run (z=1456, uf_min 0.6, 117 neurons) found every non-baseline `(window, combine)`
+  setting worse than the window=0 baseline (foreign 39, bleed_cells 28/117, mean_uf 0.403, area +12%)
+  on every axis: window=1 at foreign 76-82 and bleed_cells 39-41/117, window=2 at foreign 110-124 and
+  bleed_cells 42-54/117. A whole-plan review then pointed out that uf_min 0.6 is compared against EACH
+  row's own membrane map, and a blurrier temporal map reads as more underfilled even where a mask did
+  not really change, so the fixed threshold quietly pulls more cells into the grow step as the window
+  widens: `filled` rises from 17/117 at window=0 to 40-49/117 at window=2. That alone could explain
+  most of the apparent regression, independent of whether any individual grow got worse.
+
+  A second gate run at uf_min 0 grows every underfill-eligible cell regardless of window, holding the
+  grown population much closer to constant (the 5x runaway-area cap still reverts a few grows back to
+  raw, so `filled` still moves a little, from 90/117 at window=0 down to 61-77/117 as the window
+  widens, i.e. FEWER cells effectively grown, not more). Under this fairer comparison, window=1 comes
+  out close to flat on foreign-node bleed (136-148 vs the baseline's 139, bleed_cells 54-55/117 vs
+  55/117) despite growing fewer cells, and window=2 is moderately, not dramatically, worse (foreign
+  161-189, bleed_cells up to 61/117). Because window=2's worse numbers show up with fewer cells grown
+  than baseline, that part of the regression cannot be explained by gate membership and is a real
+  per-fill effect; window=1's near-flat read means the original "roughly doubles" claim does not
+  survive population control.
+
+  A shift-clamp diagnostic added to `grow_all` (logs the raw, pre-clamp phase-correlation shift for
+  every crop pair when window > 0) found real clamping: 32 of 234 crop pairs (14%) at window=1 and 139
+  of 468 (30%) at window=2 had a raw shift bigger than the 5px clamp, with raw magnitudes up to 173px
+  and 269px. Those are far beyond any plausible real slice-to-slice jitter at scale 8, so they most
+  likely mean phase correlation locked onto a spurious peak on some crops rather than found real drift;
+  the clamp then truncates and applies that bogus shift rather than skipping the crop, actively
+  misaligning it before the combine step. Misregistration via the clamp is therefore a demonstrated
+  contributor, not the "plausible but unverified" blur-only guess from the first write-up. Blur from
+  combining otherwise-aligned crops may still also play a part; the evidence here does not separate the
+  two mechanisms cleanly, but the clamped fraction roughly doubling from window=1 to window=2 lines up
+  with where the regression is worst.
+
+  **2c, 2d, and 2e stay gated, now on the deferred intensity/texture blob filter instead of this
+  lever**, since temporal projection never clears the window=0 baseline at either window even under the
+  fairer, population-controlled test. One untested, cheap follow-up worth a look before writing the
+  lever off entirely: reject spurious large-shift crops instead of clamping and applying them. See
+  [[membrane-temporal-projection-idea]]. *(§4.3 tier-2 bottleneck)*
 - **2c, grow-to-membrane refinement of masks, PROTOTYPED (`experiments/dense_membrane_fill.py`).** Reuses
   the membrane signal and the `underfill_fraction` flood that 2b only measures, this time growing a mask
   to its bounding membrane. Verdict from the dense-frame sweep: the usable operating point is **targeted
@@ -678,13 +706,20 @@ Mapped to the phases above. DONE / READY / TODO.
    mask re-reads needed), the neg x gen A/B confirms the current preset is already SAM3-optimal
    (negatives help, generous hurts), and the default call is made: `--backend sam3` stays opt-in
    (ADR 0017), not a silent default flip, pending Phase 2c's underfill fix.
-10. **Organelle-suppressed membrane map** (Phase 2b.5, the new pivot). DONE, negative result
-    (2026-07-29): `register_crops`/`project_crops` landed and `dense_membrane_fill.py` gained
-    `--mm-window`/`--mm-combine`/`--sweep-temporal`. The real gate (z=1456, uf_min 0.6) shows temporal
-    projection alone makes bleed worse at every setting tried, not flat and not better, foreign-node
-    bleed roughly doubles at window=1 and roughly triples at window=2 versus the window=0 baseline's
-    39. Does not unblock 2c/2d/2e; the next lever is the deferred intensity/texture blob filter,
-    informed by this negative result.
+10. **Organelle-suppressed membrane map** (Phase 2b.5, the new pivot). PARTLY DONE, negative result on
+    the temporal-projection half, revised after a gate confound was found and corrected (2026-07-29):
+    `register_crops`/`project_crops` landed and `dense_membrane_fill.py` gained
+    `--mm-window`/`--mm-combine`/`--sweep-temporal`, plus a `filled` population column and a
+    shift-clamp diagnostic added during the fix pass. The first gate (z=1456, uf_min 0.6) reported
+    foreign-node bleed roughly doubling at window=1 and roughly tripling at window=2 versus the
+    window=0 baseline's 39, but that fixed threshold also pulled far more cells into the grow step as
+    the window widened (`filled` 17/117 -> 40-49/117), inflating the comparison. Re-run at uf_min 0,
+    which holds the grown population close to constant, shows window=1 close to flat on foreign-node
+    bleed (136-148 vs baseline 139) despite growing FEWER cells, and window=2 moderately, not
+    dramatically, worse (foreign 161-189, bleed_cells up to 61/117). The shift-clamp diagnostic found
+    real clamping (14-30% of crop pairs, raw shifts up to 173-269px), so misregistration via the clamp
+    is a demonstrated contributor alongside, or instead of, blur. Still does not unblock 2c/2d/2e; the
+    next lever is the deferred intensity/texture blob filter.
 11. **Targeted grow-to-membrane + nucleus detection** (Phase 2c/2e). TODO, gated on item 10: wire the
     underfill-gated fill (uf_min ~0.6-0.7) and intensity-based nucleus detection once the map is cleaner.
 12. **z-to-z consistency metric** (Phase 0.a). TODO: add before trusting any per-slice-vs-propagation
@@ -715,14 +750,22 @@ unvalidated; the resolution goal is served by cropping / tiling.
   (including the ~2-3% precision) as unreliable, and rebuild the ruler on target-worm skeletons + the
   Phase-3 benchmark before trusting any boundary A/B.
 - **Classical organelle suppression (2b.5) fails to move the ~40% bleed-per-fill floor** -> partially
-  resolved 2026-07-29: the temporal-projection half of this lever regressed rather than merely failing
-  to help (bleed, underfill, and area all worsened together as the window widened, likely because
-  registering and projecting the crop blurs the already-thin scale-8 ridge signal). That closes the
-  temporal-projection route specifically, not the classical route as a whole: the still-untried
-  intensity/texture blob filter is a different mechanism (no registration, no cross-slice blur) and
-  stays the next thing to try before reaching for a learned map. If it also fails to move the floor,
-  *then* skip straight to a learned membrane map (Phase 3), accepting the training cost, and judge it
-  on boundary sharpness (the mEMbrain lesson), not zoomed-out neatness.
+  resolved 2026-07-29, refined 2026-07-29: the temporal-projection half of this lever does not help at
+  either window tried, but the size of the regression first reported was inflated by a gate-membership
+  confound: a fixed 0.6 underfill threshold pulls far more cells into the grow step as the temporal map
+  reads blurrier. Re-run with the gate held open (uf_min 0) shows window=1 close to flat on
+  foreign-node bleed and window=2 moderately, not dramatically, worse, even though fewer cells were
+  grown at the wider window, so the effect is real but smaller than first reported. A shift-clamp
+  diagnostic also found `register_crops` clamping and applying spurious large shifts (raw magnitudes up
+  to 173-269px, well past any real slice jitter) on 14-30% of crop pairs, so misregistration is a
+  demonstrated contributor alongside, or instead of, blur. That closes the temporal-projection route as
+  currently built, not the classical route as a whole: the still-untried intensity/texture blob filter
+  is a different mechanism (no registration, no cross-slice blur) and stays the next thing to try
+  before reaching for a learned map. A cheap, untested follow-up worth a look before writing off
+  temporal projection entirely: reject spurious large-shift crops instead of clamping and applying
+  them. If the blob filter also fails to move the floor, *then* skip straight to a learned membrane map
+  (Phase 3), accepting the training cost, and judge it on boundary sharpness (the mEMbrain lesson), not
+  zoomed-out neatness.
 - ~~**The SAM3 neg x gen A/B shows negatives hurt SAM3**~~ Resolved 2026-07-29, the other way: the A/B
   shows negatives still help SAM3 (foreign_frame_rate and bleed severity both improve with negatives
   on, holding generous fixed), so the existing negatives-on preset needs no SAM3-specific retune. See
