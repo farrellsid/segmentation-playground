@@ -123,6 +123,10 @@ overrides rather than hardcoding them.
 - Two masks shifted by a known pixel offset: `centroid_drift_px` matches the offset's magnitude
   (within floating-point tolerance); `iou` is less than 1 and matches a hand-computed value for a
   simple shifted-rectangle case.
+- The same physical region expressed through two different local window shapes and offsets (the
+  case the shared-canvas paste logic exists for, per the docstring's tier-2-crop-window rationale
+  above): `iou == 1.0`, `centroid_drift_px == 0.0`. Also cover the offset-only case, identical local
+  masks at two different offsets, where `centroid_drift_px` is exactly the offset's own magnitude.
 - Two completely disjoint masks: `iou == 0.0`.
 - A transition where one mask is empty: `iou is None`, `centroid_drift_px is None`, and it is
   excluded from `summarize_z_consistency`'s IoU/drift means but counted in `n_dropout_transitions`.

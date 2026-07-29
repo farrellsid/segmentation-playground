@@ -27,6 +27,31 @@ def test_shifted_mask_hand_computed_iou_and_drift():
     assert abs(t["centroid_drift_px"] - 2.0) < 1e-9
 
 
+def test_offset_and_shape_difference_same_region_gives_perfect_consistency():
+    # The whole reason z_transitions pastes onto a shared canvas instead of comparing
+    # local arrays directly: a tier-2 crop window can move or resize between frames.
+    # Both masks below represent the identical absolute region, x[10, 14), y[10, 14),
+    # but through a different local window shape AND a different offset.
+    mask_a = np.ones((4, 4), dtype=bool)              # 4x4 window at (10, 10), fully filled
+    mask_b = np.zeros((6, 6), dtype=bool)              # 6x6 window at (8, 8)
+    mask_b[2:6, 2:6] = True                            # filled block lands on the same absolute region
+    masks = {5: (mask_a, 10, 10), 6: (mask_b, 8, 8)}
+    t = mm.z_transitions(masks)[0]
+    assert t["iou"] == 1.0
+    assert t["centroid_drift_px"] == 0.0
+
+
+def test_offset_only_drift_matches_pure_translation():
+    # Identical local masks, different offsets: centroid_drift_px should be exactly
+    # the offset's own magnitude (hypot(3, 4) == 5), with iou < 1 since the two
+    # placements only partially overlap.
+    m = _rect()
+    masks = {5: (m, 0, 0), 6: (m.copy(), 3, 4)}
+    t = mm.z_transitions(masks)[0]
+    assert abs(t["centroid_drift_px"] - 5.0) < 1e-9
+    assert t["iou"] < 1.0
+
+
 def test_disjoint_masks_zero_iou():
     m_a = np.zeros((10, 10), dtype=bool); m_a[0:2, 0:2] = True
     m_b = np.zeros((10, 10), dtype=bool); m_b[8:10, 8:10] = True
