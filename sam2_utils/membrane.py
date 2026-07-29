@@ -38,6 +38,58 @@ def membrane_map(em_patch: np.ndarray, *, sigmas=DEFAULT_SIGMAS) -> np.ndarray:
     return np.clip(resp / denom, 0.0, 1.0).astype(np.float32)
 
 
+def register_crops(crops: list[np.ndarray], *, max_shift: int = 5) -> list[np.ndarray]:
+    """Align every crop in `crops` to the center crop by an integer-pixel translation.
+
+    Uses phase correlation at pixel precision only, no subpixel interpolation, so no
+    blur is introduced by the alignment itself. Each estimated shift is clamped to
+    +/- max_shift px per axis before being applied, a safety valve against a
+    low-texture crop returning a wild or ambiguous shift. Returns a new list, same
+    length and shape as the input; the center crop (index len(crops) // 2) is
+    returned unchanged, everything else is float32.
+    """
+    from skimage.registration import phase_cross_correlation
+
+    n = len(crops)
+    if n <= 1:
+        return list(crops)
+    center_i = n // 2
+    ref = crops[center_i].astype(np.float32)
+    out = list(crops)
+    for i, crop in enumerate(crops):
+        if i == center_i:
+            continue
+        moving = crop.astype(np.float32)
+        shift, _error, _diffphase = phase_cross_correlation(ref, moving, upsample_factor=1)
+        shift = np.clip(np.round(shift), -max_shift, max_shift)
+        out[i] = ndi.shift(moving, shift, order=0, mode="nearest")
+    return out
+
+
+_COMBINERS = {
+    "median": lambda stack: np.median(stack, axis=0),
+    "mean": lambda stack: np.mean(stack, axis=0),
+    "max": lambda stack: np.max(stack, axis=0),
+    "min": lambda stack: np.min(stack, axis=0),
+}
+
+
+def project_crops(crops: list[np.ndarray], *, combine: str = "median") -> np.ndarray:
+    """Reduce an already-registered window of crops to one projected image.
+
+    `combine` selects the per-pixel reducer across the window: median (default) pulls
+    a pixel dark in a minority of slices, a transient organelle, toward the brighter
+    majority value, while a pixel dark in most or all slices, a persistent membrane,
+    stays dark; mean, max, and min are also available for the same call so a sweep can
+    compare them. A single-element `crops` returns that element unchanged for every
+    combiner, the natural window=0 fallback.
+    """
+    if combine not in _COMBINERS:
+        raise ValueError(f"unknown combine {combine!r}, choose one of {sorted(_COMBINERS)}")
+    stack = np.stack([np.asarray(c, dtype=np.float32) for c in crops], axis=0)
+    return _COMBINERS[combine](stack).astype(np.float32)
+
+
 def _perimeter(mask: np.ndarray) -> np.ndarray:
     """The 1-px inner boundary ring of a boolean mask."""
     return mask & ~ndi.binary_erosion(mask)
