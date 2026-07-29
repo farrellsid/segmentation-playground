@@ -69,7 +69,7 @@ import pandas as pd
 # wrong, which is what makes the eventual detector diagnosable per failure mode.
 # Mirrors calibration.ERROR_TYPES (kept in sync deliberately, same meaning) so a
 # shelved-tool gold set and a GUI-collected set share one vocabulary.
-ERROR_TYPES = ("wrong_object", "under", "over", "bleed", "fragmented", "missing", "other")
+ERROR_TYPES = ("wrong_object", "under", "over", "bleed", "fragmented", "missing", "nucleus", "other")
 
 # Frame roles: why a row exists. Drives the train/eval split and the selection-
 # bias guard (sampled rows are the only window onto silent errors).
