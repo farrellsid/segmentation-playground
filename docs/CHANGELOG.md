@@ -59,7 +59,7 @@ an empty mask gets `iou=None`, kept separate from the low-consistency signal so 
 well only because it dropped frames does not look falsely consistent. `summarize_z_consistency`
 aggregates these into `mean_z2z_iou`, `mean_centroid_drift_px`, `frac_gap1_transitions`
 (consecutive-slice transitions versus ones spanning a missed frame), `frac_low_iou` (the fraction of
-gap-1 transitions scoring below a new `--low-iou-threshold`, default 0.5), and
+gap-1, scored (non-dropout) transitions scoring below a new `--low-iou-threshold`, default 0.5), and
 `n_dropout_transitions`. Both functions are wired into `score_run` and `format_summary`'s summary
 line, and `score_run` now writes a `_z_consistency.csv` per run tree (one row per transition)
 alongside the existing `_merge_metric.csv`.

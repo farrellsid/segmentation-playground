@@ -166,22 +166,23 @@ mask pairs and independent of the membrane pass: `n_transitions` (total z-to-z p
 drift means below, this is the dropout signal `dropout_rate` already reports, not a low-consistency
 reading), `mean_z2z_iou` and `mean_centroid_drift_px` (mean IoU and centroid drift in px over the
 non-dropout transitions), `frac_gap1_transitions` (fraction of all transitions between consecutive
-z-slices, gap 1, as opposed to a gap left by a missing frame), and `frac_low_iou` (fraction of gap-1
-transitions scoring below `--low-iou-threshold`, so a real missed-frame gap does not get counted as a
-consistency failure). This group answers a question the per-frame fields above cannot: whether a
-run's masks hold their shape from slice to slice, which per-slice methods have no structural reason to
-do and video propagation does. The group is absent from the line (and every one of its keys is `None`
-in the returned summary) when no chain in the tree produced at least one z-to-z transition (every
-chain has zero or one mask).
+z-slices, gap 1, as opposed to a gap left by a missing frame), and `frac_low_iou` (fraction of gap-1,
+scored (non-dropout) transitions scoring below `--low-iou-threshold`, so neither a real missed-frame
+gap nor a dropout transition gets counted as a consistency failure). This group answers a question
+the per-frame fields above cannot: whether a run's masks hold their shape from slice to slice, which
+per-slice methods have no structural reason to do and video propagation does. The group is absent
+from the line (and every one of its keys is `None` in the returned summary) when no chain in the
+tree produced at least one z-to-z transition (every chain has zero or one mask).
 
 `_merge_metric.csv` gets four matching per-frame columns alongside the existing `z`, `neuron`,
 `chain_idx`, `own_contained`, `n_foreign`, `foreign_ids`, `empty`: `spanning_merge` (bool),
 `bled_fraction` (float), `boundary_on_membrane` (float), `underfill_fraction` (float). All four are
 blank for a frame the membrane pass could not score (EM unavailable, or `--no-membrane`).
 
-`score_run` also writes a `_z_consistency.csv` into the run tree, one row per z-to-z transition:
-`neuron`, `chain_idx`, `z_from`, `z_to`, `gap` (z distance between the two slices), `iou`, and
-`centroid_drift_px`. `iou`/`centroid_drift_px` are blank for a transition that touched an empty mask.
+`score_run` also writes a `_z_consistency.csv` into the run tree, one row per z-to-z transition, with
+columns in write order: `z_from`, `z_to`, `gap` (z distance between the two slices), `iou`,
+`centroid_drift_px`, `neuron`, `chain_idx`. `iou`/`centroid_drift_px` are blank for a transition that
+touched an empty mask.
 
 Repeat `--root` to compare runs on a single node-table load.
 

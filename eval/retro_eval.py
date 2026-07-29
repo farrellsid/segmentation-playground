@@ -77,7 +77,9 @@ def _meta_row(root: Path) -> dict:
 
 MERGE_KEYS = ("n_chains", "n_frames", "foreign_frame_rate", "dropout_rate",
               "total_foreign_nodes", "mild_bleed_rate", "spanning_merge_rate",
-              "mean_boundary_on_membrane", "mean_underfill_fraction")
+              "mean_boundary_on_membrane", "mean_underfill_fraction",
+              "mean_z2z_iou", "mean_centroid_drift_px", "frac_gap1_transitions",
+              "frac_low_iou")
 
 
 def eval_tree(root: Path, annotate_df: pd.DataFrame, *, membrane: bool,

@@ -98,7 +98,10 @@ loads the same masks internally and its signature is not touched by this spec (t
 changing it to accept a pre-loaded masks dict instead would break them for a saving that does not
 matter here: `chain_masks_in_sam` reads small per-frame mask PNGs, not the large EM frames the
 membrane pass separately caches, so the extra read is cheap and not worth threading a shared dict
-through an already-tested function's signature). `format_summary`'s printed line gains a third
+through an already-tested function's signature). The "small" framing applies most clearly to tier-2
+`_pcrop` chains; a legacy, non-tier-2 `_sam` chain saves a full-frame mask per slice, so its PNGs are
+not small in the same sense. The actual cost on a real 8052-frame smoke test was fine, but that is not
+a universal guarantee for every chain shape. `format_summary`'s printed line gains a third
 `|`-separated segment when consistency data is present, matching the existing pattern where the
 membrane segment only appears when that data exists.
 
