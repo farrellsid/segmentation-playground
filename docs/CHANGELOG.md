@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-29, nucleus-capture detector: GUI label added, NucleoNet spot-checked and verdicted](#r-2026-07-29-nucleus)
 - [2026-07-29, temporal membrane projection: register/project crops land, a gate confound found and corrected](#r-2026-07-29-temporal)
 - [2026-07-29, SAM3-vs-SAM2 scorecard consolidated, default backend decided](#r-2026-07-29)
 - [2026-07-23, sharded parallel scoring, the SAM3 config A/B presets, and a documentation sweep](#r-2026-07-23)
@@ -39,6 +40,55 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-29-nucleus"></a>
+## 2026-07-29, nucleus-capture detector: GUI label added, NucleoNet spot-checked and verdicted
+
+Phase 2e, the nested-membrane ceiling's nucleus-detection lever, got a design, a spot-check, and a
+docs update in one round. The classical fallback was skipped on purpose, per the design's gate below,
+not left undone.
+
+**Task 1: the `"nucleus"` GUI label.** `sam2_utils/labels.py`'s `ERROR_TYPES` gained `"nucleus"`
+(`("wrong_object", "under", "over", "bleed", "fragmented", "missing", "nucleus", "other")`), so the
+napari review GUI's existing error-type dropdown (`gui.py:1127`, which reads the tuple directly, no
+new UI code needed) can now tag nucleus-capture cases during normal review. That is how the labeled
+ground truth that formal scoring will eventually need starts to accumulate, as a byproduct of
+normal review rather than a dedicated labeling pass.
+
+**Task 2: NucleoNet spot-check, GATE VERDICT "generalizes."** NucleoNet turned out to be real, not the
+unconfirmed name it started as: a BSD-3-Clause-licensed, pretrained EM nucleus instance-segmentation
+model (Panoptic DeepLab architecture, bioRxiv preprint April 2026, `volume-em/empanada`/
+`empanada-napari`). Its headless inference API took real discovery work: the PyPI `empanada-dl`
+package ships the model architectures and the inference engine but no model zoo. NucleoNet's
+checkpoint URL and config (`NucleoNet_base_v2.yaml`) live only in the `empanada-napari` GitHub repo,
+so two small napari-free helper functions were vendored from `empanada_napari/utils.py` into
+`experiments/nucleonet_spotcheck.py` (a BSD-3-Clause attribution comment travels with them), sparing a
+full GUI/Qt install just to reuse two functions.
+
+Run on two target-worm EM frames: z=1456 (2 instances detected) and z=1472 (5 instances detected).
+Both the implementer and the controller read the rendered overlays independently: detections landed
+on round, membrane-bound structures with a mottled interior texture clearly distinct from the
+surrounding organelle-packed cytoplasm, with tight mask boundaries, and at z=1472 several of the
+detections were already anticipatable by eye from the raw EM panel before the overlay was applied. No
+false positives on mitochondria or other organelles in either frame. Per the design's gate, this
+verdict skips the classical dark-blob/thick-loop fallback entirely; `sam2_utils/nucleus.py` and
+`tests/test_nucleus.py` were not built.
+
+One follow-up surfaced during self-review and fixed in a separate commit: the inference engine's
+`nms_threshold`/`nms_kernel`/`confidence_thr`/`coarse_boundaries` kwargs have unconfirmed provenance,
+unlike the `NUCLEONET_*` constants, which each carry a source URL and fetch date. Now documented as a
+comment at `experiments/nucleonet_spotcheck.py:124-129` for whoever revisits this detector.
+
+**Task 3, skipped.** The plan explicitly skips the classical fallback when the NucleoNet gate says
+"generalizes," so no `sam2_utils/nucleus.py` detector was built this round.
+
+This is a qualitative, visual-only read; no quantitative precision/recall exists yet, and formal
+scoring is blocked on the labeled set Task 1's GUI change starts collecting. Wiring NucleoNet into
+`multimask_generous` or any other live pipeline lever stays a separate, future spec, matching the
+design's stated scope. See the roadmap's item 2e and
+`docs/superpowers/specs/2026-07-29-nucleus-detector-design.md`.
 
 ---
 

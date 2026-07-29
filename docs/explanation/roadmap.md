@@ -638,13 +638,43 @@ every frame, ordered cheap to expensive:
   finding, not yet a verdict: default AMG parameters are compute-heavy enough that a single
   target-worm frame did not finish in a short local wall-clock budget, so judging this probe
   properly is a CCDB job, tracked alongside 2d above. *(§4.3, §4.7 R5)*
-- **2e, nucleus detection by intensity/texture, not shape, NEW.** The lever for the nested-membrane
-  ceiling (problem 7) and a specific 2b.5 target, since a nucleus is one of the organelles that corrupts
-  the ridge map. Shape is unreliable: some real neurites are circular, so round does not mean nucleus. Use
-  intensity/colour plus filters, small nuclei are dark round blobs a median-filtered threshold isolates,
-  big nuclei have a thicker closed membrane loop. Detect, then exclude the nucleus and fill toward the
-  cell membrane, or re-prompt. Candidate tools to verify: NucleoNet, DropNet, median-filter thresholding
-  (names unconfirmed). See [[nucleus-capture-underfill]]. *(§4.5, §2 problem 7)*
+- **2e, nucleus detection by intensity/texture, not shape, GATE RUN 2026-07-29: NucleoNet generalizes,
+  classical fallback not built.** The lever for the nested-membrane ceiling (problem 7) and a specific
+  2b.5 target, since a nucleus is one of the organelles that corrupts the ridge map. Shape is unreliable:
+  some real neurites are circular, so round does not mean nucleus. The design spec's first step verified
+  NucleoNet is real, not the unconfirmed name it started as: a BSD-3-Clause-licensed, pretrained EM
+  nucleus instance-segmentation model (Panoptic DeepLab architecture, bioRxiv preprint April 2026,
+  `volume-em/empanada`/`empanada-napari`). Its headless inference API is undocumented outside a GitHub
+  config registry (the PyPI `empanada-dl` package ships the model and inference engine but no model zoo;
+  `NucleoNet_base_v2.yaml` and its Zenodo checkpoint URL live only in the `empanada-napari` repo), so
+  `experiments/nucleonet_spotcheck.py` discovers that chain and vendors two small napari-free helper
+  functions from `empanada_napari/utils.py` (a BSD-3-Clause attribution comment, not a full GUI/Qt
+  install) instead of installing the plugin's dependency tree.
+
+  Spot-checked on two target-worm EM frames: z=1456 (2 instances detected) and z=1472 (5 instances
+  detected). Both the implementer and the controller independently read the rendered overlays. At
+  z=1456, both detections sit on round, membrane-bound blobs with a mottled, homogeneous interior
+  texturally distinct from the organelle-packed cytoplasm around them, tight mask boundaries, no bleed
+  into neighbouring cytoplasm. At z=1472, the five detections cluster on structures a human can already
+  anticipate from the raw EM panel alone before the overlay is applied, again with tight boundaries and
+  no spillover. Neither frame shows a false positive on mitochondria or other organelles. GATE VERDICT:
+  NucleoNet generalizes. Per the design's explicit gate, this skips the classical dark-blob/thick-loop
+  fallback entirely: `sam2_utils/nucleus.py` and `tests/test_nucleus.py` were not built this round.
+
+  Caveat worth carrying forward: four of the inference engine's hyperparameters (`nms_threshold`,
+  `nms_kernel`, `confidence_thr`, `coarse_boundaries`) have unconfirmed provenance. The discovery pass
+  could not tell whether they came from `NucleoNet_base_v2.yaml` or are `empanada_napari.inference.
+  Engine2d`'s own defaults carried over unmodified (flagged as a comment at
+  `experiments/nucleonet_spotcheck.py:124-129`). Worth re-checking against the yaml or Engine2d's source
+  before treating those four as validated, if this detector is ever promoted beyond a spot-check.
+
+  This is a qualitative, visual-only read; no quantitative precision/recall exists yet, and formal
+  scoring is blocked on the labeled ground-truth set the new `"nucleus"` GUI error type
+  (`sam2_utils/labels.py`'s `ERROR_TYPES`, wired to `gui.py:1127`'s existing dropdown) starts collecting
+  during normal review sessions. Wiring NucleoNet into `multimask_generous` or any other live pipeline
+  lever stays a separate, future spec, unchanged from the design's stated scope. See
+  [[nucleus-capture-underfill]] and `docs/superpowers/specs/2026-07-29-nucleus-detector-design.md`.
+  *(§4.5, §2 problem 7)*
 
 The landed foundation also helps disambiguate outer-vs-inner border for the nested-membrane ceiling.
 **Ask the supervisor whether a reusable membrane model or training data survives from the prior
@@ -736,8 +766,15 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
     real clamping (14-30% of crop pairs, raw shifts up to 173-269px), so misregistration via the clamp
     is a demonstrated contributor alongside, or instead of, blur. Still does not unblock 2c/2d/2e; the
     next lever is the deferred intensity/texture blob filter.
-11. **Targeted grow-to-membrane + nucleus detection** (Phase 2c/2e). TODO, gated on item 10: wire the
-    underfill-gated fill (uf_min ~0.6-0.7) and intensity-based nucleus detection once the map is cleaner.
+11. **Targeted grow-to-membrane + nucleus detection** (Phase 2c/2e). Grow-to-membrane (2c) TODO, still
+    gated on item 10: wire the underfill-gated fill (uf_min ~0.6-0.7) once the map is cleaner. Nucleus
+    detection (2e) PARTLY DONE 2026-07-29: the detector is identified rather than built from scratch.
+    NucleoNet was spot-checked on two target-worm frames and verdicted "generalizes" (2 instances at
+    z=1456, 5 at z=1472, tight boundaries, no false positives on other organelles), so the classical
+    dark-blob/thick-loop fallback was skipped per the design's gate. Still TODO: wiring the detector
+    into `multimask_generous` or any other live lever (a separate future spec) and formal
+    precision/recall scoring, blocked on the labeled set the new `"nucleus"` GUI error type starts
+    collecting. See item 2e above and the CHANGELOG's 2026-07-29 nucleus-detector entry.
 12. **z-to-z consistency metric** (Phase 0.a). TODO: add before trusting any per-slice-vs-propagation
     ranking; relevant now that the working preference leans propagation.
 
