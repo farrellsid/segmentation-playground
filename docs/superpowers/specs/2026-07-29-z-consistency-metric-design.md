@@ -89,12 +89,18 @@ IoU only because most of its transitions were skipped due to dropout does not lo
 ## Integration
 
 `score_run` (the existing whole-tree scorer) gains an additional pass alongside its existing per-chain
-loop: for each chain, also call `z_transitions` on the same `masks` dict `score_chain` already loaded
-(reuse the load, do not read the chain's masks from disk twice), collect transitions across all
-chains, and fold `summarize_z_consistency`'s output into the same summary dict `summarize()` already
-returns, as new keys alongside `foreign_frame_rate`, `mild_bleed_rate`, etc. `format_summary`'s printed
-line gains a third `|`-separated segment when consistency data is present, matching the existing
-pattern where the membrane segment only appears when that data exists.
+loop: for each chain, call `pipeline.chain_masks_in_sam(chain_dir)` again and pass the result to
+`z_transitions`, collect transitions across all chains, and fold `summarize_z_consistency`'s output
+into the same summary dict `summarize()` already returns, as new keys alongside `foreign_frame_rate`,
+`mild_bleed_rate`, etc. This is a second call to `chain_masks_in_sam` per chain, `score_chain` already
+loads the same masks internally and its signature is not touched by this spec (two existing tests,
+`tests/test_merge_metric.py:63,167`, call `score_chain` directly with a chain-directory path, so
+changing it to accept a pre-loaded masks dict instead would break them for a saving that does not
+matter here: `chain_masks_in_sam` reads small per-frame mask PNGs, not the large EM frames the
+membrane pass separately caches, so the extra read is cheap and not worth threading a shared dict
+through an already-tested function's signature). `format_summary`'s printed line gains a third
+`|`-separated segment when consistency data is present, matching the existing pattern where the
+membrane segment only appears when that data exists.
 
 The per-transition records themselves are NOT joined onto the existing per-frame `_merge_metric.csv`
 (different grain: one row per frame vs one row per frame-pair, joining them would either duplicate
