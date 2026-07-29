@@ -465,9 +465,9 @@ Two upgrades this round, both cheap:
   0.5). A real smoke test against `original_perslice_only_guard_merged` (629 chains, 8052 frames)
   returned `mean_z2z_iou=0.592 mean_centroid_drift_px=5.45 frac_low_iou=0.285 frac_gap1=1.000`, the
   first number for something the project previously only had a visual read on (the presentation
-  deck's `perslice-jitter-strip.png`). Retro-scoring specific trees for an actual
+  deck's `perslice-jitter.png`). Retro-scoring specific trees for an actual
   per-slice-vs-propagation comparison is a follow-on use of this tool, not part of this landing. See
-  the CHANGELOG's 2026-07-29 entry. *(§4.1)*
+  the CHANGELOG's 2026-07-29 z-to-z consistency entry. *(§4.1)*
 - `0.b` **node-placement correction on the foreign-node metric.** A foreign skeleton node sitting on the
   shared membrane between two cells gets flagged the instant a basically-correct mask covers it, so some
   measured bleed is the ruler's fault, not the mask's. Split engulfed foreign nodes by distance from the

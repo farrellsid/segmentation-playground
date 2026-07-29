@@ -67,7 +67,7 @@ alongside the existing `_merge_metric.csv`.
 A real smoke test against `original_perslice_only_guard_merged` (629 chains, 8052 frames) returned
 `mean_z2z_iou=0.592 mean_centroid_drift_px=5.45 frac_low_iou=0.285 frac_gap1=1.000`, the first number
 for something the project previously only had a visual read on (the presentation deck's
-`perslice-jitter-strip.png` showed the jaggedness informally, without a number attached).
+`perslice-jitter.png` showed the jaggedness informally, without a number attached).
 Retro-scoring specific trees for an actual per-slice-vs-propagation comparison is a follow-on use of
 this tool, not part of this landing; see the roadmap's item 12 (§5, Phase 0.a).
 
