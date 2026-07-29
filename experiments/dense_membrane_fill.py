@@ -41,6 +41,8 @@ from eval.merge_metric import load_node_table, nodes_by_z, DEFAULT_RADIUS
 INDEX_CACHE = Path("docs/figures/sam3-bakeoff/dense-overlay/_index.json")
 OUT_DIR = Path("docs/figures/presentation/dense-membrane-fill")
 SCALE = 8
+MAX_SHIFT = 5  # must match mb.register_crops's max_shift so _shift_diag reports on the
+               # threshold actually applied, not a hardcoded number that could drift from it
 
 
 def foreign_count(mask_full: np.ndarray, nodes, neuron: str, radius: int) -> int:
@@ -53,7 +55,7 @@ def foreign_count(mask_full: np.ndarray, nodes, neuron: str, radius: int) -> int
     return n
 
 
-def _shift_diag(crops, center_i, max_shift=5):
+def _shift_diag(crops, center_i, max_shift=MAX_SHIFT):
     """Diagnostic only, not used to align anything: the raw (pre-clamp) phase-correlation
     shift magnitude for each non-reference crop against crops[center_i], plus whether that
     raw shift exceeds max_shift.
@@ -114,7 +116,7 @@ def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: st
             raw_mags, clamped = _shift_diag(crops, center_i)
             all_raw_mags.extend(raw_mags)
             all_clamped += clamped
-            crops = mb.register_crops(crops, center=center_i)
+            crops = mb.register_crops(crops, center=center_i, max_shift=MAX_SHIFT)
         em_crop = mb.project_crops(crops, combine=combine)
         mem = mb.membrane_map(em_crop)
         grown, _capped = grow_to_membrane(win, mem, cap=1e9)  # no clamp; cap applied later
@@ -131,7 +133,7 @@ def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: st
         }
     if window > 0 and all_raw_mags:
         print(f"[fill]   shift stats (window={window}, combine={combine}): "
-              f"{len(all_raw_mags)} crops, {all_clamped} clamped (|raw shift| > 5px), "
+              f"{len(all_raw_mags)} crops, {all_clamped} clamped (|raw shift| > {MAX_SHIFT}px), "
               f"raw shift range [{min(all_raw_mags):.1f}, {max(all_raw_mags):.1f}]px")
     return recs
 

@@ -23,19 +23,25 @@ def test_register_crops_aligns_to_center():
     assert abs(ref_peak[1] - aligned_peak[1]) <= 1
 
 
-def test_register_crops_explicit_center_overrides_lenhalf_default():
-    # len(crops) // 2 for a 2-element list is 0. grow_all builds crops from whichever z's
-    # actually loaded, so a degraded window (a failed frame load near the stack edge) can
-    # leave a 2-element list whose true center is index 1, not 0. Passing center=1
-    # explicitly must use crops[1] as the reference, not silently fall back to crops[0].
-    ref = np.zeros((24, 24), dtype=np.float32)
-    ref[10:14, 10:14] = 200.0
-    other = np.zeros((24, 24), dtype=np.float32)
-    other[6:10, 6:10] = 200.0  # mild shift, within max_shift, from a different starting position
-    aligned_list = mb.register_crops([other, ref], center=1)
-    assert np.array_equal(aligned_list[1], ref)  # the true reference is never modified
-    ref_peak = np.array(np.unravel_index(np.argmax(ref), ref.shape))
-    aligned_peak = np.array(np.unravel_index(np.argmax(aligned_list[0]), aligned_list[0].shape))
+def test_register_crops_explicit_center_on_even_length_list():
+    # len(crops) // 2 for a 4-element list is 2. A window degraded to 4 slices (e.g. one
+    # neighbour missing near the stack edge) can leave the true center at index 1, not 2.
+    # Passing center=1 explicitly must use crops[1] as the reference, not silently fall
+    # back to crops[2] the way the len//2 default would.
+    true_ref = np.zeros((24, 24), dtype=np.float32)
+    true_ref[10:14, 10:14] = 200.0  # crops[1], the real reference
+    wrong_ref = np.zeros((24, 24), dtype=np.float32)
+    wrong_ref[2:6, 2:6] = 200.0  # crops[2], unrelated content: the len // 2 default's pick
+
+    crops = [wrong_ref, true_ref, wrong_ref, wrong_ref]
+
+    default_out = mb.register_crops(crops)  # len(crops) // 2 == 2, the bug scenario
+    assert not np.array_equal(default_out[1], true_ref)
+
+    fixed_out = mb.register_crops(crops, center=1, max_shift=10)
+    assert np.array_equal(fixed_out[1], true_ref)  # the true reference is never modified
+    ref_peak = np.array(np.unravel_index(np.argmax(true_ref), true_ref.shape))
+    aligned_peak = np.array(np.unravel_index(np.argmax(fixed_out[0]), fixed_out[0].shape))
     assert np.all(np.abs(ref_peak - aligned_peak) <= 1)
 
 
