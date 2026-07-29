@@ -497,15 +497,22 @@ blow-up guard, without generous, is the leading candidate.** Its residual underf
 baseline's 0.483) is the honest cost of tight masks and points to Phase-2 item 2c (grow-to-membrane) as
 the next lever. Full numbers in the CHANGELOG (2026-07-20 entry).
 
-- `1.a` **SAM3 backend, runs done, decision pending (near-zero remaining compute).** The SAM3 whole-set
-  eval completed on Narval (2026-07-23): `perslice_only_guard` and `tier2_s1forced_neg` both ran, merged,
-  and were per-shard scored, plus a 2x2 config A/B (negatives 0 vs 3 x generous 0 vs 1). The
-  `perslice_only_guard_sam3` tree is already the de-facto working baseline (the dense-map and autofill
-  work all run on it). Remaining is consolidation, not compute: read the eval CSVs for the two production
-  configs and the neg x gen A/B, produce the single SAM3-vs-SAM2 scorecard the timed-out `retro_sam3` job
-  never finished, then make the `--backend sam3` default call. The neg x gen A/B also answers the open
-  "SAM3 optimal negatives" question feeding Phase 2e. Only open compute: `sam3_fullres` (partly
-  out-of-memory, unmerged) needs a memory bump if wanted. See [[sam3-pvs-bakeoff]]. *(§4.5)*
+- `1.a` **SAM3 backend, CLOSED 2026-07-29 (scorecard built, default decided).** The Globus download of
+  the Narval trees landed on F:, and the per-shard `_merge_metric.csv` files each tree already carried
+  let the scorecard be built locally by summarizing the cached per-frame CSVs (`eval.merge_metric.
+  summarize`), seconds not hours, sidestepping the `retro_sam3` job's 12-hour timeout entirely (it was
+  re-reading every mask from disk, redundant given the sharded scoring already ran). Result: SAM3
+  `perslice_only_guard` beats SAM2 `perslice_only_guard` on the trusted severe-bleed ruler by a wide,
+  whole-set-confirmed margin, foreign_frame_rate 0.087 vs 0.109, and, the bigger signal, the average
+  bleed touches 1.17 foreign skeleton nodes when it happens vs SAM2's 5.45. The neg x gen A/B refutes
+  the pre-registered "negatives hurt SAM3" hypothesis: negatives still help, generous still hurts, so
+  the existing `original_perslice_only_guard` preset (unchanged) is already the best SAM3 cell. Decision
+  (ADR 0017): keep `--backend sam3` opt-in rather than flip every preset's stored default, because
+  SAM3's underfill is still substantially higher (1.09 vs 0.62) and Phase 2c is the queued fix, and
+  because the ~2.2-2.5x compute cost is a per-run budget call better left explicit. `sam3_fullres`
+  (partly out-of-memory, unmerged) stays open only if full-res SAM3 is wanted later; nothing here
+  depends on it. Full numbers in [ADR 0017](../adr/0017-sam3-scorecard-and-default-backend.md). See
+  [[sam3-pvs-bakeoff]]. *(§4.5)*
 
 **Phase 1.5, seeding and correction (the propagation-consistency pivot).**
 
@@ -655,9 +662,11 @@ Mapped to the phases above. DONE / READY / TODO.
    pull/consolidate the eval CSVs (incl. the neg x gen A/B), finish the single SAM3-vs-SAM2 scorecard
    (`retro_sam3` timed out), decide `--backend sam3` default, and re-run `sam3_fullres` (partial OOM)
    if full-res is wanted. See [[sam3-pvs-bakeoff]]. Now Phase 1.a, not a loose parallel track.
-9. **Consolidate the SAM3 scores + decide the default backend** (Phase 1.a). TODO, near-zero compute:
-   read the eval CSVs, build the one SAM3-vs-SAM2 scorecard, read the neg x gen A/B for the SAM3-optimal
-   negatives config, make the `--backend sam3` default call.
+9. **Consolidate the SAM3 scores + decide the default backend** (Phase 1.a). DONE 2026-07-29: the
+   scorecard is built (summarizing the already-cached per-tree `_merge_metric.csv` files, no
+   mask re-reads needed), the neg x gen A/B confirms the current preset is already SAM3-optimal
+   (negatives help, generous hurts), and the default call is made: `--backend sam3` stays opt-in
+   (ADR 0017), not a silent default flip, pending Phase 2c's underfill fix.
 10. **Organelle-suppressed membrane map** (Phase 2b.5, the new pivot). TODO, next real experiment:
     temporal min/avg projection over adjacent slices + intensity/texture filter, re-run the
     `dense_membrane_fill.py` sweep, gate on whether the ~40% bleed-per-fill floor drops. Unblocks 2c/2d/2e.
@@ -693,9 +702,10 @@ unvalidated; the resolution goal is served by cropping / tiling.
 - **Classical organelle suppression (2b.5) fails to move the ~40% bleed-per-fill floor** -> skip the
   classical route and go straight to a learned membrane map (Phase 3), accepting the training cost, and
   judge it on boundary sharpness (the mEMbrain lesson), not zoomed-out neatness.
-- **The SAM3 neg x gen A/B shows negatives hurt SAM3** (as hypothesised, since SAM3 masks are already
-  tighter) -> drop negatives from the SAM3 default config, and revisit the negatives-on default that was
-  tuned for SAM2.
+- ~~**The SAM3 neg x gen A/B shows negatives hurt SAM3**~~ Resolved 2026-07-29, the other way: the A/B
+  shows negatives still help SAM3 (foreign_frame_rate and bleed severity both improve with negatives
+  on, holding generous fixed), so the existing negatives-on preset needs no SAM3-specific retune. See
+  [ADR 0017](../adr/0017-sam3-scorecard-and-default-backend.md).
 
 ---
 

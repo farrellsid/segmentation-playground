@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-29, SAM3-vs-SAM2 scorecard consolidated, default backend decided](#r-2026-07-29)
 - [2026-07-23, sharded parallel scoring, the SAM3 config A/B presets, and a documentation sweep](#r-2026-07-23)
 - [2026-07-21, SAM3 Phase 2: `--backend sam3` switch, cluster wiring, and the Narval runbook](#r-2026-07-21-sam3-cluster)
 - [2026-07-21, SAM3 vs SAM2 bake-off: HF-transformers PVS adapters + 2x2 comparison](#r-2026-07-21-sam3)
@@ -37,6 +38,31 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-29"></a>
+## 2026-07-29, SAM3-vs-SAM2 scorecard consolidated, default backend decided
+
+The Globus download of the Narval trees (both production SAM3 configs, the four-way neg x gen A/B,
+and the matching SAM2 baselines) landed on F:. Each tree already carried a stitched
+`_merge_metric.csv` from the sharded eval, so the comparison table did not need the timed-out
+`retro_sam3` cluster job at all: `eval.merge_metric.summarize()` run directly on the cached CSVs
+produced the same numbers in seconds, entirely locally, no mask I/O.
+
+SAM3 `perslice_only_guard` wins the trusted severe-bleed ruler over SAM2 `perslice_only_guard` on
+both frequency (foreign_frame_rate 0.087 vs 0.109) and severity (a bleeding frame touches 1.17
+foreign skeleton nodes on average for SAM3 vs 5.45 for SAM2). The 2x2 neg x gen A/B refutes the
+roadmap's pre-registered guess that negatives would hurt SAM3: negatives still help on every axis,
+generous still hurts, so the existing `original_perslice_only_guard` preset is already the best SAM3
+cell and needs no retune.
+
+Decision, recorded in [ADR 0017](adr/0017-sam3-scorecard-and-default-backend.md): `--backend sam3`
+stays opt-in rather than becoming every preset's silent default, because SAM3's underfill is still
+notably higher (1.09 vs 0.62, the known tight-mask cost Phase 2c is meant to fix) and the ~2.2-2.5x
+compute cost is a call worth leaving explicit per run rather than folding into the default. Phase 1.a
+is closed. `sam3_fullres` (partial out-of-memory, unmerged) stays open only if full-resolution SAM3
+is wanted later.
 
 ---
 
