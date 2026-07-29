@@ -238,7 +238,8 @@ All under your `--output-root`:
 ### Error types
 `wrong_object` (segmented the wrong neurite) · `under` (mask too small / misses part)
 · `over` (mask too big / grabs background) · `bleed` (leaks into a neighbour) ·
-`fragmented` (broken into pieces) · `missing` (no/empty mask) · `other`.
+`fragmented` (broken into pieces) · `missing` (no/empty mask) · `nucleus` (segmented
+the nucleus, not the cell) · `other`.
 
 ---
 
