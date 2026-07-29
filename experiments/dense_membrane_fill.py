@@ -12,6 +12,8 @@ mirrors how the single-mask autofill works.
 
     py -3 experiments/dense_membrane_fill.py                 # z=1456, the current-work frame
     py -3 experiments/dense_membrane_fill.py --z 1472 --pad 16
+    py -3 experiments/dense_membrane_fill.py --mm-window 1 --mm-combine median
+    py -3 experiments/dense_membrane_fill.py --sweep-temporal    # grid window/combine vs baseline
 """
 from __future__ import annotations
 
@@ -154,6 +156,9 @@ def main(argv=None):
                     help="combine statistic across the window (only used when --mm-window > 0)")
     ap.add_argument("--sweep", action="store_true",
                     help="sweep the runaway cap and the underfill gate")
+    ap.add_argument("--sweep-temporal", action="store_true",
+                    help="grid a few (window, combine) settings and print the same "
+                         "bleed/underfill table as --sweep")
     ap.add_argument("--arbitrate", action="store_true",
                     help="also resolve overlaps with a ridge-aware joint watershed (no overlaps)")
     ap.add_argument("--index", default=str(INDEX_CACHE))
@@ -213,6 +218,33 @@ def main(argv=None):
                   f"{100*(m['a_after']-m['a_before'])/max(1,m['a_before']):+5.0f}%  {m['foreign']:>6}   "
                   f"{m['bleed_cells']:>3}/{len(recs)}     {m['new_bleed']:>4}     {cont:>7}")
         print(f"\n[sweep]  baseline raw: foreign {raw_foreign}, bleed_cells {raw_bleed}/{len(recs)}\n")
+
+    if args.sweep_temporal:
+        max_w = 2
+        frames_wide = dict(frames)
+        for dz in range(args.mm_window + 1, max_w + 1):
+            for zz in (args.z - dz, args.z + dz):
+                if zz in frames_wide:
+                    continue
+                try:
+                    fz, _ = pipeline.load_frame_sam(zz, scale=SCALE)
+                except Exception:
+                    continue
+                frames_wide[zz] = fz.mean(axis=2) if fz.ndim == 3 else fz
+        print("\n[sweep temporal]  window  combine   mean_uf   area%   foreign  "
+              "bleed_cells  new_bleed  contested")
+        for w in (0, 1, 2):
+            combos = ("median",) if w == 0 else ("median", "mean", "max")
+            for combine in combos:
+                recs_t = grow_all(nmasks, frames_wide, args.z, w, combine, args.pad,
+                                  nodes, DEFAULT_RADIUS)
+                ch, m = apply_cap(recs_t, args.cap, args.uf_min)
+                cont = contested_px(ch, (h8, w8))
+                print(f"[sweept]  {w:>4}  {combine:>8}  {m['uf']:6.3f}  "
+                      f"{100*(m['a_after']-m['a_before'])/max(1,m['a_before']):+5.0f}%  "
+                      f"{m['foreign']:>6}   {m['bleed_cells']:>3}/{len(recs_t)}     "
+                      f"{m['new_bleed']:>4}     {cont:>7}")
+        print()
 
     # chosen fill at the requested cap + underfill gate
     chosen, m = apply_cap(recs, args.cap, args.uf_min)
