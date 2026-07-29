@@ -146,6 +146,7 @@ py -3 -m eval.merge_metric --root <merged_run> [--root <other> ...] [--radius N]
 | `--no-membrane` | Skip the Phase-2 membrane pass (Phase-0-only, no EM reads). |
 | `--tau T` | Membrane threshold on the normalised `[0, 1]` map (default 0.5). See [configuration.md](configuration.md). |
 | `--tol PX` | Tolerance in px for `boundary_on_membrane` (default 2). See [configuration.md](configuration.md). |
+| `--low-iou-threshold T` | IoU floor for `frac_low_iou`; a gap-1 z-to-z transition below `T` counts as low-consistency (default 0.5). |
 | `--scale N` | Override the `_sam` grid scale, for a merged tree with no `_run_meta.json` to read it from. |
 | `--neurons "A B ..."` | Score only these neuron dirs (comma- or space-separated). Used by the sharded eval array to split one tree across CPUs. |
 | `--out-csv <path>` | Write the per-frame CSV here instead of `<root>/_merge_metric.csv`. Only valid with a single `--root`; a shard task passes `<root>/_merge_metric.shard_<i>.csv`. |
@@ -159,10 +160,26 @@ membrane crossings regardless of foreign-node status), `mean_boundary_on_membran
 `mean_underfill_fraction`. These four are absent from the line (and `None` in the returned summary)
 when `--no-membrane` is passed or the EM could not be read for any frame.
 
+The line also always carries a z-to-z consistency group, scored from every chain's own adjacent-slice
+mask pairs and independent of the membrane pass: `n_transitions` (total z-to-z pairs scored),
+`n_dropout_transitions` (of those, how many touched an empty mask and so were excluded from the IoU/
+drift means below, this is the dropout signal `dropout_rate` already reports, not a low-consistency
+reading), `mean_z2z_iou` and `mean_centroid_drift_px` (mean IoU and centroid drift in px over the
+non-dropout transitions), `frac_gap1_transitions` (fraction of all transitions between consecutive
+z-slices, gap 1, as opposed to a gap left by a missing frame), and `frac_low_iou` (fraction of gap-1
+transitions scoring below `--low-iou-threshold`, so a real missed-frame gap does not get counted as a
+consistency failure). This group answers a question the per-frame fields above cannot: whether a
+run's masks hold their shape from slice to slice, which per-slice methods have no structural reason to
+do and video propagation does.
+
 `_merge_metric.csv` gets four matching per-frame columns alongside the existing `z`, `neuron`,
 `chain_idx`, `own_contained`, `n_foreign`, `foreign_ids`, `empty`: `spanning_merge` (bool),
 `bled_fraction` (float), `boundary_on_membrane` (float), `underfill_fraction` (float). All four are
 blank for a frame the membrane pass could not score (EM unavailable, or `--no-membrane`).
+
+`score_run` also writes a `_z_consistency.csv` into the run tree, one row per z-to-z transition:
+`neuron`, `chain_idx`, `z_from`, `z_to`, `gap` (z distance between the two slices), `iou`, and
+`centroid_drift_px`. `iou`/`centroid_drift_px` are blank for a transition that touched an empty mask.
 
 Repeat `--root` to compare runs on a single node-table load.
 

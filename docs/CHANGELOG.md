@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-29, z-to-z consistency metric: a temporal ruler for the merge metric's per-frame blind spot](#r-2026-07-29-z2z)
 - [2026-07-29, nucleus-capture detector: GUI label added, NucleoNet spot-checked and verdicted](#r-2026-07-29-nucleus)
 - [2026-07-29, temporal membrane projection: register/project crops land, a gate confound found and corrected](#r-2026-07-29-temporal)
 - [2026-07-29, SAM3-vs-SAM2 scorecard consolidated, default backend decided](#r-2026-07-29)
@@ -40,6 +41,35 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-29-z2z"></a>
+## 2026-07-29, z-to-z consistency metric: a temporal ruler for the merge metric's per-frame blind spot
+
+The target-worm merge metric (`eval/merge_metric.py`) scores each frame independently, so it has no
+way to see whether a run's masks hold their shape from slice to slice, and it structurally favours
+per-slice methods over video propagation, the method that buys that consistency. Phase 0.a closes
+that gap.
+
+`z_transitions` computes IoU and centroid drift between every pair of a chain's adjacent-z masks, in a
+shared coordinate frame built from each mask's own `_sam`-grid offset (a tier-2 crop window can move
+or resize between frames, so the two local arrays cannot be compared directly). A transition touching
+an empty mask gets `iou=None`, kept separate from the low-consistency signal so a chain that scores
+well only because it dropped frames does not look falsely consistent. `summarize_z_consistency`
+aggregates these into `mean_z2z_iou`, `mean_centroid_drift_px`, `frac_gap1_transitions`
+(consecutive-slice transitions versus ones spanning a missed frame), `frac_low_iou` (the fraction of
+gap-1 transitions scoring below a new `--low-iou-threshold`, default 0.5), and
+`n_dropout_transitions`. Both functions are wired into `score_run` and `format_summary`'s summary
+line, and `score_run` now writes a `_z_consistency.csv` per run tree (one row per transition)
+alongside the existing `_merge_metric.csv`.
+
+A real smoke test against `original_perslice_only_guard_merged` (629 chains, 8052 frames) returned
+`mean_z2z_iou=0.592 mean_centroid_drift_px=5.45 frac_low_iou=0.285 frac_gap1=1.000`, the first number
+for something the project previously only had a visual read on (the presentation deck's
+`perslice-jitter-strip.png` showed the jaggedness informally, without a number attached).
+Retro-scoring specific trees for an actual per-slice-vs-propagation comparison is a follow-on use of
+this tool, not part of this landing; see the roadmap's item 12 (§5, Phase 0.a).
 
 ---
 

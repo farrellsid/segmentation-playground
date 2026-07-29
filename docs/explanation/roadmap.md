@@ -455,10 +455,19 @@ merge-metric**, scored against our own CATMAID skeletons, GT-free:
   residual).
 
 Two upgrades this round, both cheap:
-- `0.a` **z-to-z consistency metric.** The merge metric scores each frame independently, so it is blind
-  to temporal consistency and structurally favours per-slice over propagation (the method that buys
-  consistency). Add a z-to-z IoU / drift term before trusting any per-slice-vs-propagation ranking, which
-  matters because the 3D meshes need temporal coherence the current ruler cannot see. *(§4.1)*
+- `0.a` **z-to-z consistency metric.** DONE 2026-07-29: the merge metric used to score each frame
+  independently, blind to temporal consistency and structurally favouring per-slice over propagation
+  (the method that buys consistency). `eval/merge_metric.py` gained `z_transitions` (per-chain z-to-z
+  IoU and centroid drift, computed in a shared coordinate frame built from each mask's own `_sam`-grid
+  offset) and `summarize_z_consistency` (aggregates to `mean_z2z_iou`, `mean_centroid_drift_px`,
+  `frac_gap1_transitions`, `frac_low_iou`, `n_dropout_transitions`), wired into `score_run`'s summary
+  line and a new `_z_consistency.csv` per run tree, plus a `--low-iou-threshold` CLI flag (default
+  0.5). A real smoke test against `original_perslice_only_guard_merged` (629 chains, 8052 frames)
+  returned `mean_z2z_iou=0.592 mean_centroid_drift_px=5.45 frac_low_iou=0.285 frac_gap1=1.000`, the
+  first number for something the project previously only had a visual read on (the presentation
+  deck's `perslice-jitter-strip.png`). Retro-scoring specific trees for an actual
+  per-slice-vs-propagation comparison is a follow-on use of this tool, not part of this landing. See
+  the CHANGELOG's 2026-07-29 entry. *(§4.1)*
 - `0.b` **node-placement correction on the foreign-node metric.** A foreign skeleton node sitting on the
   shared membrane between two cells gets flagged the instant a basically-correct mask covers it, so some
   measured bleed is the ruler's fault, not the mask's. Split engulfed foreign nodes by distance from the
@@ -775,8 +784,12 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
     into `multimask_generous` or any other live lever (a separate future spec) and formal
     precision/recall scoring, blocked on the labeled set the new `"nucleus"` GUI error type starts
     collecting. See item 2e above and the CHANGELOG's 2026-07-29 nucleus-detector entry.
-12. **z-to-z consistency metric** (Phase 0.a). TODO: add before trusting any per-slice-vs-propagation
-    ranking; relevant now that the working preference leans propagation.
+12. **z-to-z consistency metric** (Phase 0.a). DONE 2026-07-29: `z_transitions`/`summarize_z_consistency`
+    landed in `eval/merge_metric.py`, wired into `score_run`, `format_summary`, and a new
+    `--low-iou-threshold` CLI flag, writing a `_z_consistency.csv` per run tree. A smoke test against
+    `original_perslice_only_guard_merged` (629 chains, 8052 frames) returned `mean_z2z_iou=0.592
+    mean_centroid_drift_px=5.45 frac_low_iou=0.285 frac_gap1=1.000`. Retro-scoring specific trees for a
+    per-slice-vs-propagation comparison is a follow-on use of the tool, not something this landing did.
 
 `bigimg` (SAM2 `image_size` 2048) stays retired: it crashes off-distribution and its output would be
 unvalidated; the resolution goal is served by cropping / tiling.
