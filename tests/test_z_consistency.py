@@ -74,3 +74,22 @@ def test_summarize_aggregates_and_excludes_dropout_and_gaps_correctly():
     assert abs(s["frac_gap1_transitions"] - 3 / 4) < 1e-9
     # frac_low_iou only counts gap==1, scored transitions: [0.9, 0.3], 1 of 2 below 0.5
     assert abs(s["frac_low_iou"] - 0.5) < 1e-9
+
+
+def test_format_summary_handles_frac_low_iou_none_without_crashing():
+    # A heavily z-sparse tree (every scored transition has gap != 1): mean_z2z_iou is
+    # a real float (computed over all scored transitions) but frac_low_iou's
+    # gap-1-only denominator is empty, so it is None. format_summary's gate only
+    # checks mean_z2z_iou before formatting the whole segment; this used to raise
+    # TypeError on frac_low_iou's ":.3f" format spec against None.
+    s = {
+        "n_chains": 1, "n_frames": 3, "foreign_frame_rate": 0.0,
+        "dropout_rate": 0.0, "total_foreign_nodes": 0,
+        "n_transitions": 2, "n_dropout_transitions": 0,
+        "mean_z2z_iou": 0.42, "mean_centroid_drift_px": 3.1,
+        "frac_gap1_transitions": 0.0, "frac_low_iou": None,
+    }
+    line = mm.format_summary("sparse_run", s)
+    assert "\n" not in line
+    assert "frac_low_iou=n/a" in line
+    assert "mean_z2z_iou=0.420" in line

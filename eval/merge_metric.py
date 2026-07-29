@@ -356,6 +356,17 @@ def score_run(root, annotate_df: pd.DataFrame | None = None,
     return per, summary
 
 
+def _fmt_or_na(v, spec: str) -> str:
+    """Format v with spec, or "n/a" when v is None.
+
+    mean_z2z_iou being non-None does not guarantee every other z-consistency field
+    is: a heavily z-sparse tree (every scored transition has gap != 1) can have a
+    real mean_z2z_iou while frac_low_iou's gap-1-only denominator is empty, giving
+    frac_low_iou=None. Each z field is formatted independently through this rather
+    than assuming the mean_z2z_iou gate covers the whole segment."""
+    return format(v, spec) if v is not None else "n/a"
+
+
 def format_summary(name: str, s: dict) -> str:
     line = (f"{name:<28} chains={s['n_chains']:>4} frames={s['n_frames']:>6} "
             f"foreign_frame_rate={s['foreign_frame_rate']:.3f} "
@@ -369,8 +380,8 @@ def format_summary(name: str, s: dict) -> str:
     if s.get("mean_z2z_iou") is not None:
         line += (f" | mean_z2z_iou={s['mean_z2z_iou']:.3f} "
                  f"mean_centroid_drift_px={s['mean_centroid_drift_px']:.2f} "
-                 f"frac_low_iou={s['frac_low_iou']:.3f} "
-                 f"frac_gap1={s['frac_gap1_transitions']:.3f}")
+                 f"frac_low_iou={_fmt_or_na(s.get('frac_low_iou'), '.3f')} "
+                 f"frac_gap1={_fmt_or_na(s.get('frac_gap1_transitions'), '.3f')}")
     return line
 
 
