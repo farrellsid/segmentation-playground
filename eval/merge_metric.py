@@ -269,7 +269,8 @@ def run_scale(root: Path) -> int:
 def score_run(root, annotate_df: pd.DataFrame | None = None,
               radius: int = DEFAULT_RADIUS, membrane_source="auto",
               tau: float = membrane.DEFAULT_TAU, tol: int = membrane.DEFAULT_TOL,
-              scale: int | None = None, neurons=None, out_csv=None
+              scale: int | None = None, neurons=None, out_csv=None,
+              low_iou_threshold: float = 0.5
               ) -> tuple[pd.DataFrame, dict]:
     """Aggregate per-chain records, write CSV, return per-frame DataFrame and summary.
 
@@ -305,6 +306,7 @@ def score_run(root, annotate_df: pd.DataFrame | None = None,
     want = set(neurons) if neurons is not None else None
 
     rows: list[dict] = []
+    z_rows: list[dict] = []
     for neuron_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         neuron = neuron_dir.name
         if want is not None and neuron not in want:
@@ -315,14 +317,23 @@ def score_run(root, annotate_df: pd.DataFrame | None = None,
                                    membrane_source, tau=tau, tol=tol):
                 rec.update(neuron=neuron, chain_idx=cidx)
                 rows.append(rec)
+            chain_masks = pipeline.chain_masks_in_sam(chain_dir)
+            for trec in z_transitions(chain_masks):
+                trec.update(neuron=neuron, chain_idx=cidx)
+                z_rows.append(trec)
 
     per = pd.DataFrame(rows)
     summary = summarize(per)
+    z_summary = summarize_z_consistency(z_rows, low_iou_threshold=low_iou_threshold)
+    summary.update(z_summary)
     if len(per):
         per_out = per.copy()
         per_out["foreign_ids"] = per_out["foreign_ids"].apply(lambda ids: ";".join(ids))
         dest = Path(out_csv) if out_csv is not None else root / "_merge_metric.csv"
         per_out.to_csv(dest, index=False)
+    if z_rows:
+        z_dest = root / "_z_consistency.csv"
+        pd.DataFrame(z_rows).to_csv(z_dest, index=False)
     return per, summary
 
 
@@ -336,6 +347,11 @@ def format_summary(name: str, s: dict) -> str:
                  f"spanning_merge_rate={s['spanning_merge_rate']:.3f} "
                  f"boundary_on_membrane={s['mean_boundary_on_membrane']:.3f} "
                  f"underfill={s['mean_underfill_fraction']:.3f}")
+    if s.get("mean_z2z_iou") is not None:
+        line += (f" | mean_z2z_iou={s['mean_z2z_iou']:.3f} "
+                 f"mean_centroid_drift_px={s['mean_centroid_drift_px']:.2f} "
+                 f"frac_low_iou={s['frac_low_iou']:.3f} "
+                 f"frac_gap1={s['frac_gap1_transitions']:.3f}")
     return line
 
 
@@ -350,6 +366,8 @@ def main(argv=None) -> int:
                     help="membrane threshold on the normalised [0,1] map")
     ap.add_argument("--tol", type=int, default=membrane.DEFAULT_TOL,
                     help="px tolerance for boundary-on-membrane")
+    ap.add_argument("--low-iou-threshold", type=float, default=0.5,
+                    help="z-to-z IoU below this counts toward frac_low_iou")
     ap.add_argument("--scale", type=int, default=None,
                     help="override the _sam grid scale (for merged trees with no _run_meta.json)")
     ap.add_argument("--neurons", default=None,
@@ -373,7 +391,8 @@ def main(argv=None) -> int:
         src = None if args.no_membrane else MembraneSource(scale)
         _per, summ = score_run(root, annotate_df=annotate_df, radius=args.radius,
                                membrane_source=src, tau=args.tau, tol=args.tol,
-                               scale=scale, neurons=neurons, out_csv=args.out_csv)
+                               scale=scale, neurons=neurons, out_csv=args.out_csv,
+                               low_iou_threshold=args.low_iou_threshold)
         print(format_summary(Path(root).name, summ))
     return 0
 
