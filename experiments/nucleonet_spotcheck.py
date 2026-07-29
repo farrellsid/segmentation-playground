@@ -39,6 +39,13 @@ INDEX_CACHE = Path("docs/figures/sam3-bakeoff/dense-overlay/_index.json")
 OUT_DIR = Path("docs/figures/presentation/nucleonet-spotcheck")
 SCALE = 8
 
+# The constants and functions below (the NUCLEONET_* values and the two helper functions,
+# _load_nucleonet_weights and _preprocess) are adapted from empanada-napari (github.com/volume-em/
+# empanada-napari): the constants from empanada_napari/configs/NucleoNet_base_v2.yaml, the
+# functions from empanada_napari/utils.py. BSD 3-Clause License, Copyright (c) 2021, volume-em.
+# Redistributed here per that license's terms; see docs/superpowers/specs/
+# 2026-07-29-nucleus-detector-design.md for the license verification this project did before use.
+
 # NucleoNet_base_v2, from empanada-napari's model registry (config content fetched directly from
 # https://raw.githubusercontent.com/volume-em/empanada-napari/main/empanada_napari/configs/
 # NucleoNet_base_v2.yaml on 2026-07-29; the base empanada-dl package has no such registry itself).
@@ -52,12 +59,6 @@ NUCLEONET_STD = 0.12765
 NUCLEONET_PADDING_FACTOR = 512
 NUCLEONET_LABEL_DIVISOR = 1000
 NUCLEONET_THING_LIST = [1]  # class 1 = "nuclei" (the only class this model predicts)
-
-
-# The download and preprocessing logic below is adapted from empanada_napari/utils.py
-# (github.com/volume-em/empanada-napari), BSD 3-Clause License, Copyright (c) 2021, volume-em.
-# Redistributed here per that license's terms; see docs/superpowers/specs/
-# 2026-07-29-nucleus-detector-design.md for the license verification this project did before use.
 
 
 def _load_nucleonet_weights(device):

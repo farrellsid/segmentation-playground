@@ -60,7 +60,11 @@ a student. Verified via web search before this spec was written:
   PyPI package, which has a scriptable Python inference API, no napari GUI required, so it fits this
   pipeline's batch-script architecture.
 - License: BSD-3-Clause (`volume-em/empanada`), permissive, no non-commercial restriction to
-  verify, unlike the roadmap's existing nnInteractive caveat.
+  verify, unlike the roadmap's existing nnInteractive caveat. `volume-em/empanada-napari`, the
+  separate GitHub repo the vendored helper functions in `experiments/nucleonet_spotcheck.py`
+  actually came from, was independently checked too (its own LICENSE file, not just an inference
+  from the base package sharing an org): also BSD 3-Clause, "Copyright (c) 2021, volume-em," same
+  terms.
 - Requires torch (GPU optional, CPU inference works, just slower), Python 3.10 to 3.13.
 - **Unverified: domain generalization to C. elegans.** Nothing in the available documentation names
   the organism or tissue types in the training set beyond "cancer models" and "in vivo tumors,"
