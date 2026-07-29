@@ -54,6 +54,12 @@ NUCLEONET_LABEL_DIVISOR = 1000
 NUCLEONET_THING_LIST = [1]  # class 1 = "nuclei" (the only class this model predicts)
 
 
+# The download and preprocessing logic below is adapted from empanada_napari/utils.py
+# (github.com/volume-em/empanada-napari), BSD 3-Clause License, Copyright (c) 2021, volume-em.
+# Redistributed here per that license's terms; see docs/superpowers/specs/
+# 2026-07-29-nucleus-detector-design.md for the license verification this project did before use.
+
+
 def _load_nucleonet_weights(device):
     """Download (and cache) the NucleoNet TorchScript checkpoint, same cache dir convention
     empanada-napari uses (~/.empanada, via torch.hub), so a manual empanada-napari install would
