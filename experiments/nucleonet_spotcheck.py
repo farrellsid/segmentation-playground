@@ -121,6 +121,11 @@ def run_nucleonet(em_gray: np.ndarray) -> np.ndarray:
     engine = PanopticDeepLabRenderEngine(
         model, thing_list=NUCLEONET_THING_LIST,
         label_divisor=NUCLEONET_LABEL_DIVISOR,
+        # nms_threshold/nms_kernel/confidence_thr/coarse_boundaries: unlike the NUCLEONET_*
+        # constants above, this task's discovery pass did not confirm whether these four came
+        # from NucleoNet_base_v2.yaml or are empanada_napari.inference.Engine2d's own inference
+        # defaults carried over unmodified. Re-check against the yaml or Engine2d's source
+        # before treating these as validated hyperparameters beyond this spot-check.
         nms_threshold=0.1, nms_kernel=7, confidence_thr=0.5,
         padding_factor=NUCLEONET_PADDING_FACTOR, coarse_boundaries=True,
     )
