@@ -611,11 +611,12 @@ every frame, ordered cheap to expensive:
   two mechanisms cleanly, but the clamped fraction roughly doubling from window=1 to window=2 lines up
   with where the regression is worst.
 
-  **2c, 2d, and 2e stay gated, now on the deferred intensity/texture blob filter instead of this
-  lever**: no `(window, combine)` setting improves the bleed-per-fill rate, the population-controlled
-  metric, even where the absolute foreign-node count happens to land at or slightly below baseline by
-  growing fewer cells. One untested, cheap follow-up worth a look before writing the lever off
-  entirely: reject spurious large-shift crops instead of clamping and applying them. See
+  **2c and 2d stay gated, now on the deferred intensity/texture blob filter instead of this lever**
+  (2e no longer waits on it: NucleoNet resolved nucleus detection independently, see item 2e below):
+  no `(window, combine)` setting improves the bleed-per-fill rate, the population-controlled metric,
+  even where the absolute foreign-node count happens to land at or slightly below baseline by growing
+  fewer cells. One untested, cheap follow-up worth a look before writing the lever off entirely: reject
+  spurious large-shift crops instead of clamping and applying them. See
   [[membrane-temporal-projection-idea]]. *(§4.3 tier-2 bottleneck)*
 - **2c, grow-to-membrane refinement of masks, PROTOTYPED (`experiments/dense_membrane_fill.py`).** Reuses
   the membrane signal and the `underfill_fraction` flood that 2b only measures, this time growing a mask
@@ -773,8 +774,8 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
     bleed (136-148 vs baseline 139) despite growing FEWER cells, and window=2 moderately, not
     dramatically, worse (foreign 161-189, bleed_cells up to 61/117). The shift-clamp diagnostic found
     real clamping (14-30% of crop pairs, raw shifts up to 173-269px), so misregistration via the clamp
-    is a demonstrated contributor alongside, or instead of, blur. Still does not unblock 2c/2d/2e; the
-    next lever is the deferred intensity/texture blob filter.
+    is a demonstrated contributor alongside, or instead of, blur. Still does not unblock 2c/2d; the
+    next lever is the deferred intensity/texture blob filter (2e no longer waits on it, see item 11).
 11. **Targeted grow-to-membrane + nucleus detection** (Phase 2c/2e). Grow-to-membrane (2c) TODO, still
     gated on item 10: wire the underfill-gated fill (uf_min ~0.6-0.7) once the map is cleaner. Nucleus
     detection (2e) PARTLY DONE 2026-07-29: the detector is identified rather than built from scratch.
@@ -826,8 +827,9 @@ unvalidated; the resolution goal is served by cropping / tiling.
   to 173-269px, well past any real slice jitter) on 14-30% of crop pairs, so misregistration is a
   demonstrated contributor alongside, or instead of, blur. That closes the temporal-projection route as
   currently built, not the classical route as a whole: the still-untried intensity/texture blob filter
-  is a different mechanism (no registration, no cross-slice blur) and stays the next thing to try
-  before reaching for a learned map. A cheap, untested follow-up worth a look before writing off
+  is a different mechanism (no registration, no cross-slice blur) and stays the next thing to try for
+  2c/2d before reaching for a learned map (2e, nucleus detection, no longer waits on this: NucleoNet
+  resolved it independently, item 11). A cheap, untested follow-up worth a look before writing off
   temporal projection entirely: reject spurious large-shift crops instead of clamping and applying
   them. If the blob filter also fails to move the floor, *then* skip straight to a learned membrane map
   (Phase 3), accepting the training cost, and judge it on boundary sharpness (the mEMbrain lesson), not
