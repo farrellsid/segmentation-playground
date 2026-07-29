@@ -158,7 +158,10 @@ def main(argv=None):
 
     print(f"[nucleonet] z={args.z}: running NucleoNet inference ...")
     nuc_labels = run_nucleonet(em_gray.astype(np.float32))
-    n_detected = int(nuc_labels.max())
+    # Instance ids come from a modulo decode (pan_seg % label_divisor) and are not guaranteed
+    # contiguous, so count distinct ids rather than trusting the max id (subtract 1 for the
+    # background/0 label, which is always present).
+    n_detected = int(len(np.unique(nuc_labels)) - 1)
     print(f"[nucleonet] z={args.z}: {n_detected} nucleus instances detected")
 
     lut = do.build_palette(max(n_detected, 1))
