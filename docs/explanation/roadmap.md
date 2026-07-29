@@ -545,14 +545,25 @@ every frame, ordered cheap to expensive:
   and [cli.md](../reference/cli.md). The signature is a swappable interface: a trained model (the
   Mulcahy/Witvliet skeleton-to-membrane expansion, or a small U-Net) can drop in behind
   `membrane_map` later without touching the detectors or the scorer.
-- **2b.5, improve the membrane map by suppressing organelles, NEW and now the pivot of Phase 2.** The
-  autofill finding (problem 8 above) says the scale-8 Sato ridge map is the ceiling: organelles and
-  vesicles create the false walls and gaps that make ~40% of grown cells leak, and no amount of grow or
-  arbitration tuning moves that floor. Cheap classical suppression comes first: a temporal min or average
-  intensity projection over adjacent slices (organelles are transient across z, membranes are nearly
-  stationary) plus an intensity/texture filter for the dark blobs. This is Ben's filters idea and the
-  student's colour idea converging. Gate: does the fill sweep's ~40% bleed-per-fill drop. **2c, 2d, and
-  2e are all gated on this.** See [[membrane-temporal-projection-idea]]. *(§4.3 tier-2 bottleneck)*
+- **2b.5, improve the membrane map by suppressing organelles, MEASURED 2026-07-29: temporal projection
+  alone makes the bleed floor worse, not better.** The autofill finding (problem 8 above) says the
+  scale-8 Sato ridge map is the ceiling: organelles and vesicles create the false walls and gaps that
+  make ~40% of grown cells leak, and no amount of grow or arbitration tuning moves that floor. The
+  cheap classical lever tried first was a temporal median/mean/max projection over adjacent z-slices
+  (organelles are transient across z, membranes are nearly stationary), landed as `register_crops` /
+  `project_crops` in `sam2_utils/membrane.py` and wired into `experiments/dense_membrane_fill.py` via
+  `--mm-window`/`--mm-combine` and a `--sweep-temporal` grid. The real gate run (z=1456, uf_min 0.6,
+  117 neurons) shows every non-baseline `(window, combine)` setting doing worse than the window=0
+  baseline (foreign 39, bleed_cells 28/117, mean_uf 0.403, area +12%) on every axis at once: window=1
+  roughly doubles foreign-node bleed (76-82, bleed_cells 39-41/117) and pushes mean underfill up to
+  0.55-0.82; window=2 is worse again (foreign 110-124, bleed_cells 42-54/117, mean_uf 0.66-0.95, area
+  growth up to +54%). Because underfill, bleed, and area all move the wrong way together as the window
+  widens, this is a straight regression, not a trade-off between metrics. A plausible but unverified
+  read is that registering and projecting the crop blurs the already-thin scale-8 ridge signal faster
+  than it suppresses organelle noise, weakening the membrane wall rather than cleaning it. **2c, 2d, and
+  2e stay gated, now on the deferred intensity/texture blob filter instead of this lever**, informed by
+  a real negative result rather than starting cold. See [[membrane-temporal-projection-idea]].
+  *(§4.3 tier-2 bottleneck)*
 - **2c, grow-to-membrane refinement of masks, PROTOTYPED (`experiments/dense_membrane_fill.py`).** Reuses
   the membrane signal and the `underfill_fraction` flood that 2b only measures, this time growing a mask
   to its bounding membrane. Verdict from the dense-frame sweep: the usable operating point is **targeted
@@ -667,9 +678,13 @@ Mapped to the phases above. DONE / READY / TODO.
    mask re-reads needed), the neg x gen A/B confirms the current preset is already SAM3-optimal
    (negatives help, generous hurts), and the default call is made: `--backend sam3` stays opt-in
    (ADR 0017), not a silent default flip, pending Phase 2c's underfill fix.
-10. **Organelle-suppressed membrane map** (Phase 2b.5, the new pivot). TODO, next real experiment:
-    temporal min/avg projection over adjacent slices + intensity/texture filter, re-run the
-    `dense_membrane_fill.py` sweep, gate on whether the ~40% bleed-per-fill floor drops. Unblocks 2c/2d/2e.
+10. **Organelle-suppressed membrane map** (Phase 2b.5, the new pivot). DONE, negative result
+    (2026-07-29): `register_crops`/`project_crops` landed and `dense_membrane_fill.py` gained
+    `--mm-window`/`--mm-combine`/`--sweep-temporal`. The real gate (z=1456, uf_min 0.6) shows temporal
+    projection alone makes bleed worse at every setting tried, not flat and not better, foreign-node
+    bleed roughly doubles at window=1 and roughly triples at window=2 versus the window=0 baseline's
+    39. Does not unblock 2c/2d/2e; the next lever is the deferred intensity/texture blob filter,
+    informed by this negative result.
 11. **Targeted grow-to-membrane + nucleus detection** (Phase 2c/2e). TODO, gated on item 10: wire the
     underfill-gated fill (uf_min ~0.6-0.7) and intensity-based nucleus detection once the map is cleaner.
 12. **z-to-z consistency metric** (Phase 0.a). TODO: add before trusting any per-slice-vs-propagation

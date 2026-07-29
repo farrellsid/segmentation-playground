@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-29, temporal membrane projection: register/project crops land, the gate comes back negative](#r-2026-07-29-temporal)
 - [2026-07-29, SAM3-vs-SAM2 scorecard consolidated, default backend decided](#r-2026-07-29)
 - [2026-07-23, sharded parallel scoring, the SAM3 config A/B presets, and a documentation sweep](#r-2026-07-23)
 - [2026-07-21, SAM3 Phase 2: `--backend sam3` switch, cluster wiring, and the Narval runbook](#r-2026-07-21-sam3-cluster)
@@ -38,6 +39,35 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-29-temporal"></a>
+## 2026-07-29, temporal membrane projection: register/project crops land, the gate comes back negative
+
+`sam2_utils/membrane.py` gained `register_crops` and `project_crops` (Task 1), and
+`experiments/dense_membrane_fill.py` gained `--mm-window`/`--mm-combine` to route a small window of
+adjacent z-slices through them before the ridge filter (Task 2), plus a `--sweep-temporal` flag that
+grids `window in {0, 1, 2}` x `combine in {median, mean, max}` and prints the same bleed/underfill
+table as `--sweep` (Task 3). `--mm-window 0`, the default, is verified byte-identical to the
+pre-existing single-slice path.
+
+The real gate run (`--z 1456 --uf-min 0.6 --sweep-temporal`, 117 neurons) answers item 2b.5's open
+question: does averaging organelles out across z drop the ~40% bleed-per-fill floor found in the
+2026-07-27 dense-frame sweep. It does not, and it does not sit flat either. Every non-baseline setting
+comes out worse than window=0 (foreign 39, bleed_cells 28/117, mean_uf 0.403, area +12%) on every axis
+at once: window=1 roughly doubles foreign-node bleed (76-82, bleed_cells 39-41/117) and pushes mean
+underfill to 0.55-0.82; window=2 is worse again (foreign 110-124, bleed_cells 42-54/117, mean_uf
+0.66-0.95, area growth up to +54%). Underfill, bleed, and area all move the wrong way together as the
+window widens, so this is a straight regression rather than a trade-off between metrics. One plausible
+but unverified read: registering and projecting the crop blurs the already-thin scale-8 ridge signal
+faster than it suppresses organelle noise, weakening the membrane wall instead of cleaning it up.
+
+Item 2b.5 stays open, and 2c/2d/2e stay gated on it, now pointed at the deferred intensity/texture blob
+filter (2e's nucleus-detection idea, out of scope for this plan) instead of the temporal lever, since
+this negative result rules that lever out rather than leaving it untested. See
+[[membrane-temporal-projection-idea]] and the roadmap's item 2b.5 and queue item 10 for the recorded
+outcome.
 
 ---
 
