@@ -174,3 +174,64 @@ def underfill_fraction(mask: np.ndarray, mem: np.ndarray, *,
             break
         reach = grown
     return float((reach & ~mask).sum()) / area
+
+
+DEFAULT_BLOB_MAX_AREA = 150.0
+DEFAULT_BLOB_MAX_ECCENTRICITY = 0.85
+DEFAULT_BLOB_DILATE_PX = 2
+
+
+def detect_organelle_blobs(em_patch: np.ndarray, *, max_area: float = DEFAULT_BLOB_MAX_AREA,
+                           max_eccentricity: float = DEFAULT_BLOB_MAX_ECCENTRICITY,
+                           dilate_px: int = DEFAULT_BLOB_DILATE_PX) -> np.ndarray:
+    """Detect small, dark, round structures (organelles) in an EM patch, never ridges.
+
+    Otsu-thresholds the patch and labels connected components of the dark side, then
+    keeps only components that are both small (area <= max_area) and compact
+    (eccentricity <= max_eccentricity, i.e. round, not elongated). This is a genuine
+    shape discriminator: a ridge's eccentricity is close to 1, a compact blob's is
+    well below that. A Gaussian-scale blob detector (skimage.feature.blob_dog) was
+    tried first and rejected: verified directly that it does not discriminate blob
+    shape from ridge shape at this resolution (it fired on a synthetic ridge as much
+    as a synthetic blob), because scale-8 membranes are only a few pixels wide, the
+    same spatial scale small organelles need.
+
+    The returned mask is dilated by dilate_px before being returned (not a separate
+    step suppress_organelles has to remember): verified this meaningfully improves
+    suppression completeness on a soft-edged (realistic) blob, though it makes no
+    visible difference on a hard-edged synthetic one, where the detected region
+    already equals the true dark region exactly. A uniform (textureless) patch needs
+    no special-case handling: threshold_otsu returns that constant value as the
+    threshold (verified directly, it does not raise), every pixel satisfies
+    img <= thresh, and the resulting single whole-image component is then rejected
+    by the max_area filter below, naturally producing an empty mask."""
+    from skimage.filters import threshold_otsu
+    from skimage.measure import regionprops
+
+    img = em_patch.mean(axis=2) if em_patch.ndim == 3 else em_patch
+    img = img.astype(np.float32)
+    thresh = threshold_otsu(img)
+    dark = img <= thresh
+    lbl, _n = ndi.label(dark)
+    out = np.zeros(img.shape[:2], dtype=bool)
+    for rp in regionprops(lbl):
+        if rp.area <= max_area and rp.eccentricity <= max_eccentricity:
+            out[lbl == rp.label] = True
+    if dilate_px > 0 and out.any():
+        out = ndi.binary_dilation(out, iterations=dilate_px)
+    return out
+
+
+def suppress_organelles(em_patch: np.ndarray, organelle_mask: np.ndarray) -> np.ndarray:
+    """Replace organelle_mask's True pixels with a locally-consistent inpainted value.
+
+    organelle_mask is expected to already be dilated (detect_organelle_blobs does
+    this), so this function does not dilate again. Returns em_patch unchanged
+    (no-op) when organelle_mask has no True pixels, avoiding a wasted inpainter
+    call."""
+    from skimage.restoration import inpaint_biharmonic
+
+    if not organelle_mask.any():
+        return em_patch
+    img = em_patch.astype(np.float32)
+    return inpaint_biharmonic(img, organelle_mask)
