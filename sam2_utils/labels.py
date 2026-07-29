@@ -68,7 +68,9 @@ import pandas as pd
 # Verdict vocabulary. 'ok' is the implicit good label; these tag *why* a mask is
 # wrong, which is what makes the eventual detector diagnosable per failure mode.
 # Mirrors calibration.ERROR_TYPES (kept in sync deliberately, same meaning) so a
-# shelved-tool gold set and a GUI-collected set share one vocabulary.
+# shelved-tool gold set and a GUI-collected set share one vocabulary. As of 2026-07-29 no
+# calibration module exists in this repo, so the mirror only exists on this side; if calibration
+# is ever reintroduced, add "nucleus" there too.
 ERROR_TYPES = ("wrong_object", "under", "over", "bleed", "fragmented", "missing", "nucleus", "other")
 
 # Frame roles: why a row exists. Drives the train/eval split and the selection-

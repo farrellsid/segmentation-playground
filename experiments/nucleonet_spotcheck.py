@@ -9,6 +9,11 @@ them by eye, the same way Stage 0.1's registration overlay was judged before a f
     py -3 experiments/nucleonet_spotcheck.py                # z=1456, the current-work frame
     py -3 experiments/nucleonet_spotcheck.py --z 1472
 
+Prerequisite: `pip install empanada-dl --no-deps` (plain `pip install empanada-dl` fails on this
+environment's Python 3.13, since it pins numpy==1.22 and no matching wheel exists). The first run
+downloads the NucleoNet checkpoint to `~/.empanada`, outside this repo, and reuses the cached file
+on later runs.
+
 API discovery notes (see .git/sdd/task-2-report.md for the full trail): the `empanada-dl` PyPI
 package (the headless base library, not the `empanada-napari` GUI plugin) ships the model
 architectures and the `PanopticDeepLabRenderEngine` inference engine, but NOT a model zoo or a
@@ -35,7 +40,6 @@ import matplotlib.pyplot as plt
 import pipeline
 from experiments import dense_overlay as do
 
-INDEX_CACHE = Path("docs/figures/sam3-bakeoff/dense-overlay/_index.json")
 OUT_DIR = Path("docs/figures/presentation/nucleonet-spotcheck")
 SCALE = 8
 
@@ -147,7 +151,6 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--z", type=int, default=1456)
-    ap.add_argument("--index", default=str(INDEX_CACHE))
     ap.add_argument("--out", default=str(OUT_DIR))
     args = ap.parse_args(argv)
 

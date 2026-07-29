@@ -76,6 +76,11 @@ false positives on mitochondria or other organelles in either frame. Per the des
 verdict skips the classical dark-blob/thick-loop fallback entirely; `sam2_utils/nucleus.py` and
 `tests/test_nucleus.py` were not built.
 
+The rendered evidence lives at `docs/figures/presentation/nucleonet-spotcheck/`; regenerate the two
+full-frame overlays with `py -3 experiments/nucleonet_spotcheck.py --z 1456` and `--z 1472`. That
+folder also has a `zoom_check.png` close-up crop used for the visual read above; it was made ad hoc
+and its generating code was never committed, so only the two full-frame overlays are reproducible.
+
 One follow-up surfaced during task review and fixed in a separate commit: the inference engine's
 `nms_threshold`/`nms_kernel`/`confidence_thr`/`coarse_boundaries` kwargs have unconfirmed provenance,
 unlike the `NUCLEONET_*` constants, which each carry a source URL and fetch date. Now documented as a
