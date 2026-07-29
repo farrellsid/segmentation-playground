@@ -253,6 +253,22 @@ def summarize(per: pd.DataFrame) -> dict:
     return summary
 
 
+def z_csv_path_for(dest: Path, root: Path) -> Path:
+    """Derive the z-consistency CSV path from the per-frame CSV path ``dest``.
+
+    Mirrors the shard naming convention a sharded eval task uses for the per-frame
+    CSV: ``.../_merge_metric.shard_3.csv`` -> ``.../_z_consistency.shard_3.csv``, so
+    concurrent array tasks never write the same z-consistency path either. Falls back
+    to ``root / "_z_consistency.csv"`` when ``dest``'s filename does not follow the
+    ``"_merge_metric"`` naming convention (a custom out_csv, or the common case where
+    dest is already the canonical ``root / "_merge_metric.csv"``, which also contains
+    the substring and substitutes correctly)."""
+    dest = Path(dest)
+    if "_merge_metric" in dest.name:
+        return dest.with_name(dest.name.replace("_merge_metric", "_z_consistency"))
+    return Path(root) / "_z_consistency.csv"
+
+
 def run_scale(root: Path) -> int:
     """Read resolution.scale from <root>/_run_meta.json, check it matches save_downscale."""
     meta = json.loads((Path(root) / "_run_meta.json").read_text())
@@ -290,7 +306,10 @@ def score_run(root, annotate_df: pd.DataFrame | None = None,
     out_csv: where to write the per-frame CSV. None writes the canonical
     <root>/_merge_metric.csv; a shard task passes an explicit path
     (<root>/_merge_metric.shard_<i>.csv) so parallel tasks never clobber each other
-    or the final file, which concat_merge_shards stitches together afterwards.
+    or the final file, which concat_merge_shards stitches together afterwards. The
+    z-consistency CSV mirrors this: its path is derived from out_csv (see
+    z_csv_path_for), so a shard task's z-consistency write is shard-scoped too and
+    never races another task's.
 
     membrane_source: "auto" builds a MembraneSource for the run scale; None
     disables the membrane pass (Phase-0-only); or pass an object with map_for()
@@ -326,13 +345,13 @@ def score_run(root, annotate_df: pd.DataFrame | None = None,
     summary = summarize(per)
     z_summary = summarize_z_consistency(z_rows, low_iou_threshold=low_iou_threshold)
     summary.update(z_summary)
+    dest = Path(out_csv) if out_csv is not None else root / "_merge_metric.csv"
     if len(per):
         per_out = per.copy()
         per_out["foreign_ids"] = per_out["foreign_ids"].apply(lambda ids: ";".join(ids))
-        dest = Path(out_csv) if out_csv is not None else root / "_merge_metric.csv"
         per_out.to_csv(dest, index=False)
     if z_rows:
-        z_dest = root / "_z_consistency.csv"
+        z_dest = z_csv_path_for(dest, root)
         pd.DataFrame(z_rows).to_csv(z_dest, index=False)
     return per, summary
 

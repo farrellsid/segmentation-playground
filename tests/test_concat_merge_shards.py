@@ -93,3 +93,72 @@ def test_concat_missing_shard_is_skipped(tmp_path):
     # shard_1 was never produced (its task failed); concat still stitches shard_0
     _out, summ = cc.concat_tree(root)
     assert summ["n_frames"] == 1 and summ["n_chains"] == 1
+
+
+def _write_merge_shard(root, i, rows):
+    pd.DataFrame(rows).to_csv(root / f"_merge_metric.shard_{i}.csv", index=False)
+
+
+def _write_z_shard(root, i, rows):
+    pd.DataFrame(rows).to_csv(root / f"_z_consistency.shard_{i}.csv", index=False)
+
+
+def test_concat_tree_stitches_z_consistency_shards(tmp_path, capsys):
+    # Two shards, each with its own z-consistency shard, one row of which is a
+    # dropout transition (iou/centroid_drift_px empty) to exercise the CSV
+    # round-trip coercion in summarize_concat_z. This is the Finding 1 regression
+    # test: score_run used to write every array task's z-consistency CSV to the
+    # SAME unsharded path, so concat_tree needs its own shard-aware stitch to match.
+    root = tmp_path / "run_merged"
+    root.mkdir()
+    _write_merge_shard(root, 0, [
+        {"z": 1400, "neuron": "AVAL", "chain_idx": 0, "own_contained": True,
+         "n_foreign": 0, "foreign_ids": "", "empty": False, "spanning_merge": None,
+         "bled_fraction": None, "boundary_on_membrane": None, "underfill_fraction": None},
+    ])
+    _write_merge_shard(root, 1, [
+        {"z": 1400, "neuron": "AVAR", "chain_idx": 0, "own_contained": True,
+         "n_foreign": 0, "foreign_ids": "", "empty": False, "spanning_merge": None,
+         "bled_fraction": None, "boundary_on_membrane": None, "underfill_fraction": None},
+    ])
+    _write_z_shard(root, 0, [
+        {"z_from": 1400, "z_to": 1401, "gap": 1, "iou": 0.9,
+         "centroid_drift_px": 1.0, "neuron": "AVAL", "chain_idx": 0},
+        {"z_from": 1401, "z_to": 1402, "gap": 1, "iou": None,
+         "centroid_drift_px": None, "neuron": "AVAL", "chain_idx": 0},  # dropout
+    ])
+    _write_z_shard(root, 1, [
+        {"z_from": 1400, "z_to": 1401, "gap": 1, "iou": 0.3,
+         "centroid_drift_px": 5.0, "neuron": "AVAR", "chain_idx": 0},
+    ])
+
+    _out, summ = cc.concat_tree(root)
+    printed = capsys.readouterr().out
+
+    assert (root / "_z_consistency.csv").exists()
+    stitched = pd.read_csv(root / "_z_consistency.csv")
+    assert len(stitched) == 3
+
+    assert summ["n_transitions"] == 3
+    assert summ["n_dropout_transitions"] == 1
+    assert abs(summ["mean_z2z_iou"] - (0.9 + 0.3) / 2) < 1e-9
+    assert abs(summ["mean_centroid_drift_px"] - (1.0 + 5.0) / 2) < 1e-9
+    assert "mean_z2z_iou=" in printed
+
+
+def test_concat_tree_no_z_shards_omits_z_segment(tmp_path, capsys):
+    # No _z_consistency.shard_*.csv at all (a tree scored before this feature
+    # existed): concat_tree must not crash, and the summary/printed line simply
+    # omit the z segment, same as a tree with no z data.
+    root = tmp_path / "run_merged"
+    root.mkdir()
+    _write_merge_shard(root, 0, [
+        {"z": 1400, "neuron": "AVAL", "chain_idx": 0, "own_contained": True,
+         "n_foreign": 0, "foreign_ids": "", "empty": False, "spanning_merge": None,
+         "bled_fraction": None, "boundary_on_membrane": None, "underfill_fraction": None},
+    ])
+    _out, summ = cc.concat_tree(root)
+    printed = capsys.readouterr().out
+    assert "mean_z2z_iou" not in summ
+    assert "mean_z2z_iou=" not in printed
+    assert not (root / "_z_consistency.csv").exists()
