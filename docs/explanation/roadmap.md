@@ -565,15 +565,30 @@ every frame, ordered cheap to expensive:
   most of the apparent regression, independent of whether any individual grow got worse.
 
   A second gate run at uf_min 0 grows every underfill-eligible cell regardless of window, holding the
-  grown population much closer to constant (the 5x runaway-area cap still reverts a few grows back to
-  raw, so `filled` still moves a little, from 90/117 at window=0 down to 61-77/117 as the window
-  widens, i.e. FEWER cells effectively grown, not more). Under this fairer comparison, window=1 comes
-  out close to flat on foreign-node bleed (136-148 vs the baseline's 139, bleed_cells 54-55/117 vs
-  55/117) despite growing fewer cells, and window=2 is moderately, not dramatically, worse (foreign
-  161-189, bleed_cells up to 61/117). Because window=2's worse numbers show up with fewer cells grown
-  than baseline, that part of the regression cannot be explained by gate membership and is a real
-  per-fill effect; window=1's near-flat read means the original "roughly doubles" claim does not
-  survive population control.
+  grown population much closer to constant. `filled` still moves, from 90/117 at window=0 down to
+  61-77/117 as the window widens, but in the OPPOSITE direction from the first run's confound (fewer
+  cells effectively grown, not more): the only thing that can drop a cell out of `filled` at uf_min 0
+  is the 5x runaway-area cap, so this is the cap reverting more grows as the window widens, 27/117
+  (23%) at window=0 rising to as many as 56/117 (48%) at window=2. That is itself evidence the
+  membrane wall is getting weaker under temporal projection, not just a population-control caveat.
+
+  On absolute foreign-node counts this fairer comparison looks mixed: window=1 reads close to flat
+  (foreign 136-148 vs baseline 139, bleed_cells 54-55/117 vs 55/117) despite growing fewer cells, and
+  window=2 is moderately worse (foreign 161-189, bleed_cells up to 61/117). But absolute counts still
+  do not divide out the population difference. The clean readout is the bleed-per-fill rate the
+  `filled` column exists to compute, `new_bleed / filled`, the fraction of GROWN cells that leaked:
+
+  | setting | new_bleed | filled | rate |
+  |---|---|---|---|
+  | window=0, median (baseline) | 34 | 90 | **0.38** |
+  | window=1, median / mean / max | 33 / 34 / 33 | 77 / 76 / 63 | 0.43 / 0.45 / 0.52 |
+  | window=2, median / mean / max | 40 / 31 / 41 | 73 / 68 / 61 | 0.55 / 0.46 / 0.67 |
+
+  Every non-baseline setting is worse per fill than the baseline, with no exceptions, unlike the
+  absolute counts. Window=2's regression cannot be explained by gate membership (it shows up with
+  fewer cells grown than baseline) and is a real per-fill effect; window=1's near-flat absolute-count
+  read still costs a worse per-fill rate (0.43-0.52 vs 0.38), so the original "roughly doubles" framing
+  for window=1 does not survive population control, but "no worse" does not survive it either.
 
   A shift-clamp diagnostic added to `grow_all` (logs the raw, pre-clamp phase-correlation shift for
   every crop pair when window > 0) found real clamping: 32 of 234 crop pairs (14%) at window=1 and 139
@@ -588,9 +603,10 @@ every frame, ordered cheap to expensive:
   with where the regression is worst.
 
   **2c, 2d, and 2e stay gated, now on the deferred intensity/texture blob filter instead of this
-  lever**, since temporal projection never clears the window=0 baseline at either window even under the
-  fairer, population-controlled test. One untested, cheap follow-up worth a look before writing the
-  lever off entirely: reject spurious large-shift crops instead of clamping and applying them. See
+  lever**: no `(window, combine)` setting improves the bleed-per-fill rate, the population-controlled
+  metric, even where the absolute foreign-node count happens to land at or slightly below baseline by
+  growing fewer cells. One untested, cheap follow-up worth a look before writing the lever off
+  entirely: reject spurious large-shift crops instead of clamping and applying them. See
   [[membrane-temporal-projection-idea]]. *(§4.3 tier-2 bottleneck)*
 - **2c, grow-to-membrane refinement of masks, PROTOTYPED (`experiments/dense_membrane_fill.py`).** Reuses
   the membrane signal and the `underfill_fraction` flood that 2b only measures, this time growing a mask
@@ -667,7 +683,7 @@ Otherwise stay SAM2-augmented. *(§4.3, §4.7, §6)*
 
 ## 5b. Immediate queue (July 2026)
 
-Mapped to the phases above. DONE / READY / TODO.
+Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
 
 1. **Verify the GT erosion** (Phase 0). DONE: confirmed, neighbouring masks are inset from the shared
    membrane by design in our VAST copy.

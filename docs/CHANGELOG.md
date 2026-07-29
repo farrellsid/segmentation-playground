@@ -72,15 +72,22 @@ step as the window widened (`filled`, now printed in the table, rises from 17/11
 whether any individual grow got worse.
 
 A second gate run (`--z 1456 --uf-min 0 --sweep-temporal`) grows every underfill-eligible cell
-regardless of window, holding the grown population much closer to constant (a 5x runaway-area cap
-still reverts a few grows back to raw, so `filled` still moves a little, from 90/117 at window=0 down
-to 61-77/117 as the window widens, i.e. fewer cells effectively grown, not more). Under this fairer
-test, window=1 comes out close to flat on foreign-node bleed (136-148 vs the baseline's 139,
-bleed_cells 54-55/117 vs 55/117) despite growing fewer cells, and window=2 is moderately, not
-dramatically, worse (foreign 161-189, bleed_cells up to 61/117). Because window=2's worse numbers show
-up with fewer cells grown than baseline, that part of the regression cannot be explained by gate
-membership and is a real per-fill effect; window=1's near-flat read means the first write-up's "roughly
-doubles" claim does not survive population control.
+regardless of window, holding the grown population much closer to constant. `filled` still moves, from
+90/117 at window=0 down to 61-77/117 as the window widens, but in the opposite direction from the
+first run's confound: at uf_min 0 the only thing that can drop a cell out of `filled` is the 5x
+runaway-area cap, so this is the cap reverting more grows as the window widens (27/117 at window=0
+rising to up to 56/117 at window=2), itself evidence the membrane wall is weakening under temporal
+projection, not just a caveat about population control.
+
+Absolute foreign-node counts under this fairer test look mixed: window=1 reads close to flat (foreign
+136-148 vs baseline's 139, bleed_cells 54-55/117 vs 55/117) despite growing fewer cells, window=2 is
+moderately worse (foreign 161-189, bleed_cells up to 61/117). But the clean readout is the bleed-per-fill
+rate `filled` was added to compute, `new_bleed / filled`: baseline 34/90 = 0.38, window=1
+33-34/63-77 = 0.43-0.52, window=2 31-41/61-73 = 0.46-0.67. Every non-baseline setting is worse per fill
+than baseline with no exceptions, unlike the absolute counts. Window=2's regression cannot be explained
+by gate membership (it shows up with fewer cells grown than baseline) and is a real per-fill effect;
+window=1's near-flat absolute count still costs a worse per-fill rate, so the first write-up's "roughly
+doubles" claim does not survive population control, but neither does "no worse."
 
 A shift-clamp diagnostic was also added to `grow_all` (prints once per `grow_all` call when
 window > 0): `register_crops` clamps every estimated shift to +/- 5px before applying it, and the
@@ -98,8 +105,9 @@ actually loaded vs were skipped, so a degraded window shows up in the log instea
 what the sweep measured.
 
 Item 2b.5 stays open, and 2c/2d/2e stay gated on it, now pointed at the deferred intensity/texture blob
-filter (2e's nucleus-detection idea, out of scope for this plan) instead of the temporal lever, since
-temporal projection never clears the window=0 baseline at either window even under the fairer,
+filter (2e's nucleus-detection idea, out of scope for this plan) instead of the temporal lever, since no
+setting improves the bleed-per-fill rate even where an absolute count happens to land at or slightly
+below baseline by growing fewer cells, under the fairer,
 population-controlled test. One untested, cheap follow-up worth a look before writing off the lever
 entirely: reject spurious large-shift crops instead of clamping and applying them. See
 [[membrane-temporal-projection-idea]] and the roadmap's item 2b.5 and queue item 10 for the recorded
