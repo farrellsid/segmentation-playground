@@ -378,7 +378,9 @@ def format_summary(name: str, s: dict) -> str:
                  f"boundary_on_membrane={s['mean_boundary_on_membrane']:.3f} "
                  f"underfill={s['mean_underfill_fraction']:.3f}")
     if s.get("mean_z2z_iou") is not None:
-        line += (f" | mean_z2z_iou={s['mean_z2z_iou']:.3f} "
+        line += (f" | n_transitions={s['n_transitions']:>5} "
+                 f"n_dropout={s['n_dropout_transitions']:>4} "
+                 f"mean_z2z_iou={s['mean_z2z_iou']:.3f} "
                  f"mean_centroid_drift_px={s['mean_centroid_drift_px']:.2f} "
                  f"frac_low_iou={_fmt_or_na(s.get('frac_low_iou'), '.3f')} "
                  f"frac_gap1={_fmt_or_na(s.get('frac_gap1_transitions'), '.3f')}")

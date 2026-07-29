@@ -160,7 +160,7 @@ membrane crossings regardless of foreign-node status), `mean_boundary_on_membran
 `mean_underfill_fraction`. These four are absent from the line (and `None` in the returned summary)
 when `--no-membrane` is passed or the EM could not be read for any frame.
 
-The line also always carries a z-to-z consistency group, scored from every chain's own adjacent-slice
+The line also carries a z-to-z consistency group, scored from every chain's own adjacent-slice
 mask pairs and independent of the membrane pass: `n_transitions` (total z-to-z pairs scored),
 `n_dropout_transitions` (of those, how many touched an empty mask and so were excluded from the IoU/
 drift means below, this is the dropout signal `dropout_rate` already reports, not a low-consistency
@@ -170,7 +170,9 @@ z-slices, gap 1, as opposed to a gap left by a missing frame), and `frac_low_iou
 transitions scoring below `--low-iou-threshold`, so a real missed-frame gap does not get counted as a
 consistency failure). This group answers a question the per-frame fields above cannot: whether a
 run's masks hold their shape from slice to slice, which per-slice methods have no structural reason to
-do and video propagation does.
+do and video propagation does. The group is absent from the line (and every one of its keys is `None`
+in the returned summary) when no chain in the tree produced at least one z-to-z transition (every
+chain has zero or one mask).
 
 `_merge_metric.csv` gets four matching per-frame columns alongside the existing `z`, `neuron`,
 `chain_idx`, `own_contained`, `n_foreign`, `foreign_ids`, `empty`: `spanning_merge` (bool),
