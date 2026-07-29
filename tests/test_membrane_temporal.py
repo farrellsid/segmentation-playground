@@ -23,6 +23,66 @@ def test_register_crops_aligns_to_center():
     assert abs(ref_peak[1] - aligned_peak[1]) <= 1
 
 
+def test_register_crops_explicit_center_overrides_lenhalf_default():
+    # len(crops) // 2 for a 2-element list is 0. grow_all builds crops from whichever z's
+    # actually loaded, so a degraded window (a failed frame load near the stack edge) can
+    # leave a 2-element list whose true center is index 1, not 0. Passing center=1
+    # explicitly must use crops[1] as the reference, not silently fall back to crops[0].
+    ref = np.zeros((24, 24), dtype=np.float32)
+    ref[10:14, 10:14] = 200.0
+    other = np.zeros((24, 24), dtype=np.float32)
+    other[6:10, 6:10] = 200.0  # mild shift, within max_shift, from a different starting position
+    aligned_list = mb.register_crops([other, ref], center=1)
+    assert np.array_equal(aligned_list[1], ref)  # the true reference is never modified
+    ref_peak = np.array(np.unravel_index(np.argmax(ref), ref.shape))
+    aligned_peak = np.array(np.unravel_index(np.argmax(aligned_list[0]), aligned_list[0].shape))
+    assert np.all(np.abs(ref_peak - aligned_peak) <= 1)
+
+
+def test_register_crops_center_arg_fixes_lenhalf_bug():
+    # Regression for the register_crops center-index bug (final whole-plan review, Finding 3).
+    # For a 3-element list, len(crops) // 2 == 1, so the default treats crops[1] as the
+    # reference. If the caller's true center is crops[2] (grow_all's zs.index(center_z) can
+    # land anywhere once a window degrades near the stack edge), the default silently aligns
+    # to the wrong crop, including "correcting" what should have been the untouched reference.
+    true_ref = np.zeros((24, 24), dtype=np.float32)
+    true_ref[10:14, 10:14] = 200.0  # crops[2], the real reference
+    other_a = np.zeros((24, 24), dtype=np.float32)
+    other_a[6:10, 13:17] = 200.0  # crops[0], a mild shift relative to true_ref
+    other_b = np.zeros((24, 24), dtype=np.float32)
+    other_b[16:20, 2:6] = 200.0  # crops[1], unrelated content: the len // 2 default's pick
+
+    crops = [other_a, other_b, true_ref]
+
+    # Bug scenario: the default center picks index 1, so crops[2] (the true reference) gets
+    # "aligned" to crops[1] instead of being left alone.
+    default_out = mb.register_crops(crops)
+    assert not np.array_equal(default_out[2], true_ref)
+
+    # Fix: an explicit center=2 keeps crops[2] as the untouched reference, and aligns the
+    # other crops toward IT, not toward crops[1].
+    fixed_out = mb.register_crops(crops, center=2)
+    assert np.array_equal(fixed_out[2], true_ref)
+    ref_peak = np.array(np.unravel_index(np.argmax(true_ref), true_ref.shape))
+    aligned_peak = np.array(np.unravel_index(np.argmax(fixed_out[0]), fixed_out[0].shape))
+    assert np.all(np.abs(ref_peak - aligned_peak) <= 1)
+
+
+def test_register_crops_default_center_unchanged():
+    # register_crops's default (center=None) must still behave exactly as before: the
+    # existing aligns-to-center test above already exercises this without a center argument,
+    # this test just makes the "default is unchanged" guarantee explicit and named.
+    ref = np.zeros((24, 24), dtype=np.float32)
+    ref[10:14, 10:14] = 200.0
+    shifted = np.zeros((24, 24), dtype=np.float32)
+    shifted[6:10, 13:17] = 200.0
+    crops = [shifted, ref]
+    default_out = mb.register_crops(crops)
+    explicit_out = mb.register_crops(crops, center=len(crops) // 2)
+    for a, b in zip(default_out, explicit_out):
+        assert np.array_equal(a, b)
+
+
 def test_register_crops_clamps_large_shift():
     ref = np.zeros((24, 24), dtype=np.float32)
     ref[10:14, 10:14] = 200.0

@@ -79,7 +79,7 @@ def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: st
         zs = [z for z in range(center_z - window, center_z + window + 1) if z in frames]
         crops = [frames[z][y1:y2, x1:x2] for z in zs]
         if len(crops) > 1:
-            crops = mb.register_crops(crops)
+            crops = mb.register_crops(crops, center=zs.index(center_z))
         em_crop = mb.project_crops(crops, combine=combine)
         mem = mb.membrane_map(em_crop)
         grown, _capped = grow_to_membrane(win, mem, cap=1e9)  # no clamp; cap applied later

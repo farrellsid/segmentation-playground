@@ -38,22 +38,29 @@ def membrane_map(em_patch: np.ndarray, *, sigmas=DEFAULT_SIGMAS) -> np.ndarray:
     return np.clip(resp / denom, 0.0, 1.0).astype(np.float32)
 
 
-def register_crops(crops: list[np.ndarray], *, max_shift: int = 5) -> list[np.ndarray]:
-    """Align every crop in `crops` to the center crop by an integer-pixel translation.
+def register_crops(crops: list[np.ndarray], *, max_shift: int = 5,
+                   center: int | None = None) -> list[np.ndarray]:
+    """Align every crop in `crops` to the reference crop by an integer-pixel translation.
 
     Uses phase correlation at pixel precision only, no subpixel interpolation, so no
     blur is introduced by the alignment itself. Each estimated shift is clamped to
     +/- max_shift px per axis before being applied, a safety valve against a
     low-texture crop returning a wild or ambiguous shift. Returns a new list, same
-    length and shape as the input; the center crop (index len(crops) // 2) is
-    returned unchanged, everything else is float32.
+    length and shape as the input; the reference crop is returned unchanged, everything
+    else is float32.
+
+    `center` picks which index in `crops` is the reference; default None picks
+    `len(crops) // 2`, the middle element of a well-formed, evenly-centered list. Pass
+    `center` explicitly whenever the caller's list may be asymmetric or even-length (a
+    degraded window near a stack edge, say), so the true reference is used instead of
+    whatever happens to fall at the middle index.
     """
     from skimage.registration import phase_cross_correlation
 
     n = len(crops)
     if n <= 1:
         return list(crops)
-    center_i = n // 2
+    center_i = n // 2 if center is None else center
     ref = crops[center_i].astype(np.float32)
     out = list(crops)
     for i, crop in enumerate(crops):
