@@ -73,8 +73,16 @@ def test_project_crops_unknown_combine_raises():
 
 
 def test_temporal_projection_then_membrane_map_suppresses_blob_response():
+    # A flat background plus one straight ridge has almost no 2D texture, so phase
+    # correlation locks onto the small blob difference instead of the (correct)
+    # near-zero shift between slices that are otherwise identical. Real EM crops are
+    # richly textured, so a shared background texture makes this synthetic case
+    # representative instead of a degenerate worst case for phase correlation.
+    rng = np.random.default_rng(0)
+    base_texture = rng.uniform(180.0, 220.0, size=(30, 30)).astype(np.float32)
+
     def make_slice(with_blob):
-        p = np.full((30, 30), 200.0, dtype=np.float32)
+        p = base_texture.copy()
         p[:, 14:16] = 20.0  # persistent vertical ridge (a membrane)
         if with_blob:
             p[20:24, 20:24] = 15.0  # transient dark blob (an organelle), center slice only
