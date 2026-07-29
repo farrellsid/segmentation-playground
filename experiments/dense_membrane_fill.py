@@ -53,6 +53,34 @@ def foreign_count(mask_full: np.ndarray, nodes, neuron: str, radius: int) -> int
     return n
 
 
+def _shift_diag(crops, center_i, max_shift=5):
+    """Diagnostic only, not used to align anything: the raw (pre-clamp) phase-correlation
+    shift magnitude for each non-reference crop against crops[center_i], plus whether that
+    raw shift exceeds max_shift.
+
+    register_crops clamps every estimated shift to +/- max_shift before applying it, so a
+    real slice-to-slice jitter bigger than the clamp is not skipped, it is truncated and
+    then APPLIED, misaligning the crop rather than leaving it alone. That is a different
+    failure mode from "registration found near-zero shift and combining still blurred
+    things", so this logs which one is actually happening rather than guessing. Duplicates
+    register_crops's shift-estimation call locally so register_crops's own return type and
+    contract stay untouched."""
+    from skimage.registration import phase_cross_correlation
+
+    ref = crops[center_i].astype(np.float32)
+    raw_mags, clamped = [], 0
+    for i, crop in enumerate(crops):
+        if i == center_i:
+            continue
+        moving = crop.astype(np.float32)
+        shift, _error, _diffphase = phase_cross_correlation(ref, moving, upsample_factor=1)
+        mag = float(np.max(np.abs(shift)))
+        raw_mags.append(mag)
+        if mag > max_shift:
+            clamped += 1
+    return raw_mags, clamped
+
+
 def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: str,
             pad: int, nodes, radius: int):
     """Grow each neuron to its ridge walls once, UNCAPPED, inside a local bbox+pad window.
@@ -66,9 +94,12 @@ def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: st
     Returns {neuron: rec} with the raw and grown full-frame masks, their areas, underfill,
     the raw-mask centroid seed, and the foreign-node count each mask engulfs (raw vs grown).
     Growing uncapped lets a cap be applied afterwards as a cheap post-filter, so a cap sweep
-    needs only this one grow pass."""
+    needs only this one grow pass. When window > 0, also prints a one-line shift-clamp
+    diagnostic (see _shift_diag) across all crops processed in this call."""
     H, W = frames[center_z].shape[:2]
     recs = {}
+    all_raw_mags: list[float] = []
+    all_clamped = 0
     for n, full in nmasks.items():
         ys, xs = np.where(full)
         if ys.size == 0:
@@ -79,7 +110,11 @@ def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: st
         zs = [z for z in range(center_z - window, center_z + window + 1) if z in frames]
         crops = [frames[z][y1:y2, x1:x2] for z in zs]
         if len(crops) > 1:
-            crops = mb.register_crops(crops, center=zs.index(center_z))
+            center_i = zs.index(center_z)
+            raw_mags, clamped = _shift_diag(crops, center_i)
+            all_raw_mags.extend(raw_mags)
+            all_clamped += clamped
+            crops = mb.register_crops(crops, center=center_i)
         em_crop = mb.project_crops(crops, combine=combine)
         mem = mb.membrane_map(em_crop)
         grown, _capped = grow_to_membrane(win, mem, cap=1e9)  # no clamp; cap applied later
@@ -94,6 +129,10 @@ def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: st
             "raw_foreign": foreign_count(full, nodes, n, radius),
             "grown_foreign": foreign_count(g_full, nodes, n, radius),
         }
+    if window > 0 and all_raw_mags:
+        print(f"[fill]   shift stats (window={window}, combine={combine}): "
+              f"{len(all_raw_mags)} crops, {all_clamped} clamped (|raw shift| > 5px), "
+              f"raw shift range [{min(all_raw_mags):.1f}, {max(all_raw_mags):.1f}]px")
     return recs
 
 
@@ -174,13 +213,18 @@ def main(argv=None):
     h8, w8 = em.shape[:2]
     em_gray = em.mean(axis=2) if em.ndim == 3 else em
     frames = {args.z: em_gray}
+    loaded_z, skipped_z = [], []
     for dz in range(1, args.mm_window + 1):
         for zz in (args.z - dz, args.z + dz):
             try:
                 fz, _ = pipeline.load_frame_sam(zz, scale=SCALE)
             except Exception:
+                skipped_z.append(zz)
                 continue
             frames[zz] = fz.mean(axis=2) if fz.ndim == 3 else fz
+            loaded_z.append(zz)
+    if args.mm_window > 0:
+        print(f"[fill] mm-window frames: loaded {sorted(loaded_z)}, skipped {sorted(skipped_z)}")
     nmasks = do.neuron_masks_at_z(args.z, idx, SCALE, h8, w8)
     if not nmasks:
         print(f"[fill] z={args.z}: no neuron masks"); return
@@ -222,6 +266,7 @@ def main(argv=None):
     if args.sweep_temporal:
         max_w = 2
         frames_wide = dict(frames)
+        loaded_w, skipped_w = [], []
         for dz in range(args.mm_window + 1, max_w + 1):
             for zz in (args.z - dz, args.z + dz):
                 if zz in frames_wide:
@@ -229,18 +274,29 @@ def main(argv=None):
                 try:
                     fz, _ = pipeline.load_frame_sam(zz, scale=SCALE)
                 except Exception:
+                    skipped_w.append(zz)
                     continue
                 frames_wide[zz] = fz.mean(axis=2) if fz.ndim == 3 else fz
-        print("\n[sweep temporal]  window  combine   mean_uf   area%   foreign  "
+                loaded_w.append(zz)
+        print(f"[fill] sweep-temporal widening frames: loaded {sorted(loaded_w)}, "
+              f"skipped {sorted(skipped_w)}")
+        print("\n[sweep temporal]  window  combine   filled   mean_uf   area%   foreign  "
               "bleed_cells  new_bleed  contested")
         for w in (0, 1, 2):
             combos = ("median",) if w == 0 else ("median", "mean", "max")
             for combine in combos:
-                recs_t = grow_all(nmasks, frames_wide, args.z, w, combine, args.pad,
-                                  nodes, DEFAULT_RADIUS)
+                if w == 0 and combine == "median" and args.mm_window == 0:
+                    # identical to the already-computed baseline pass above (window=0 only
+                    # ever reads frames[center_z], regardless of which frames dict is passed
+                    # in), so reuse it instead of recomputing all 117 neurons from scratch.
+                    recs_t = recs
+                else:
+                    recs_t = grow_all(nmasks, frames_wide, args.z, w, combine, args.pad,
+                                      nodes, DEFAULT_RADIUS)
                 ch, m = apply_cap(recs_t, args.cap, args.uf_min)
                 cont = contested_px(ch, (h8, w8))
-                print(f"[sweept]  {w:>4}  {combine:>8}  {m['uf']:6.3f}  "
+                print(f"[sweept]  {w:>4}  {combine:>8}  {m['filled']:>3}/{len(recs_t)}  "
+                      f"{m['uf']:6.3f}  "
                       f"{100*(m['a_after']-m['a_before'])/max(1,m['a_before']):+5.0f}%  "
                       f"{m['foreign']:>6}   {m['bleed_cells']:>3}/{len(recs_t)}     "
                       f"{m['new_bleed']:>4}     {cont:>7}")
