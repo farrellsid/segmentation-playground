@@ -51,13 +51,21 @@ def foreign_count(mask_full: np.ndarray, nodes, neuron: str, radius: int) -> int
     return n
 
 
-def grow_all(nmasks: dict, em_gray: np.ndarray, pad: int, nodes, radius: int):
+def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: str,
+            pad: int, nodes, radius: int):
     """Grow each neuron to its ridge walls once, UNCAPPED, inside a local bbox+pad window.
+
+    The membrane map for each neuron's crop is built from `frames`, a {z: em_gray} dict
+    covering at least [center_z - window, center_z + window] (missing z, e.g. near the
+    stack's edge, are simply absent and drop out of the window). window=0 uses only
+    frames[center_z], reproducing the original single-slice path exactly: register_crops
+    and project_crops are no-ops on a length-1 list.
+
     Returns {neuron: rec} with the raw and grown full-frame masks, their areas, underfill,
     the raw-mask centroid seed, and the foreign-node count each mask engulfs (raw vs grown).
     Growing uncapped lets a cap be applied afterwards as a cheap post-filter, so a cap sweep
     needs only this one grow pass."""
-    H, W = em_gray.shape[:2]
+    H, W = frames[center_z].shape[:2]
     recs = {}
     for n, full in nmasks.items():
         ys, xs = np.where(full)
@@ -66,7 +74,12 @@ def grow_all(nmasks: dict, em_gray: np.ndarray, pad: int, nodes, radius: int):
         y1, y2 = max(0, ys.min() - pad), min(H, ys.max() + pad)
         x1, x2 = max(0, xs.min() - pad), min(W, xs.max() + pad)
         win = full[y1:y2, x1:x2]
-        mem = mb.membrane_map(em_gray[y1:y2, x1:x2].astype(np.float32))
+        zs = [z for z in range(center_z - window, center_z + window + 1) if z in frames]
+        crops = [frames[z][y1:y2, x1:x2] for z in zs]
+        if len(crops) > 1:
+            crops = mb.register_crops(crops)
+        em_crop = mb.project_crops(crops, combine=combine)
+        mem = mb.membrane_map(em_crop)
         grown, _capped = grow_to_membrane(win, mem, cap=1e9)  # no clamp; cap applied later
         g_full = np.zeros((H, W), bool)
         g_full[y1:y2, x1:x2] = grown
@@ -134,6 +147,11 @@ def main(argv=None):
     ap.add_argument("--cap", type=float, default=5.0, help="runaway guard: max area multiple")
     ap.add_argument("--uf-min", type=float, default=0.0,
                     help="only grow cells with raw underfill >= this (0 = grow all)")
+    ap.add_argument("--mm-window", type=int, default=0,
+                    help="temporal projection window radius in z-slices (0 = single-slice, "
+                         "today's behaviour)")
+    ap.add_argument("--mm-combine", choices=["median", "mean", "max", "min"], default="median",
+                    help="combine statistic across the window (only used when --mm-window > 0)")
     ap.add_argument("--sweep", action="store_true",
                     help="sweep the runaway cap and the underfill gate")
     ap.add_argument("--arbitrate", action="store_true",
@@ -150,6 +168,14 @@ def main(argv=None):
     em, _ = pipeline.load_frame_sam(args.z, scale=SCALE)
     h8, w8 = em.shape[:2]
     em_gray = em.mean(axis=2) if em.ndim == 3 else em
+    frames = {args.z: em_gray}
+    for dz in range(1, args.mm_window + 1):
+        for zz in (args.z - dz, args.z + dz):
+            try:
+                fz, _ = pipeline.load_frame_sam(zz, scale=SCALE)
+            except Exception:
+                continue
+            frames[zz] = fz.mean(axis=2) if fz.ndim == 3 else fz
     nmasks = do.neuron_masks_at_z(args.z, idx, SCALE, h8, w8)
     if not nmasks:
         print(f"[fill] z={args.z}: no neuron masks"); return
@@ -162,7 +188,8 @@ def main(argv=None):
           f"foreign radius {DEFAULT_RADIUS}")
 
     raw, _c, order = do.stack_labelmap(nmasks, idx["neuron_id"], h8, w8)
-    recs = grow_all(nmasks, em_gray, args.pad, nodes, DEFAULT_RADIUS)
+    recs = grow_all(nmasks, frames, args.z, args.mm_window, args.mm_combine, args.pad,
+                    nodes, DEFAULT_RADIUS)
     raw_uf = float(np.mean([r["raw_uf"] for r in recs.values()]))
     raw_foreign = sum(r["raw_foreign"] for r in recs.values())
     raw_bleed = sum(r["raw_foreign"] > 0 for r in recs.values())
