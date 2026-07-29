@@ -714,9 +714,15 @@ unvalidated; the resolution goal is served by cropping / tiling.
 - **The eroded / different-worm confound proves dominant** (Phase 0) -> treat all past boundary numbers
   (including the ~2-3% precision) as unreliable, and rebuild the ruler on target-worm skeletons + the
   Phase-3 benchmark before trusting any boundary A/B.
-- **Classical organelle suppression (2b.5) fails to move the ~40% bleed-per-fill floor** -> skip the
-  classical route and go straight to a learned membrane map (Phase 3), accepting the training cost, and
-  judge it on boundary sharpness (the mEMbrain lesson), not zoomed-out neatness.
+- **Classical organelle suppression (2b.5) fails to move the ~40% bleed-per-fill floor** -> partially
+  resolved 2026-07-29: the temporal-projection half of this lever regressed rather than merely failing
+  to help (bleed, underfill, and area all worsened together as the window widened, likely because
+  registering and projecting the crop blurs the already-thin scale-8 ridge signal). That closes the
+  temporal-projection route specifically, not the classical route as a whole: the still-untried
+  intensity/texture blob filter is a different mechanism (no registration, no cross-slice blur) and
+  stays the next thing to try before reaching for a learned map. If it also fails to move the floor,
+  *then* skip straight to a learned membrane map (Phase 3), accepting the training cost, and judge it
+  on boundary sharpness (the mEMbrain lesson), not zoomed-out neatness.
 - ~~**The SAM3 neg x gen A/B shows negatives hurt SAM3**~~ Resolved 2026-07-29, the other way: the A/B
   shows negatives still help SAM3 (foreign_frame_rate and bleed severity both improve with negatives
   on, holding generous fixed), so the existing negatives-on preset needs no SAM3-specific retune. See
