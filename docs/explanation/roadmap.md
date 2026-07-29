@@ -413,12 +413,30 @@ Two threads, now that I have GT:
 > plan leads with a ruler we can trust on the *target* worm, then gates each segmentation change on it.
 > §4 (solutions by problem) is the reference these phases point into.
 
+> **Re-org note (2026-07-27).** This updates the 2026-07-15 plan after three things landed: Phase 0/1
+> closed, the SAM3 whole-set eval completed and was scored on Narval, and a session of membrane-autofill
+> experiments found the binding constraint. The spine is unchanged (you cannot fairly choose a lever
+> until you can measure one), but the middle reorders around a newly-measured bottleneck: the scale-8
+> membrane map, not the grow or the arbitration, is what caps the refinement tier. New sub-items carry a
+> letter (0.a, 1.a, 2b.5, ...); a new Phase 1.5 collects the seeding/correction levers. Landed detail
+> goes to the CHANGELOG.
+
 A seventh problem joins the §2 list this round: **nested-membrane mis-segmentation** (the point-prompt
 ceiling). For double-bordered structures like somas, a positive point inside the nucleus segments the
 nucleus, not the neuron; no prompt placement fully removes it. It motivates the Phase 1 prompt fixes and,
 ultimately, the Phase 3 model upgrades.
 
-**Phase 0, fix the ruler (now, ~zero cost, no new labelling).**
+An **eighth problem** joins it, measured this round: **the membrane/affinity signal is the ceiling on the
+whole refinement tier.** The dense autofill experiment (2026-07-27, `experiments/dense_membrane_fill.py`)
+grew every neuron on a frame to its Sato ridge walls and scored the real foreign-node merge metric.
+Gating the fill to conclusively-underfilled cells cuts the absolute new bleed hard (34 newly-bleeding
+cells down to 3-7), but the bleed *rate* per grown cell stays flat near 40% regardless of the runaway cap
+or the underfill gate, because organelles and vesicles put false walls and false gaps in the scale-8
+ridge map. So grow-to-membrane (2c), membrane-aware arbitration (2d), and intensity-based nucleus
+detection (2e) are capped by the same thing, and improving the membrane map (2b.5) is the lever that
+unblocks all three.
+
+**Phase 0, fix the ruler (DONE; two upgrades queued).**
 The cross-worm eval harness already exists (`eval/`: region IoU, VOI, ERL, per-section registration).
 What it cannot do is grade quality on the *target* worm. The unlock is a **target-worm skeleton
 merge-metric**, scored against our own CATMAID skeletons, GT-free:
@@ -435,6 +453,17 @@ merge-metric**, scored against our own CATMAID skeletons, GT-free:
 - Keep the cross-worm eval as a **secondary topology check** (VOI_merge / ERL), demoted from headline;
   fold in the metric-robustness fixes it still needs (ERL merge tolerance, per-section affine edge
   residual).
+
+Two upgrades this round, both cheap:
+- `0.a` **z-to-z consistency metric.** The merge metric scores each frame independently, so it is blind
+  to temporal consistency and structurally favours per-slice over propagation (the method that buys
+  consistency). Add a z-to-z IoU / drift term before trusting any per-slice-vs-propagation ranking, which
+  matters because the 3D meshes need temporal coherence the current ruler cannot see. *(§4.1)*
+- `0.b` **node-placement correction on the foreign-node metric.** A foreign skeleton node sitting on the
+  shared membrane between two cells gets flagged the instant a basically-correct mask covers it, so some
+  measured bleed is the ruler's fault, not the mask's. Split engulfed foreign nodes by distance from the
+  raw mask boundary: near-boundary hits are placement artefacts, deep hits are real merges. Recalibrates
+  every autofill/bleed number (the flat ~40% bleed-per-fill in Phase 2c is measured before this split).
 
 *Gate:* how bad is severe bleed, and did negatives / full-res actually reduce it. *(§4.1, §4.2)*
 
@@ -468,6 +497,34 @@ blow-up guard, without generous, is the leading candidate.** Its residual underf
 baseline's 0.483) is the honest cost of tight masks and points to Phase-2 item 2c (grow-to-membrane) as
 the next lever. Full numbers in the CHANGELOG (2026-07-20 entry).
 
+- `1.a` **SAM3 backend, runs done, decision pending (near-zero remaining compute).** The SAM3 whole-set
+  eval completed on Narval (2026-07-23): `perslice_only_guard` and `tier2_s1forced_neg` both ran, merged,
+  and were per-shard scored, plus a 2x2 config A/B (negatives 0 vs 3 x generous 0 vs 1). The
+  `perslice_only_guard_sam3` tree is already the de-facto working baseline (the dense-map and autofill
+  work all run on it). Remaining is consolidation, not compute: read the eval CSVs for the two production
+  configs and the neg x gen A/B, produce the single SAM3-vs-SAM2 scorecard the timed-out `retro_sam3` job
+  never finished, then make the `--backend sam3` default call. The neg x gen A/B also answers the open
+  "SAM3 optimal negatives" question feeding Phase 2e. Only open compute: `sam3_fullres` (partly
+  out-of-memory, unmerged) needs a memory bump if wanted. See [[sam3-pvs-bakeoff]]. *(§4.5)*
+
+**Phase 1.5, seeding and correction (the propagation-consistency pivot).**
+
+After the July presentation the working preference shifted toward propagation, because consistency is the
+property per-slice lacks and the 3D meshes need. These levers make propagation good without hand-labelling
+every frame, ordered cheap to expensive:
+
+- **Metric-guided best-seed selection** (`select_by_metric`): score image-mode masks across candidate
+  seed frames and start propagation from the best one, instead of a fixed anchor. Cheap, automated, try
+  first. *(§4.5)*
+- **Manual seed-layer confirmation before propagating** (time-sink, higher ceiling): have a human confirm
+  or correct the seed mask on the anchor slice before the chain propagates. More human time per chain,
+  but a clean seed is the highest-leverage single input to propagation quality, so it is worth it on hard
+  or high-value chains. The manual counterpart to metric best-seed; pairs with the review GUI.
+- **Second-pass re-anchoring of flagged / blown frames**: re-segment only the frames QC flagged
+  (image-mode or neighbour-seed), rather than the blow-up guard's current copy-the-neighbour patch.
+- **Neighbour-seed** a detected-wrong frame from its most-correct neighbour, and **union of two no-spill
+  masks** for underfill. See [[hybrid-propagation-perslice-metric-seed]]. *(§4.3)*
+
 **Phase 2, the per-frame membrane / boundary map (supervisor's near-term request; the lab's own method).**
 
 - **2a + 2b, the foundation, LANDED.** A v1 classical dark-ridge membrane map
@@ -481,10 +538,23 @@ the next lever. Full numbers in the CHANGELOG (2026-07-20 entry).
   and [cli.md](../reference/cli.md). The signature is a swappable interface: a trained model (the
   Mulcahy/Witvliet skeleton-to-membrane expansion, or a small U-Net) can drop in behind
   `membrane_map` later without touching the detectors or the scorer.
-- **2c, grow-to-membrane refinement of masks, queued as its own spec.** Reuses the same membrane
-  signal and the `underfill_fraction` flood that 2b only measures, this time applying it to grow a
-  mask to its bounding membrane. Also the route to de-bias the eroded cross-worm GT into a rough
-  boundary ruler.
+- **2b.5, improve the membrane map by suppressing organelles, NEW and now the pivot of Phase 2.** The
+  autofill finding (problem 8 above) says the scale-8 Sato ridge map is the ceiling: organelles and
+  vesicles create the false walls and gaps that make ~40% of grown cells leak, and no amount of grow or
+  arbitration tuning moves that floor. Cheap classical suppression comes first: a temporal min or average
+  intensity projection over adjacent slices (organelles are transient across z, membranes are nearly
+  stationary) plus an intensity/texture filter for the dark blobs. This is Ben's filters idea and the
+  student's colour idea converging. Gate: does the fill sweep's ~40% bleed-per-fill drop. **2c, 2d, and
+  2e are all gated on this.** See [[membrane-temporal-projection-idea]]. *(§4.3 tier-2 bottleneck)*
+- **2c, grow-to-membrane refinement of masks, PROTOTYPED (`experiments/dense_membrane_fill.py`).** Reuses
+  the membrane signal and the `underfill_fraction` flood that 2b only measures, this time growing a mask
+  to its bounding membrane. Verdict from the dense-frame sweep: the usable operating point is **targeted
+  fill**, grow only cells with high raw underfill (uf_min ~0.6-0.7), which cuts the absolute new bleed and
+  auto-skips nucleus captures (they read as low underfill, so the gate leaves them alone). A global area
+  cap alone trades underfill for bleed roughly 1:1 and never separates a correct fill from a leak, and the
+  joint ridge-watershed makes it overlap-free but redistributes over-growth (small cells get swallowed).
+  So per-cell trust waits on 2b.5. Also the route to de-bias the eroded cross-worm GT into a rough
+  boundary ruler. See [[nucleus-capture-underfill]].
 - **2d, principled non-overlap resolve, delivered early in prototype form (2026-07-21).** With the
   membrane signal in hand, replace the composite's argmax / first-writer-wins with a
   membrane-respecting resolver. The per-frame segmentation experiment
@@ -506,6 +576,13 @@ the next lever. Full numbers in the CHANGELOG (2026-07-20 entry).
   finding, not yet a verdict: default AMG parameters are compute-heavy enough that a single
   target-worm frame did not finish in a short local wall-clock budget, so judging this probe
   properly is a CCDB job, tracked alongside 2d above. *(§4.3, §4.7 R5)*
+- **2e, nucleus detection by intensity/texture, not shape, NEW.** The lever for the nested-membrane
+  ceiling (problem 7) and a specific 2b.5 target, since a nucleus is one of the organelles that corrupts
+  the ridge map. Shape is unreliable: some real neurites are circular, so round does not mean nucleus. Use
+  intensity/colour plus filters, small nuclei are dark round blobs a median-filtered threshold isolates,
+  big nuclei have a thicker closed membrane loop. Detect, then exclude the nucleus and fill toward the
+  cell membrane, or re-prompt. Candidate tools to verify: NucleoNet, DropNet, median-filter thresholding
+  (names unconfirmed). See [[nucleus-capture-underfill]]. *(§4.5, §2 problem 7)*
 
 The landed foundation also helps disambiguate outer-vs-inner border for the nested-membrane ceiling.
 **Ask the supervisor whether a reusable membrane model or training data survives from the prior
@@ -514,13 +591,19 @@ pipeline's ~1,120 person-hours were **dense proofreading**, not building the map
 small U-Net, days to train), so v1's classical filter is the pragmatic starting point either way.
 *(§4.2, §4.3 tier 2)*
 
-*Gate:* membrane-aware detect (landed) + refine (2c, queued) cuts mild bleed / underfill.
+*Gate:* does a cleaner membrane map (2b.5) drop the ~40% bleed-per-fill floor and unblock 2c/2d/2e; and
+does membrane-aware detect plus targeted fill cut mild bleed / underfill.
 
 **Phase 3, boundary benchmark + model upgrades.**
 
 - **Small boundary-accurate target-worm benchmark:** a few hundred cross-sections traced *to the membrane*
   (not the eroded convention), sampled to include thin and junction cases. Calibrates the detector and
   seeds finetuning. Days-to-weeks, not the person-years of a dense volume. *(§4.2b)*
+- **Learned membrane map (small U-Net / nnU-Net) as the 2b.5 upgrade, accepted only if boundaries are
+  SHARP.** The mEMbrain UNet output looked clean zoomed out but blurred the boundary and hid true cell
+  shape (caveat: a harder, less-clear-membrane dataset than ours). So judge a learned map on boundary
+  sharpness, not zoomed-out neatness, which is the argument for trying cheap classical 2b.5 first and only
+  training a map if the classical route stalls. See [[membrain-unet-blurry-detail]]. *(§4.2, §4.3)*
 - **Finetune the SAM2 mask decoder** (decoder-first, Dice+BCE, neurite-targeted, never organelle-borrowed)
   and/or an **FGNet-style fine-grained / affinity boundary head** on frozen SAM2 features, targeting the
   domain gap, thin neurites, and the nested-membrane ceiling. *(§4.7, §4.4)*
@@ -545,9 +628,11 @@ Mapped to the phases above. DONE / READY / TODO.
 2. **Resolution + negatives review** (old Stage 1). DONE: cropping is the measurable resolution win,
    whole-image scale is ~irrelevant (1024 resize); negatives and the full-res second pass are
    flag-neutral, pending the Phase-0 metric for a real verdict.
-3. **Build the target-worm merge-metric and retro-score all runs** (Phase 0). TODO, the next action:
-   foreign-node containment + dropout on raw masks vs CATMAID skeletons.
-4. **Re-seed per slice + z-extent-limited propagation** (Phase 1). TODO.
+3. **Build the target-worm merge-metric and retro-score all runs** (Phase 0). DONE: foreign-node
+   containment + dropout on raw masks vs CATMAID skeletons, wired into `eval.merge_metric`. Two upgrades
+   now queued (Phase 0.a z-to-z consistency, 0.b node-placement correction).
+4. **Re-seed per slice + z-extent-limited propagation** (Phase 1). DONE: per-slice + blow-up guard is the
+   SAM2 leader (Phase 1 closed 2026-07-21). Seeding levers now grouped under Phase 1.5.
 5. **Mutex-watershed / multicut non-overlap resolve** (Phase 1). TODO.
 6. **Membrane-probability map + membrane-aware bleed detection** (Phase 2 foundation, 2a + 2b).
    DONE: `sam2_utils/membrane.py` + `eval.merge_metric`'s membrane pass, `mild_bleed_rate`
@@ -563,10 +648,23 @@ Mapped to the phases above. DONE / READY / TODO.
    dropout; its own next-step note was a broader run before productionizing. The plumbing for
    that now exists: a `--backend sam3` switch on `batch.py`, `cluster/run_array.sh` wired to
    forward it, and a Narval runbook (`docs/how-to/run-sam3-on-narval.md`); see the CHANGELOG's
-   same-day entry for the detail. TODO, still queued: running SAM3 per-slice and propagation
-   over the whole target-worm set on Narval and scoring both with `eval.merge_metric` against
-   the existing SAM2 baselines, to confirm the 2-chain win holds at scale. Human-executed,
-   Duo-MFA blocks a headless submission.
+   same-day entry for the detail. DONE (2026-07-23, verified from Narval sacct 2026-07-27): the
+   whole-set runs completed and were per-shard scored, `perslice_only_guard` and
+   `tier2_s1forced_neg` both merged, plus a 2x2 config A/B (`sam3ab_neg{0,3}_gen{0,1}`). The
+   `perslice_only_guard_sam3` tree is downloaded to F: and is the de-facto working baseline. OPEN:
+   pull/consolidate the eval CSVs (incl. the neg x gen A/B), finish the single SAM3-vs-SAM2 scorecard
+   (`retro_sam3` timed out), decide `--backend sam3` default, and re-run `sam3_fullres` (partial OOM)
+   if full-res is wanted. See [[sam3-pvs-bakeoff]]. Now Phase 1.a, not a loose parallel track.
+9. **Consolidate the SAM3 scores + decide the default backend** (Phase 1.a). TODO, near-zero compute:
+   read the eval CSVs, build the one SAM3-vs-SAM2 scorecard, read the neg x gen A/B for the SAM3-optimal
+   negatives config, make the `--backend sam3` default call.
+10. **Organelle-suppressed membrane map** (Phase 2b.5, the new pivot). TODO, next real experiment:
+    temporal min/avg projection over adjacent slices + intensity/texture filter, re-run the
+    `dense_membrane_fill.py` sweep, gate on whether the ~40% bleed-per-fill floor drops. Unblocks 2c/2d/2e.
+11. **Targeted grow-to-membrane + nucleus detection** (Phase 2c/2e). TODO, gated on item 10: wire the
+    underfill-gated fill (uf_min ~0.6-0.7) and intensity-based nucleus detection once the map is cleaner.
+12. **z-to-z consistency metric** (Phase 0.a). TODO: add before trusting any per-slice-vs-propagation
+    ranking; relevant now that the working preference leans propagation.
 
 `bigimg` (SAM2 `image_size` 2048) stays retired: it crashes off-distribution and its output would be
 unvalidated; the resolution goal is served by cropping / tiling.
@@ -592,6 +690,12 @@ unvalidated; the resolution goal is served by cropping / tiling.
 - **The eroded / different-worm confound proves dominant** (Phase 0) -> treat all past boundary numbers
   (including the ~2-3% precision) as unreliable, and rebuild the ruler on target-worm skeletons + the
   Phase-3 benchmark before trusting any boundary A/B.
+- **Classical organelle suppression (2b.5) fails to move the ~40% bleed-per-fill floor** -> skip the
+  classical route and go straight to a learned membrane map (Phase 3), accepting the training cost, and
+  judge it on boundary sharpness (the mEMbrain lesson), not zoomed-out neatness.
+- **The SAM3 neg x gen A/B shows negatives hurt SAM3** (as hypothesised, since SAM3 masks are already
+  tighter) -> drop negatives from the SAM3 default config, and revisit the negatives-on default that was
+  tuned for SAM2.
 
 ---
 
