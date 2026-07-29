@@ -149,6 +149,80 @@ def score_chain(chain_dir: Path, neuron: str,
     return recs
 
 
+def z_transitions(masks: dict[int, tuple[np.ndarray, int, int]]) -> list[dict]:
+    """Per-transition z-to-z consistency records for one chain's raw masks.
+
+    For each pair of masks adjacent in sorted z order (masks is {z: (mask, x0, y0)}
+    from pipeline.chain_masks_in_sam), computes IoU and centroid drift in a shared
+    coordinate frame built from their own _sam-grid offsets: two masks can have
+    different local shapes (a tier-2 crop window can move or resize between frames),
+    so this pastes both onto a canvas sized to their combined bounding box rather
+    than comparing local arrays directly.
+
+    A transition touching an empty mask (matching the empty = not mask.any()
+    convention score_chain already uses) gets iou=None, centroid_drift_px=None:
+    dropout is the existing empty/dropout_rate signal's job, not a consistency
+    reading, so it is not conflated with a low-IoU score here."""
+    zs = sorted(masks.keys())
+    out: list[dict] = []
+    for z_from, z_to in zip(zs, zs[1:]):
+        mask_a, x0_a, y0_a = masks[z_from]
+        mask_b, x0_b, y0_b = masks[z_to]
+        rec = {"z_from": int(z_from), "z_to": int(z_to), "gap": int(z_to - z_from),
+               "iou": None, "centroid_drift_px": None}
+        if not mask_a.any() or not mask_b.any():
+            out.append(rec)
+            continue
+        h_a, w_a = mask_a.shape[:2]
+        h_b, w_b = mask_b.shape[:2]
+        x_min = min(x0_a, x0_b)
+        y_min = min(y0_a, y0_b)
+        x_max = max(x0_a + w_a, x0_b + w_b)
+        y_max = max(y0_a + h_a, y0_b + h_b)
+        canvas_a = np.zeros((y_max - y_min, x_max - x_min), dtype=bool)
+        canvas_b = np.zeros((y_max - y_min, x_max - x_min), dtype=bool)
+        canvas_a[y0_a - y_min:y0_a - y_min + h_a, x0_a - x_min:x0_a - x_min + w_a] = mask_a
+        canvas_b[y0_b - y_min:y0_b - y_min + h_b, x0_b - x_min:x0_b - x_min + w_b] = mask_b
+        intersection = int((canvas_a & canvas_b).sum())
+        union = int((canvas_a | canvas_b).sum())
+        rec["iou"] = intersection / union if union > 0 else 0.0
+
+        ys_a, xs_a = np.where(mask_a)
+        ys_b, xs_b = np.where(mask_b)
+        cx_a, cy_a = float(xs_a.mean()) + x0_a, float(ys_a.mean()) + y0_a
+        cx_b, cy_b = float(xs_b.mean()) + x0_b, float(ys_b.mean()) + y0_b
+        rec["centroid_drift_px"] = float(np.hypot(cx_b - cx_a, cy_b - cy_a))
+        out.append(rec)
+    return out
+
+
+def summarize_z_consistency(transitions: list[dict], *, low_iou_threshold: float = 0.5) -> dict:
+    """Aggregate z_transitions records (one chain's, or a whole run's concatenated).
+
+    n_dropout_transitions counts transitions with iou=None separately from the
+    IoU/drift means, so a chain that scores well only because most transitions were
+    skipped by dropout does not look falsely consistent. frac_low_iou is restricted
+    to gap==1 transitions (a gap>1 transition spans real missed frames, not a
+    consistency failure, and would understate the run's true low-IoU rate if mixed
+    in)."""
+    n = len(transitions)
+    dropout = [t for t in transitions if t["iou"] is None]
+    scored = [t for t in transitions if t["iou"] is not None]
+    gap1_scored = [t for t in scored if t["gap"] == 1]
+    return {
+        "n_transitions": n,
+        "n_dropout_transitions": len(dropout),
+        "mean_z2z_iou": float(np.mean([t["iou"] for t in scored])) if scored else None,
+        "mean_centroid_drift_px": (
+            float(np.mean([t["centroid_drift_px"] for t in scored])) if scored else None),
+        "frac_gap1_transitions": (
+            sum(1 for t in transitions if t["gap"] == 1) / n) if n else None,
+        "frac_low_iou": (
+            sum(1 for t in gap1_scored if t["iou"] < low_iou_threshold) / len(gap1_scored)
+        ) if gap1_scored else None,
+    }
+
+
 def summarize(per: pd.DataFrame) -> dict:
     """Aggregate a per-frame merge-metric DataFrame into the summary dict.
 
