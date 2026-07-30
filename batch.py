@@ -394,6 +394,67 @@ def _tier2_overrides(cfg) -> dict:
     return out
 
 
+def _apply_second_pass_and_update_qc(session, cfg, neuron: str, chain: dict,
+                                     chain_dir: Path, state) -> None:
+    """Run the propagation second pass on a finished chain and fold its outcomes into
+    qc.csv, so _triage.csv (rebuilt from qc.csv every run) reflects the corrected state
+    instead of the stale pre-pass flags. No-op when second_pass is off, the chain used
+    per-slice re-seeding (already has its own guard), or the chain has nothing flagged.
+    """
+    import pandas as pd
+
+    from eval import merge_metric
+    from pipeline.propagate import apply_second_pass
+    from sam2_utils import alignment
+
+    if not cfg.second_pass or cfg.per_slice_reseed:
+        return
+
+    qc_csv_path = chain_dir / "qc.csv"
+    if not qc_csv_path.exists():
+        return
+    qc_df = pd.read_csv(qc_csv_path)
+    if "queue" in qc_df.columns:
+        has_flags = bool(qc_df["queue"].any())
+    elif "intervene" in qc_df.columns:
+        has_flags = bool(qc_df["intervene"].any())
+    elif "flag" in qc_df.columns:
+        has_flags = bool(qc_df["flag"].any())
+    else:
+        has_flags = False
+    if not has_flags:
+        return
+
+    nodes_by_z = merge_metric.nodes_by_z(session.annotate_df, cfg.scale)
+    records = merge_metric.score_chain(chain_dir, neuron, nodes_by_z, merge_metric.DEFAULT_RADIUS)
+
+    cw = alignment.CropWindow.from_dict(state.crop_window) if state.crop_window else None
+    outcomes = apply_second_pass(
+        session.image_predictor, state.frames_dir, state.frame_to_z, cw, chain,
+        session.annotate_df, chain_dir, records, cfg=cfg,
+        min_neighbour_area_ratio=cfg.second_pass_min_neighbour_area_ratio)
+    if not outcomes:
+        return
+
+    if "second_pass" not in qc_df.columns:
+        qc_df["second_pass"] = ""
+    for z, tag in outcomes.items():
+        row = qc_df["z"] == z
+        qc_df.loc[row, "second_pass"] = tag
+        if tag == "guard_fallback":
+            # mirrors apply_blowup_guard's own zero-confidence intent: no live
+            # frame_conf/pred_iou dict exists post-hoc, so queue the frame for a
+            # human directly via the same columns build_triage_queue reads.
+            for col in ("flag", "intervene", "queue"):
+                if col in qc_df.columns:
+                    qc_df.loc[row, col] = True
+    qc_df.to_csv(qc_csv_path, index=False)
+    print(f"[batch] second pass {neuron}/{chain_dir.name}: "
+          f"{len(outcomes)} frame(s), "
+          f"{sum(1 for t in outcomes.values() if t == 'corrected')} corrected, "
+          f"{sum(1 for t in outcomes.values() if t == 'guard_fallback')} guard_fallback")
+
+
 def _run_one_chain(
     session: Session,
     cfg: PipelineConfig,
@@ -439,6 +500,7 @@ def _run_one_chain(
                 else "kept tier-2 (_pcrop)")
         print(f"[batch] tier-2 re-run done {neuron}/chain_{chain_idx:02d}: "
               f"{kept}, status={getattr(state, 'status', '?')}")
+    _apply_second_pass_and_update_qc(session, cfg, neuron, chain, chain_dir, state)
     save_state(state, chain_dir / "state.json")
     return state
 
@@ -811,6 +873,13 @@ def main() -> None:
                     help="force mask post-processing ON (overrides the preset; A/B with --no-postprocess)")
     ap.add_argument("--no-postprocess", dest="postprocess", action="store_false",
                     help="force mask post-processing OFF (overrides the preset)")
+    ap.add_argument("--second-pass", dest="second_pass", action="store_true", default=None,
+                    help="force the propagation second pass ON (overrides the preset)")
+    ap.add_argument("--no-second-pass", dest="second_pass", action="store_false",
+                    help="force the propagation second pass OFF (overrides the preset)")
+    ap.add_argument("--second-pass-min-neighbour-area-ratio", type=float, default=None,
+                    help="override the second pass's nucleus-capture neighbour area floor "
+                         "(default 0.5, see PipelineConfig.second_pass_min_neighbour_area_ratio)")
     args = ap.parse_args()
 
     p = presets.get_preset(args.preset)
@@ -819,6 +888,10 @@ def main() -> None:
         pipe["model_size"] = args.model_size
     if args.postprocess is not None:
         pipe["postprocess_masks"] = args.postprocess
+    if args.second_pass is not None:
+        pipe["second_pass"] = args.second_pass
+    if args.second_pass_min_neighbour_area_ratio is not None:
+        pipe["second_pass_min_neighbour_area_ratio"] = args.second_pass_min_neighbour_area_ratio
     if args.backend is not None:
         pipe["backend"] = args.backend
     if args.sam3_checkpoint is not None:
