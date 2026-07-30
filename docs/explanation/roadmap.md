@@ -556,7 +556,9 @@ every frame, ordered cheap to expensive:
   `membrane_map` later without touching the detectors or the scorer.
 - **2b.5, improve the membrane map by suppressing organelles, MEASURED 2026-07-29, revised 2026-07-29
   after a gate-membership confound was found and corrected: temporal projection alone still does not
-  help, but the first measurement overstated how badly.** The autofill finding (problem 8 above) says
+  help, but the first measurement overstated how badly. A second lever, an intensity/texture blob
+  filter, was tried next and measured 2026-07-29 too: it does not move the floor either, which closes
+  the classical route.** The autofill finding (problem 8 above) says
   the scale-8 Sato ridge map is the ceiling: organelles and vesicles create the false walls and gaps
   that make ~40% of grown cells leak, and no amount of grow or arbitration tuning moves that floor. The
   cheap classical lever tried first was a temporal median/mean/max projection over adjacent z-slices
@@ -611,13 +613,56 @@ every frame, ordered cheap to expensive:
   two mechanisms cleanly, but the clamped fraction roughly doubling from window=1 to window=2 lines up
   with where the regression is worst.
 
-  **2c and 2d stay gated, now on the deferred intensity/texture blob filter instead of this lever**
-  (2e no longer waits on it: NucleoNet resolved nucleus detection independently, see item 2e below):
-  no `(window, combine)` setting improves the bleed-per-fill rate, the population-controlled metric,
+  No `(window, combine)` setting improves the bleed-per-fill rate, the population-controlled metric,
   even where the absolute foreign-node count happens to land at or slightly below baseline by growing
   fewer cells. One untested, cheap follow-up worth a look before writing the lever off entirely: reject
   spurious large-shift crops instead of clamping and applying them. See
-  [[membrane-temporal-projection-idea]]. *(§4.3 tier-2 bottleneck)*
+  [[membrane-temporal-projection-idea]].
+
+  **Second lever, an intensity/texture blob filter, MEASURED 2026-07-29.** `sam2_utils/membrane.py`
+  gained `detect_organelle_blobs`/`suppress_organelles` (Otsu threshold, connected-component labeling,
+  then `regionprops` area/eccentricity filtering, with a dilation margin before inpainting), wired into
+  `grow_all` via `--suppress-organelles`/`--blob-max-area`/`--blob-max-eccentricity`/`--blob-dilate-px`.
+  An earlier `blob_dog` (Gaussian-scale blob detector) design was rejected before this plan existed,
+  verified directly to not tell blob shape from ridge shape (it flagged a synthetic ridge about as
+  strongly as a synthetic blob), which is why the shipped design filters on `regionprops` shape
+  statistics instead.
+
+  Calibration against a real target-worm EM crop (z=1456, 200x200px, Otsu threshold 122.1, 43.1% of
+  the crop dark) found the two shape knobs cannot do what real data needs from them. Of 1017 dark
+  connected components, 710 pass the plan's default filter (`max_area=150.0`, `max_eccentricity=0.85`),
+  and 618 of those (87%) sit at area <= 3px, near-certain single-pixel Otsu noise rather than
+  organelles; only 28 (4%) fall in a plausible organelle size range (area 11-144px). Tightening
+  `max_eccentricity` to 0.6 does not fix this (562 of 585 kept components, still 96%, stay <= 3px)
+  while discarding 90% of the plausible-organelle-sized candidates, a net loss, not an improvement.
+  Tightening `max_area` to 60-80 barely changes the kept count (706-708 vs 710), so area is not the
+  binding constraint either. `blob_dilate_px` is what actually controls collateral damage, since
+  dilation lands on hundreds of noise specks, not the ~28 real ones: the flagged-pixel fraction of the
+  crop runs 5.3% at `dilate_px=0`, 14.6% at `dilate_px=1`, 26.1% at `dilate_px=2`. `max_area` and
+  `max_eccentricity` stayed at the plan's defaults (neither shown to help or hurt); `blob_dilate_px`
+  was lowered from the plan's default of 2 to 1, halving the over-suppression footprint to 14.6% of
+  the crop, a mitigation for the noise-speck problem rather than a fix for it (the current interface
+  has no minimum-area floor to remove single-pixel specks directly).
+
+  The calibrated gate (`--z 1456 --uf-min 0.6 --suppress-organelles --blob-max-area 150.0
+  --blob-max-eccentricity 0.85 --blob-dilate-px 1`) reported filled=18, foreign=40, bleed_cells=28/117,
+  new_bleed=7, mean_uf=0.381, area +12%, contested=3274, against a freshly reproduced, same-day,
+  same-settings baseline (no suppression) of filled=17, foreign=39, bleed_cells=28/117, new_bleed=7,
+  mean_uf=0.403, area +12%, contested=2749. That reproduction mattered: the 0.38 bleed-per-fill figure
+  already on record above turned out, on closer reading, to belong to the `uf_min=0` run, not this
+  `uf_min=0.6` run, so it is not the correct baseline to compare against. Against the correct,
+  apples-to-apples baseline the rate moves from 7/17=0.41 to 7/18=0.39; against the older 0.38 figure
+  it reads flat at 7/18=0.39. Either way, `new_bleed` itself is identically 7 in both conditions; the
+  only thing that changed is the denominator, one additional cell crossed the `uf_min>=0.6`
+  grow-eligibility gate under the suppressed membrane map, which is not the same as any grow leaking
+  less. Contested pixels (mask overlap between neurons) rose 2749 -> 3274, +19%, a cost the
+  bleed-per-fill metric does not capture.
+
+  **2c and 2d stay gated; the classical route is now exhausted, both levers tried and measured
+  negative** (2e no longer waits on either: NucleoNet resolved nucleus detection independently, see
+  item 2e below). Per the decision point in section 6, the next step is a learned membrane map
+  (Phase 3), judged on boundary sharpness rather than zoomed-out neatness, not further classical
+  tuning. *(§4.3 tier-2 bottleneck)*
 - **2c, grow-to-membrane refinement of masks, PROTOTYPED (`experiments/dense_membrane_fill.py`).** Reuses
   the membrane signal and the `underfill_fraction` flood that 2b only measures, this time growing a mask
   to its bounding membrane. Verdict from the dense-frame sweep: the usable operating point is **targeted
@@ -762,8 +807,8 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
    mask re-reads needed), the neg x gen A/B confirms the current preset is already SAM3-optimal
    (negatives help, generous hurts), and the default call is made: `--backend sam3` stays opt-in
    (ADR 0017), not a silent default flip, pending Phase 2c's underfill fix.
-10. **Organelle-suppressed membrane map** (Phase 2b.5, the new pivot). PARTLY DONE, negative result on
-    the temporal-projection half, revised after a gate confound was found and corrected (2026-07-29):
+10. **Organelle-suppressed membrane map** (Phase 2b.5). DONE 2026-07-29, negative result on both
+    classical levers tried. Temporal projection, revised after a gate confound was found and corrected:
     `register_crops`/`project_crops` landed and `dense_membrane_fill.py` gained
     `--mm-window`/`--mm-combine`/`--sweep-temporal`, plus a `filled` population column and a
     shift-clamp diagnostic added during the fix pass. The first gate (z=1456, uf_min 0.6) reported
@@ -774,8 +819,15 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
     bleed (136-148 vs baseline 139) despite growing FEWER cells, and window=2 moderately, not
     dramatically, worse (foreign 161-189, bleed_cells up to 61/117). The shift-clamp diagnostic found
     real clamping (14-30% of crop pairs, raw shifts up to 173-269px), so misregistration via the clamp
-    is a demonstrated contributor alongside, or instead of, blur. Still does not unblock 2c/2d; the
-    next lever is the deferred intensity/texture blob filter (2e no longer waits on it, see item 11).
+    is a demonstrated contributor alongside, or instead of, blur. An intensity/texture blob filter was
+    tried next: `sam2_utils/membrane.py` gained `detect_organelle_blobs`/`suppress_organelles`,
+    calibrated against real target-worm EM (`blob_dilate_px` lowered from the plan's default of 2 to 1
+    to keep the over-suppression footprint at 14.6% of the calibration crop instead of 26.1%;
+    `max_area`/`max_eccentricity` kept at the plan's defaults, neither shown to help or hurt), then
+    gated at z=1456, uf_min 0.6: `new_bleed` is identically 7 with and without suppression (filled 18
+    vs 17, bleed-per-fill 0.39 vs 0.41), so the floor does not move here either. Neither lever unblocks
+    2c/2d; per the decision point in section 6, the classical route is now exhausted and the next step
+    is a learned membrane map (Phase 3).
 11. **Targeted grow-to-membrane + nucleus detection** (Phase 2c/2e). Grow-to-membrane (2c) TODO, still
     gated on item 10: wire the underfill-gated fill (uf_min ~0.6-0.7) once the map is cleaner. Nucleus
     detection (2e) PARTLY DONE 2026-07-29: the detector is identified rather than built from scratch.
@@ -816,24 +868,29 @@ unvalidated; the resolution goal is served by cropping / tiling.
 - **The eroded / different-worm confound proves dominant** (Phase 0) -> treat all past boundary numbers
   (including the ~2-3% precision) as unreliable, and rebuild the ruler on target-worm skeletons + the
   Phase-3 benchmark before trusting any boundary A/B.
-- **Classical organelle suppression (2b.5) fails to move the ~40% bleed-per-fill floor** -> partially
-  resolved 2026-07-29, refined 2026-07-29: the temporal-projection half of this lever does not help at
-  either window tried, but the size of the regression first reported was inflated by a gate-membership
-  confound: a fixed 0.6 underfill threshold pulls far more cells into the grow step as the temporal map
-  reads blurrier. Re-run with the gate held open (uf_min 0) shows window=1 close to flat on
-  foreign-node bleed and window=2 moderately, not dramatically, worse, even though fewer cells were
-  grown at the wider window, so the effect is real but smaller than first reported. A shift-clamp
+- **Classical organelle suppression (2b.5) fails to move the ~40% bleed-per-fill floor** -> RESOLVED
+  2026-07-29: both classical levers were tried and neither moves it. The temporal-projection half does
+  not help at either window tried, and the size of the regression first reported was inflated by a
+  gate-membership confound: a fixed 0.6 underfill threshold pulls far more cells into the grow step as
+  the temporal map reads blurrier. Re-run with the gate held open (uf_min 0) shows window=1 close to
+  flat on foreign-node bleed and window=2 moderately, not dramatically, worse, even though fewer cells
+  were grown at the wider window, so the effect is real but smaller than first reported. A shift-clamp
   diagnostic also found `register_crops` clamping and applying spurious large shifts (raw magnitudes up
   to 173-269px, well past any real slice jitter) on 14-30% of crop pairs, so misregistration is a
-  demonstrated contributor alongside, or instead of, blur. That closes the temporal-projection route as
-  currently built, not the classical route as a whole: the still-untried intensity/texture blob filter
-  is a different mechanism (no registration, no cross-slice blur) and stays the next thing to try for
-  2c/2d before reaching for a learned map (2e, nucleus detection, no longer waits on this: NucleoNet
-  resolved it independently, item 11). A cheap, untested follow-up worth a look before writing off
-  temporal projection entirely: reject spurious large-shift crops instead of clamping and applying
-  them. If the blob filter also fails to move the floor, *then* skip straight to a learned membrane map
-  (Phase 3), accepting the training cost, and judge it on boundary sharpness (the mEMbrain lesson), not
-  zoomed-out neatness.
+  demonstrated contributor alongside, or instead of, blur. The intensity/texture blob filter (Otsu
+  threshold, connected-component labeling, `regionprops` shape filtering; the corrected design after an
+  earlier `blob_dog` Gaussian-scale detector was rejected for not telling blob shape from ridge shape)
+  was tried next and calibrated against real target-worm EM, which found the two shape knobs cannot
+  separate ~700 single-pixel Otsu noise specks from genuine tiny organelle fragments of similar size, so
+  `blob_dilate_px` was lowered from the plan's default of 2 to 1 to limit collateral damage (26.1% ->
+  14.6% of the calibration crop flagged). At the calibrated gate (z=1456, uf_min 0.6), `new_bleed` is
+  identically 7 with and without suppression (filled 18 vs 17, bleed-per-fill 0.39 vs 0.41); the floor
+  does not move. That closes the classical route entirely, both mechanisms tried and measured negative,
+  so per this decision point's own commitment, the plan now skips straight to a learned membrane map
+  (Phase 3), accepting the training cost, and judges it on boundary sharpness (the mEMbrain lesson), not
+  zoomed-out neatness (2e, nucleus detection, no longer waits on any of this: NucleoNet resolved it
+  independently, item 11). A cheap, untested follow-up worth a look before writing off temporal
+  projection specifically: reject spurious large-shift crops instead of clamping and applying them.
 - ~~**The SAM3 neg x gen A/B shows negatives hurt SAM3**~~ Resolved 2026-07-29, the other way: the A/B
   shows negatives still help SAM3 (foreign_frame_rate and bleed severity both improve with negatives
   on, holding generous fixed), so the existing negatives-on preset needs no SAM3-specific retune. See

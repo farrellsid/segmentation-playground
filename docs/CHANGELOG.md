@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-29, organelle blob suppression: the intensity/texture filter lands, calibrated against real EM, the floor still does not move](#r-2026-07-29-organelle-blob)
 - [2026-07-29, z-to-z consistency metric: a temporal ruler for the merge metric's per-frame blind spot](#r-2026-07-29-z2z)
 - [2026-07-29, nucleus-capture detector: GUI label added, NucleoNet spot-checked and verdicted](#r-2026-07-29-nucleus)
 - [2026-07-29, temporal membrane projection: register/project crops land, a gate confound found and corrected](#r-2026-07-29-temporal)
@@ -41,6 +42,58 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-29-organelle-blob"></a>
+## 2026-07-29, organelle blob suppression: the intensity/texture filter lands, calibrated against real EM, the floor still does not move
+
+Phase 2b.5's second classical lever, tried after temporal projection landed as a negative result.
+`sam2_utils/membrane.py` gained `detect_organelle_blobs` and `suppress_organelles` (Otsu threshold,
+connected-component labeling, then `regionprops` area/eccentricity filtering, with a dilation margin
+before inpainting), wired into `experiments/dense_membrane_fill.py`'s `grow_all` via
+`--suppress-organelles`/`--blob-max-area`/`--blob-max-eccentricity`/`--blob-dilate-px`. An earlier
+`blob_dog` (Gaussian-scale blob detector) design was rejected before this plan existed, verified
+directly to not tell blob shape from ridge shape (it flagged a synthetic ridge about as strongly as a
+synthetic blob), which is why the shipped mechanism filters on `regionprops` shape statistics instead.
+
+Calibration against a real target-worm EM crop (z=1456, 200x200px, Otsu threshold 122.1, 43.1% of the
+crop dark) found the two shape knobs cannot do what real data needs from them. Of 1017 dark connected
+components, 710 pass the plan's default filter (`max_area=150.0`, `max_eccentricity=0.85`), and 618 of
+those (87%) sit at area <= 3px, near-certain single-pixel Otsu noise rather than organelles; only 28
+(4%) fall in a plausible organelle size range (area 11-144px). Tightening `max_eccentricity` to 0.6
+does not fix this (562 of 585 kept components, still 96%, stay <= 3px) while discarding 90% of the
+plausible-organelle-sized candidates, a net loss, not an improvement. Tightening `max_area` to 60-80
+barely changes the kept count (706-708 vs 710), so area is not the binding constraint either.
+`blob_dilate_px` is what actually controls collateral damage, since dilation lands on hundreds of
+noise specks, not the ~28 real ones: the flagged-pixel fraction of the crop runs 5.3% at
+`dilate_px=0`, 14.6% at `dilate_px=1`, 26.1% at `dilate_px=2`. `max_area` and `max_eccentricity`
+stayed at the plan's defaults (neither shown to help or hurt); `blob_dilate_px` was lowered from the
+plan's default of 2 to 1, halving the over-suppression footprint to 14.6% of the crop, a mitigation
+for the noise-speck problem rather than a fix for it (the current interface has no minimum-area floor
+to remove single-pixel specks directly).
+
+The calibrated gate (`py -3 experiments/dense_membrane_fill.py --z 1456 --uf-min 0.6
+--suppress-organelles --blob-max-area 150.0 --blob-max-eccentricity 0.85 --blob-dilate-px 1`) reported
+filled=18, foreign=40, bleed_cells=28/117, new_bleed=7, mean_uf=0.381, area +12%, contested=3274,
+against a freshly reproduced same-day baseline at the same z and `uf_min` (no suppression) of
+filled=17, foreign=39, bleed_cells=28/117, new_bleed=7, mean_uf=0.403, area +12%, contested=2749. That
+reproduction mattered: the 0.38 bleed-per-fill figure already on record from the temporal-projection
+entry below turned out, on closer reading, to belong to a different setting (the `uf_min=0` run), not
+this `uf_min=0.6` run, so it was not the correct baseline to compare against. Against the correct,
+apples-to-apples baseline, the rate moves from 7/17=0.41 to 7/18=0.39; against the older 0.38 figure it
+reads flat at 7/18=0.39. Either way, `new_bleed` itself is identically 7 in both conditions; the only
+thing that changed is the denominator, one additional cell crossed the `uf_min>=0.6` grow-eligibility
+gate under the suppressed membrane map, which is not the same as any grow leaking less. Contested
+pixels (mask overlap between neurons) rose 2749 -> 3274, +19%, a cost the bleed-per-fill metric does
+not capture.
+
+**Result: the floor does not move**, the plan's second documented negative outcome (temporal
+projection was the first), not a partial win rounded up. With both classical levers now tried and
+measured negative, items 2c (grow-to-membrane) and 2d (non-overlap arbitration) stay gated, and per
+the roadmap's own decision point, the next step is a learned membrane map (Phase 3), judged on
+boundary sharpness rather than zoomed-out neatness. See the roadmap's item 2b.5 (section 5), item 10,
+and the decision point in section 6.
 
 ---
 
