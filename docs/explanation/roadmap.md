@@ -639,10 +639,14 @@ every frame, ordered cheap to expensive:
   binding constraint either. `blob_dilate_px` is what actually controls collateral damage, since
   dilation lands on hundreds of noise specks, not the ~28 real ones: the flagged-pixel fraction of the
   crop runs 5.3% at `dilate_px=0`, 14.6% at `dilate_px=1`, 26.1% at `dilate_px=2`. `max_area` and
-  `max_eccentricity` stayed at the plan's defaults (neither shown to help or hurt); `blob_dilate_px`
-  was lowered from the plan's default of 2 to 1, halving the over-suppression footprint to 14.6% of
-  the crop, a mitigation for the noise-speck problem rather than a fix for it (the current interface
-  has no minimum-area floor to remove single-pixel specks directly).
+  `max_eccentricity` stayed at the plan's default: tightening it is a net loss, not a null result, it
+  discards 90% of the plausible-organelle-sized candidates without fixing the dominant noise-speck
+  problem. `max_area` tightening to 60-80 has negligible effect either way, since the noise
+  population already sits far below the tested thresholds and the kept count barely moves (706-708
+  vs 710). `blob_dilate_px` was lowered from the plan's default of 2 to 1, halving the
+  over-suppression footprint to 14.6% of the crop, a mitigation for the noise-speck problem rather
+  than a fix for it (the current interface has no minimum-area floor to remove single-pixel specks
+  directly).
 
   The calibrated gate (`--z 1456 --uf-min 0.6 --suppress-organelles --blob-max-area 150.0
   --blob-max-eccentricity 0.85 --blob-dilate-px 1`) reported filled=18, foreign=40, bleed_cells=28/117,
@@ -658,11 +662,41 @@ every frame, ordered cheap to expensive:
   less. Contested pixels (mask overlap between neurons) rose 2749 -> 3274, +19%, a cost the
   bleed-per-fill metric does not capture.
 
-  **2c and 2d stay gated; the classical route is now exhausted, both levers tried and measured
-  negative** (2e no longer waits on either: NucleoNet resolved nucleus detection independently, see
-  item 2e below). Per the decision point in section 6, the next step is a learned membrane map
-  (Phase 3), judged on boundary sharpness rather than zoomed-out neatness, not further classical
-  tuning. *(§4.3 tier-2 bottleneck)*
+  **A whole-plan review flagged that this single `uf_min=0.6` row (n=17/18 filled) is the narrowest,
+  most favorable slice available, and that `experiments/dense_membrane_fill.py --sweep` already prints
+  a much larger, population-matched comparison across every `uf_min` gate from the same grow pass, for
+  free.** Reproduced directly (`--z 1456 --sweep`, baseline vs `--sweep --suppress-organelles
+  --blob-max-area 150.0 --blob-max-eccentricity 0.85 --blob-dilate-px 1`):
+
+  | uf_min | baseline new_bleed/filled | suppressed new_bleed/filled |
+  |---|---|---|
+  | 0.00 | 34/90 = 0.378 | 35/90 = 0.389 |
+  | 0.40 | 14/36 = 0.389 | 15/34 = 0.441 |
+  | 0.50 | 11/26 = 0.423 | 11/24 = 0.458 |
+  | 0.60 | 7/17 = 0.412 | 7/18 = 0.389 |
+  | 0.70 | 3/11 = 0.273 | 4/13 = 0.308 |
+
+  At `uf_min=0` the grown population is perfectly matched (filled=90 on both sides, 5x the sample of
+  the `uf_min=0.6` row), and every other tracked stat at that row is worse under suppression too:
+  foreign 139 -> 142, bleed_cells 55/117 -> 56/117, contested 25741 -> 28107 (+9%). Suppression is
+  flat-to-slightly-worse at 4 of the 5 gates; `uf_min=0.6` is the sole exception, and it is also the
+  smallest sample in the table (n=17/18), so it reads as the coincidence of one small row rather than
+  the representative case. **The correct framing is that the negative result is confirmed across a 5x
+  larger, population-matched sample, not established by the narrow row alone**, and the strengthened
+  conclusion points the same direction the narrow row did, just more decisively.
+
+  **Scope of what this closes.** This rules out the specific `detect_organelle_blobs`/
+  `suppress_organelles` design landed in Task 1, not organelle suppression as a general idea: the
+  current detector has no minimum-area floor, so it structurally cannot separate single-pixel Otsu
+  noise from genuine tiny organelle fragments. A differently-designed detector, one with an explicit
+  minimum-area floor, or local rather than global Otsu thresholding, remains a separate, unexplored
+  option; this result does not tell us whether that one would work.
+
+  **2c and 2d stay gated; the classical route via this detector design is now exhausted, both levers
+  tried and measured negative at scale** (2e no longer waits on either: NucleoNet resolved nucleus
+  detection independently, see item 2e below). Per the decision point in section 6, the next step is
+  a learned membrane map (Phase 3), judged on boundary sharpness rather than zoomed-out neatness, not
+  further classical tuning. *(§4.3 tier-2 bottleneck)*
 - **2c, grow-to-membrane refinement of masks, PROTOTYPED (`experiments/dense_membrane_fill.py`).** Reuses
   the membrane signal and the `underfill_fraction` flood that 2b only measures, this time growing a mask
   to its bounding membrane. Verdict from the dense-frame sweep: the usable operating point is **targeted
@@ -823,11 +857,17 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
     tried next: `sam2_utils/membrane.py` gained `detect_organelle_blobs`/`suppress_organelles`,
     calibrated against real target-worm EM (`blob_dilate_px` lowered from the plan's default of 2 to 1
     to keep the over-suppression footprint at 14.6% of the calibration crop instead of 26.1%;
-    `max_area`/`max_eccentricity` kept at the plan's defaults, neither shown to help or hurt), then
+    `max_area` kept at the plan's default since tightening it had negligible effect either way, and
+    `max_eccentricity` kept at the plan's default since tightening it was a net loss, discarding 90%
+    of plausible organelle-sized candidates without fixing the dominant noise-speck problem), then
     gated at z=1456, uf_min 0.6: `new_bleed` is identically 7 with and without suppression (filled 18
-    vs 17, bleed-per-fill 0.39 vs 0.41), so the floor does not move here either. Neither lever unblocks
-    2c/2d; per the decision point in section 6, the classical route is now exhausted and the next step
-    is a learned membrane map (Phase 3).
+    vs 17, bleed-per-fill 0.39 vs 0.41), so the floor does not move here either. A whole-plan review's
+    population-matched re-check across all five `--sweep` gates (`filled` matched at 90/90 at
+    `uf_min=0`) confirmed the same negative result at 5x the sample, suppression flat-to-worse at 4 of
+    5 gates. This closes out the specific detector design landed here, not organelle suppression as a
+    general idea (see the item 2b.5 scope note above); neither lever unblocks 2c/2d; per the decision
+    point in section 6, the classical route via this design is now exhausted and the next step is a
+    learned membrane map (Phase 3).
 11. **Targeted grow-to-membrane + nucleus detection** (Phase 2c/2e). Grow-to-membrane (2c) TODO, still
     gated on item 10: wire the underfill-gated fill (uf_min ~0.6-0.7) once the map is cleaner. Nucleus
     detection (2e) PARTLY DONE 2026-07-29: the detector is identified rather than built from scratch.

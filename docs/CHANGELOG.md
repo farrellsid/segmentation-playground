@@ -67,11 +67,14 @@ plausible-organelle-sized candidates, a net loss, not an improvement. Tightening
 barely changes the kept count (706-708 vs 710), so area is not the binding constraint either.
 `blob_dilate_px` is what actually controls collateral damage, since dilation lands on hundreds of
 noise specks, not the ~28 real ones: the flagged-pixel fraction of the crop runs 5.3% at
-`dilate_px=0`, 14.6% at `dilate_px=1`, 26.1% at `dilate_px=2`. `max_area` and `max_eccentricity`
-stayed at the plan's defaults (neither shown to help or hurt); `blob_dilate_px` was lowered from the
-plan's default of 2 to 1, halving the over-suppression footprint to 14.6% of the crop, a mitigation
-for the noise-speck problem rather than a fix for it (the current interface has no minimum-area floor
-to remove single-pixel specks directly).
+`dilate_px=0`, 14.6% at `dilate_px=1`, 26.1% at `dilate_px=2`. `max_eccentricity` stayed at the
+plan's default: tightening it is a net loss, not a null result, discarding 90% of the
+plausible-organelle-sized candidates without fixing the dominant noise-speck problem. `max_area`
+tightening to 60-80 has negligible effect either way, since the noise population already sits far
+below the tested thresholds and the kept count barely moves (706-708 vs 710). `blob_dilate_px` was
+lowered from the plan's default of 2 to 1, halving the over-suppression footprint to 14.6% of the
+crop, a mitigation for the noise-speck problem rather than a fix for it (the current interface has no
+minimum-area floor to remove single-pixel specks directly).
 
 The calibrated gate (`py -3 experiments/dense_membrane_fill.py --z 1456 --uf-min 0.6
 --suppress-organelles --blob-max-area 150.0 --blob-max-eccentricity 0.85 --blob-dilate-px 1`) reported
@@ -88,8 +91,36 @@ gate under the suppressed membrane map, which is not the same as any grow leakin
 pixels (mask overlap between neurons) rose 2749 -> 3274, +19%, a cost the bleed-per-fill metric does
 not capture.
 
-**Result: the floor does not move**, the plan's second documented negative outcome (temporal
-projection was the first), not a partial win rounded up. With both classical levers now tried and
+**A whole-plan review pointed out that this single `uf_min=0.6` row (n=17/18 filled) is the
+narrowest, most favorable slice available, and that `--sweep` already prints a much larger,
+population-matched comparison across every `uf_min` gate from the same grow pass, for free.**
+Reproduced directly (`py -3 experiments/dense_membrane_fill.py --z 1456 --sweep`, baseline vs
+`--sweep --suppress-organelles --blob-max-area 150.0 --blob-max-eccentricity 0.85
+--blob-dilate-px 1`):
+
+| uf_min | baseline new_bleed/filled | suppressed new_bleed/filled |
+|---|---|---|
+| 0.00 | 34/90 = 0.378 | 35/90 = 0.389 |
+| 0.40 | 14/36 = 0.389 | 15/34 = 0.441 |
+| 0.50 | 11/26 = 0.423 | 11/24 = 0.458 |
+| 0.60 | 7/17 = 0.412 | 7/18 = 0.389 |
+| 0.70 | 3/11 = 0.273 | 4/13 = 0.308 |
+
+At `uf_min=0` the grown population is perfectly matched (filled=90 on both sides, 5x the sample of
+the `uf_min=0.6` row), and every other tracked stat at that row is worse under suppression too:
+foreign 139 -> 142, bleed_cells 55/117 -> 56/117, contested 25741 -> 28107 (+9%). Suppression is
+flat-to-slightly-worse at 4 of the 5 gates; `uf_min=0.6` is the sole exception, and it is also the
+smallest sample in the table, so it reads as the coincidence of one small row rather than the
+representative case.
+
+**Result: the floor does not move, confirmed across a 5x larger, population-matched sample, not just
+the narrow n=18 row first reported.** This is the plan's second documented negative outcome (temporal
+projection was the first), and the population-matched check strengthens rather than overturns it.
+This closes out the specific `detect_organelle_blobs`/`suppress_organelles` design landed in Task 1,
+not organelle suppression as a general idea: the current detector has no minimum-area floor, so it
+structurally cannot separate single-pixel Otsu noise from genuine tiny organelle fragments, and a
+differently-designed detector (an explicit minimum-area floor, or local rather than global Otsu
+thresholding) remains a distinct, unexplored option. With both classical levers now tried and
 measured negative, items 2c (grow-to-membrane) and 2d (non-overlap arbitration) stay gated, and per
 the roadmap's own decision point, the next step is a learned membrane map (Phase 3), judged on
 boundary sharpness rather than zoomed-out neatness. See the roadmap's item 2b.5 (section 5), item 10,

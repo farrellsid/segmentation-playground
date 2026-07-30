@@ -86,7 +86,7 @@ def _shift_diag(crops, center_i, max_shift=MAX_SHIFT):
 def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: str,
             pad: int, nodes, radius: int, *, suppress_organelles_flag: bool = False,
             blob_max_area: float = 150.0, blob_max_eccentricity: float = 0.85,
-            blob_dilate_px: int = 2):
+            blob_dilate_px: int = 1):
     """Grow each neuron to its ridge walls once, UNCAPPED, inside a local bbox+pad window.
 
     The membrane map for each neuron's crop is built from `frames`, a {z: em_gray} dict
@@ -212,11 +212,8 @@ def main(argv=None):
                     help="max connected-component area (px) to count as an organelle, not a ridge")
     ap.add_argument("--blob-max-eccentricity", type=float, default=0.85,
                     help="max eccentricity (0=circle, close to 1=elongated) to count as an organelle")
-    ap.add_argument("--blob-dilate-px", type=int, default=2,
+    ap.add_argument("--blob-dilate-px", type=int, default=1,
                     help="dilate the detected organelle mask by this many px before inpainting")
-    ap.add_argument("--sweep-organelle", action="store_true",
-                    help="grid a few (max_area, max_eccentricity) settings and print the same "
-                         "bleed/underfill table as --sweep")
     ap.add_argument("--sweep", action="store_true",
                     help="sweep the runaway cap and the underfill gate")
     ap.add_argument("--sweep-temporal", action="store_true",

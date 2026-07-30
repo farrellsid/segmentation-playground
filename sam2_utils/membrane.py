@@ -178,7 +178,7 @@ def underfill_fraction(mask: np.ndarray, mem: np.ndarray, *,
 
 DEFAULT_BLOB_MAX_AREA = 150.0
 DEFAULT_BLOB_MAX_ECCENTRICITY = 0.85
-DEFAULT_BLOB_DILATE_PX = 2
+DEFAULT_BLOB_DILATE_PX = 1
 
 
 def detect_organelle_blobs(em_patch: np.ndarray, *, max_area: float = DEFAULT_BLOB_MAX_AREA,
@@ -226,12 +226,23 @@ def suppress_organelles(em_patch: np.ndarray, organelle_mask: np.ndarray) -> np.
     """Replace organelle_mask's True pixels with a locally-consistent inpainted value.
 
     organelle_mask is expected to already be dilated (detect_organelle_blobs does
-    this), so this function does not dilate again. Returns em_patch unchanged
-    (no-op) when organelle_mask has no True pixels, avoiding a wasted inpainter
-    call."""
+    this), so this function does not dilate again. Always returns float32, on the
+    no-op path (organelle_mask has no True pixels, so the inpainter is skipped as
+    a wasted call) as well as the inpainted path, so callers get a consistent
+    dtype either way instead of the no-op path silently passing through whatever
+    dtype em_patch happened to be.
+
+    3D (multichannel) em_patch is handled by passing channel_axis=-1 to
+    inpaint_biharmonic, since detect_organelle_blobs always returns a 2D mask
+    (it grayscales 3D input before detecting), which otherwise mismatches
+    inpaint_biharmonic's shape expectation for a 3D image. This module's actual
+    callers only ever pass 2D grayscale crops, so this is a defensive
+    correctness fix, not an exercised path."""
     from skimage.restoration import inpaint_biharmonic
 
-    if not organelle_mask.any():
-        return em_patch
     img = em_patch.astype(np.float32)
+    if not organelle_mask.any():
+        return img
+    if img.ndim == 3:
+        return inpaint_biharmonic(img, organelle_mask, channel_axis=-1)
     return inpaint_biharmonic(img, organelle_mask)

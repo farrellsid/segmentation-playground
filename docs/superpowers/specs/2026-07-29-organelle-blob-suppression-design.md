@@ -5,6 +5,16 @@ directly to spec, same as the z-consistency metric earlier this session). Scope:
 mechanism and its gate measurement only, no wiring into `multimask_generous`, `MembraneSource`, or
 any other live pipeline path.
 
+Outcome (2026-07-29): measured negative, confirmed at scale. The calibrated gate was flat-to-worse
+on bleed-per-fill at 4 of the 5 tested `uf_min` thresholds, including the population-matched
+`uf_min=0` comparison (5x the sample of the single gate row first reported); `uf_min=0.6` was the
+sole, small-n exception. This closes out the specific `detect_organelle_blobs`/`suppress_organelles`
+design landed here, not organelle suppression as a general idea: the detector has no minimum-area
+floor and cannot separate single-pixel Otsu noise from genuine tiny organelle fragments, so a
+differently-designed detector (e.g. an explicit minimum-area floor, or local rather than global
+Otsu thresholding) remains untried. See `docs/explanation/roadmap.md` item 2b.5 and queue item 10,
+and the CHANGELOG's 2026-07-29 organelle blob suppression entry, for the numbers.
+
 ## Why this, why now
 
 The temporal-projection lever (this same roadmap item, 2b.5) is closed: no `(window, combine)`
@@ -154,12 +164,15 @@ untested combination this spec does not require exploring (temporal projection i
 not deleted as code, so nothing prevents someone from trying the combination later, but this spec's
 gate is organelle suppression alone against the `--mm-window 0` baseline).
 
-A `--sweep-organelle` flag grids a small set of `(max_area, max_eccentricity)` combinations (exact
-grid decided during calibration, since the useful range on real organelles is not yet known
-precisely, only verified functional on a synthetic test case above) and prints the same
-bleed/underfill table `--sweep` and `--sweep-temporal` already print, `filled` column included from
-the start this time (the temporal-projection plan had to retrofit that column after its first gate
-run overstated a result; this spec starts with it), so the gate reads directly off the table.
+A `--sweep-organelle` flag was planned to grid a small set of `(max_area, max_eccentricity)`
+combinations (exact grid to be decided during calibration, since the useful range on real organelles
+was not yet known precisely, only verified functional on a synthetic test case above) and print the
+same bleed/underfill table `--sweep` and `--sweep-temporal` already print, `filled` column included
+from the start this time (the temporal-projection plan had to retrofit that column after its first
+gate run overstated a result; this spec starts with it). In practice this grid-loop body was never
+written (Task 2 found no need for it, see below), so the flag shipped as a no-op and was later
+removed as a review fix; the gate measurement was run directly via `--suppress-organelles` with the
+fixed calibrated parameters instead.
 
 ## Calibration (real work, not a formality)
 
@@ -179,7 +192,10 @@ the full gate sweep, Task 2 must:
    synthetic ridge test used a perfectly straight line, real membrane fragments inside a crop may be
    curved enough to read as more compact than the synthetic case, so the real discrimination margin on
    actual EM texture needs an eyeballed check, not just trust in the synthetic result.
-3. Only then run `--sweep-organelle` for the actual gate measurement, with the calibrated defaults.
+3. Only then run the actual gate measurement, with the calibrated parameters passed directly via
+   `--suppress-organelles --blob-max-area <calibrated> --blob-max-eccentricity <calibrated>
+   --blob-dilate-px <calibrated>` (not `--sweep-organelle`, which was planned above but never
+   implemented and was removed; see Task 2's report for the real command used).
 
 ## Testing (CPU, torch-free)
 
