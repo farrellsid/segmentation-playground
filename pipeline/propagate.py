@@ -352,6 +352,39 @@ def apply_blowup_guard(video_segments: dict[int, dict[int, np.ndarray]],
     return blown
 
 
+def select_second_pass_frames(records: list[dict]) -> set[int]:
+    """z's needing re-segmentation: score_chain-shaped records with empty=True (dropout),
+    n_foreign > 0 (bleed), or own_contained=False (lost its own node). `records` are plain
+    dicts (eval.merge_metric.score_chain's output, computed by the caller), never an eval
+    import here: pipeline/ must never import eval (tests/test_import_direction.py)."""
+    return {
+        int(r["z"]) for r in records
+        if r.get("empty") or r.get("n_foreign", 0) > 0 or not r.get("own_contained", True)
+    }
+
+
+def find_second_pass_neighbour(z: int, flagged: set[int], areas_by_z: dict[int, float],
+                               *, min_area_ratio: float) -> Optional[int]:
+    """Nearest z' (by |z - z'|) that is not itself flagged and whose area is not
+    anomalously small relative to the chain's unflagged median area.
+
+    The area floor guards against a nucleus-capture mask (covers only the nested
+    nucleus, not the cell) being picked as a neighbour: it has own_contained=True,
+    n_foreign=0, and is non-empty, so none of score_chain's three trigger signals catch
+    it, but it is typically much smaller than a correctly-segmented full-cell mask.
+    Returns None if no eligible z' exists (either every z is flagged, or every unflagged
+    z fails the area floor)."""
+    candidates = [zz for zz in areas_by_z if zz not in flagged]
+    if not candidates:
+        return None
+    median = float(np.median([areas_by_z[zz] for zz in candidates]))
+    floor = min_area_ratio * median
+    eligible = [zz for zz in candidates if areas_by_z[zz] >= floor]
+    if not eligible:
+        return None
+    return min(eligible, key=lambda zz: abs(zz - z))
+
+
 def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, int],
                       centreline_tif: dict[int, tuple[float, float]],
                       annotate_df: pd.DataFrame, *, cfg, obj_id: int,
