@@ -66,6 +66,28 @@ nearest z' that `score_chain` did not flag. Load that neighbour's saved mask; a 
 fixed `crop_window` for its whole run (confirmed: `state.json` stores it once per chain, not per
 frame), so the neighbour's mask is already in the flagged frame's crop-space, no remapping needed.
 
+**Neighbour eligibility also needs an area floor, not just score_chain's three signals.** A
+nucleus-capture mask (the mask covers only the nested nucleus, not the cell) has `own_contained=True`,
+`n_foreign=0`, and is non-empty, so none of score_chain's current trigger signals catch it. Left
+unguarded, a nucleus-capture frame reads as a perfectly good neighbour and would seed the fix for an
+actually-flagged frame with a mask that is itself wrong, spreading the error instead of correcting it.
+The mitigation: compute the median area over the chain's score_chain-unflagged frames, and additionally
+require a neighbour candidate's area to be at or above `min_neighbour_area_ratio * median` (starting
+default `0.5`, uncalibrated; treat this the same way the organelle-blob-suppression plan treated its
+own starting defaults, verify against a real chain with a known nucleus-capture problem before trusting
+it in a real run, adjust if needed). This is `apply_blowup_guard`'s own median-area-ratio mechanism,
+inverted: that guard excludes anomalously large masks, this excludes anomalously small ones.
+
+Honest limit, carried over from the design discussion rather than glossed over: this only helps when
+nucleus-capture affects a *minority* of the chain's frames while the rest stay correctly sized, since
+the guard compares against the chain's own median. If a chain's anchor itself was nucleus-captured and
+propagation just tracked the nucleus the whole way through, the median area IS the nucleus-sized area
+and nothing looks anomalous relative to it. It also does not help the soma case where a nested nuclear
+membrane traps the point prompt structurally, that is a shape-of-the-membrane problem, not a
+size-of-the-mask problem, and no area heuristic fixes it. Promoting this check into a real trigger (not
+just a neighbour filter), or replacing it with the separately-resolved NucleoNet nucleus detector, are
+both future iterations, not this landing, see Out of scope.
+
 Two pieces need building, verified directly against the installed SAM2 predictor rather than assumed:
 
 - `image_predict` (`pipeline/predict.py`) has no `mask_input` parameter today; it forwards only
@@ -110,8 +132,10 @@ run, so it reflects the corrected state afterward, not the stale pre-pass flags.
 ## CLI / config
 
 - `PipelineConfig.second_pass: bool = False` (`pipeline/config.py`, alongside `blowup_guard`).
-- `batch.py --second-pass` flag, off by default, threaded the same way `--postprocess` already
-  overrides its own config field.
+- `PipelineConfig.second_pass_min_neighbour_area_ratio: float = 0.5` (the nucleus-capture neighbour
+  guard from section 2, uncalibrated starting default, tunable per run).
+- `batch.py --second-pass` and `--second-pass-min-neighbour-area-ratio` flags, both off/default,
+  threaded the same way `--postprocess` already overrides its own config field.
 - No new preset needed. Existing propagation presets (e.g. `original_tier2_s1forced_neg`) can opt in
   through the flag alone, since this is a pure post-hoc addition to a chain that already used
   propagation.
@@ -126,6 +150,9 @@ run, so it reflects the corrected state afterward, not the stale pre-pass flags.
 - Unit tests for the neighbour search and fallback: a synthetic multi-frame chain where the nearest
   neighbour is unambiguous, one where no unflagged neighbour exists (fallback path), and one where
   the re-predicted mask fails the sanity check (fallback path).
+- Unit test for the nucleus-capture neighbour guard: a synthetic chain where the nearest unflagged
+  frame by z-distance is anomalously small relative to the chain's median (simulating nucleus-capture),
+  and assert the search skips it for the next-nearest eligible frame instead.
 - A real smoke test before trusting this on a full re-run: apply `apply_second_pass` to one real
   flagged chain from the existing `target_tier2_s1forced_neg_sam3_merged` tree (F: drive) by hand,
   and report the before/after `own_contained`/`n_foreign`/`empty` values for the frames it touches.
@@ -143,3 +170,12 @@ run, so it reflects the corrected state afterward, not the stale pre-pass flags.
 - A standalone post-hoc driver that could apply this to an already-completed tree without a re-run:
   explicitly deferred. This lands as a `batch.py`-only flag for future runs, not a tool for the
   22-neuron tree already on disk.
+- Promoting the nucleus-capture area-ratio check (section 2) from a neighbour-eligibility filter into
+  a real trigger of its own, so an anomalously small frame gets re-segmented even when nothing else
+  flagged it: considered, set aside for a smaller first landing. Iterate on this if the eligibility
+  filter alone turns out not to be enough.
+- Using the separately-resolved NucleoNet nucleus detector (roadmap item 2e) as a stronger, non-size-based
+  check here instead of the area-ratio heuristic: a real option, not built into this landing. The
+  area-ratio guard is the cheap version; NucleoNet is the accurate version, worth reaching for if the
+  cheap version's false-negative rate (nucleus-capture masks that are not actually anomalously small
+  relative to their chain) turns out to matter in practice.
