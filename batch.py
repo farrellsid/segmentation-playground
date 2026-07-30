@@ -438,16 +438,21 @@ def _apply_second_pass_and_update_qc(session, cfg, neuron: str, chain: dict,
 
     if "second_pass" not in qc_df.columns:
         qc_df["second_pass"] = ""
+    # corrected: the second pass actually fixed the frame, so clear the
+    # triage columns build_triage_queue reads and let it drop out of review.
+    # guard_fallback: a neighbour-copy stand-in, not a real fix, so force
+    # those same columns True, mirroring apply_blowup_guard's own
+    # zero-confidence intent (no live frame_conf/pred_iou dict exists
+    # post-hoc, so queue the frame for a human directly).
+    tag_to_flag_value = {"corrected": False, "guard_fallback": True}
     for z, tag in outcomes.items():
         row = qc_df["z"] == z
         qc_df.loc[row, "second_pass"] = tag
-        if tag == "guard_fallback":
-            # mirrors apply_blowup_guard's own zero-confidence intent: no live
-            # frame_conf/pred_iou dict exists post-hoc, so queue the frame for a
-            # human directly via the same columns build_triage_queue reads.
+        flag_value = tag_to_flag_value.get(tag)
+        if flag_value is not None:
             for col in ("flag", "intervene", "queue"):
                 if col in qc_df.columns:
-                    qc_df.loc[row, col] = True
+                    qc_df.loc[row, col] = flag_value
     qc_df.to_csv(qc_csv_path, index=False)
     print(f"[batch] second pass {neuron}/{chain_dir.name}: "
           f"{len(outcomes)} frame(s), "
