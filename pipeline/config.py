@@ -229,6 +229,15 @@ class PipelineConfig:
     blowup_guard: bool = False
     blowup_area_factor: float = 25.0
 
+    # Post-hoc second pass for propagation chains (roadmap: propagation second-pass design,
+    # 2026-07-30). When True (propagation-mode chains only, cfg.per_slice_reseed=False), a
+    # post-pass re-segments frames eval.merge_metric.score_chain flags (dropout, foreign-node
+    # bleed, lost own node) via a neighbour mask-prompt, falling back to a neighbour-copy when
+    # re-segmentation is not possible or does not pass a sanity check. Default False keeps
+    # every existing propagation run byte-identical.
+    second_pass: bool = False
+    second_pass_min_neighbour_area_ratio: float = 0.5
+
     # mask post-processing -> deterministic, no model. Runs before
     # save+QC so QC scores the delivered mask. Off = baseline. Kernels are in
     # scale-8 _sam px; keep <= the neurite half-width.

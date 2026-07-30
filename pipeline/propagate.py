@@ -13,7 +13,8 @@ import pandas as pd
 
 from sam2_utils import alignment
 
-from .predict import build_prompts, image_predict
+from . import predict as predict_mod
+from .predict import build_prompts, centreline_by_z, image_predict, mask_to_low_res_logits
 from .state import Prompts
 
 
@@ -383,6 +384,93 @@ def find_second_pass_neighbour(z: int, flagged: set[int], areas_by_z: dict[int, 
     if not eligible:
         return None
     return min(eligible, key=lambda zz: abs(zz - z))
+
+
+def apply_second_pass(
+    image_predictor,
+    frames_dir: str,
+    frame_to_z: dict[int, int],
+    cw: Optional["alignment.CropWindow"],
+    chain: dict,
+    annotate_df: pd.DataFrame,
+    chain_dir: Path,
+    records: list[dict],
+    *,
+    cfg,
+    min_neighbour_area_ratio: float = 0.5,
+) -> dict[int, str]:
+    """Re-segment a finished propagation chain's flagged frames via a neighbour
+    mask-prompt, without touching the video predictor's memory bank.
+
+    `records` are eval.merge_metric.score_chain's output for this chain, computed by
+    the caller (batch.py): pipeline/ must never import eval directly (see
+    tests/test_import_direction.py). Rewrites the touched frames' saved mask PNGs in
+    place and returns {z: "corrected" | "guard_fallback"} for every frame touched; a
+    frame absent from the returned dict was left untouched (either it was never
+    flagged, or no fallback was possible either, e.g. every frame in the chain is
+    flagged).
+    """
+    import cv2
+
+    from sam2_utils import qc as qc_mod   # lazy: keeps pipeline import free of qc's heavy deps
+
+    flagged = select_second_pass_frames(records)
+    if not flagged:
+        return {}
+
+    chain_dir = Path(chain_dir)
+    masks_dir = chain_dir / "masks"
+    mask_paths = dict(qc_mod._iter_mask_paths(masks_dir))
+    masks_by_z = {z: qc_mod._load_binary(p) for z, p in mask_paths.items()}
+    areas_by_z = {z: float(m.sum()) for z, m in masks_by_z.items()}
+
+    z_to_frame_idx = {z: fi for fi, z in frame_to_z.items()}
+    centreline = centreline_by_z(chain, annotate_df)
+
+    space_ratio = (float(cfg.scale) / float(cw.crop_scale)) if cw is not None else 1.0
+    contain_r = int(round(cfg.qc_skeleton_dilation_px * space_ratio))
+
+    outcomes: dict[int, str] = {}
+    for z in sorted(flagged):
+        corrected = False
+        neighbour_z = find_second_pass_neighbour(
+            z, flagged, areas_by_z, min_area_ratio=min_neighbour_area_ratio)
+
+        if neighbour_z is not None and z in z_to_frame_idx and z in centreline:
+            frame_idx = z_to_frame_idx[z]
+            img_path = Path(frames_dir) / f"{frame_idx:05d}.jpg"
+            raw = cv2.imread(str(img_path))
+            if raw is not None:
+                image = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
+                x_tif, y_tif = centreline[z]
+                pos_sam = alignment.tif_to_sam([x_tif, y_tif], cfg.scale)
+                point_sam = np.asarray([[float(pos_sam[0]), float(pos_sam[1])]])
+                point_pred = cw.sam_to_crop(point_sam) if cw is not None else point_sam
+                prompts = Prompts(points_sam=point_pred, labels=np.asarray([1]))
+                mask_hint = mask_to_low_res_logits(masks_by_z[neighbour_z])
+
+                new_mask, _score, _logits = image_predict(
+                    image_predictor, image, prompts, mask_input=mask_hint)
+
+                px, py = float(point_pred[0, 0]), float(point_pred[0, 1])
+                if new_mask.any() and predict_mod._point_in_mask(new_mask, px, py, contain_r):
+                    cv2.imwrite(str(mask_paths[z]), (new_mask.astype("uint8") * 255))
+                    masks_by_z[z] = new_mask
+                    areas_by_z[z] = float(new_mask.sum())
+                    outcomes[z] = "corrected"
+                    corrected = True
+
+        if not corrected:
+            accepted = [zz for zz in areas_by_z if zz not in flagged]
+            if accepted:
+                nearest = min(accepted, key=lambda zz: abs(zz - z))
+                fallback_mask = masks_by_z[nearest]
+                cv2.imwrite(str(mask_paths[z]), (fallback_mask.astype("uint8") * 255))
+                masks_by_z[z] = fallback_mask
+                areas_by_z[z] = float(fallback_mask.sum())
+                outcomes[z] = "guard_fallback"
+
+    return outcomes
 
 
 def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, int],
