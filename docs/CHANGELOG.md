@@ -64,17 +64,14 @@ those (87%) sit at area <= 3px, near-certain single-pixel Otsu noise rather than
 (4%) fall in a plausible organelle size range (area 11-144px). Tightening `max_eccentricity` to 0.6
 does not fix this (562 of 585 kept components, still 96%, stay <= 3px) while discarding 90% of the
 plausible-organelle-sized candidates, a net loss, not an improvement. Tightening `max_area` to 60-80
-barely changes the kept count (706-708 vs 710), so area is not the binding constraint either.
-`blob_dilate_px` is what actually controls collateral damage, since dilation lands on hundreds of
-noise specks, not the ~28 real ones: the flagged-pixel fraction of the crop runs 5.3% at
-`dilate_px=0`, 14.6% at `dilate_px=1`, 26.1% at `dilate_px=2`. `max_eccentricity` stayed at the
-plan's default: tightening it is a net loss, not a null result, discarding 90% of the
-plausible-organelle-sized candidates without fixing the dominant noise-speck problem. `max_area`
-tightening to 60-80 has negligible effect either way, since the noise population already sits far
-below the tested thresholds and the kept count barely moves (706-708 vs 710). `blob_dilate_px` was
-lowered from the plan's default of 2 to 1, halving the over-suppression footprint to 14.6% of the
-crop, a mitigation for the noise-speck problem rather than a fix for it (the current interface has no
-minimum-area floor to remove single-pixel specks directly).
+barely changes the kept count (706-708 vs 710), so area is not the binding constraint either; both
+shape knobs stayed at the plan's default for these reasons. `blob_dilate_px` is what actually
+controls collateral damage, since dilation lands on hundreds of noise specks, not the ~28 real ones:
+the flagged-pixel fraction of the crop runs 5.3% at `dilate_px=0`, 14.6% at `dilate_px=1`, 26.1% at
+`dilate_px=2`. `blob_dilate_px` was lowered from the plan's default of 2 to 1, halving the
+over-suppression footprint to 14.6% of the crop, a mitigation for the noise-speck problem rather than
+a fix for it (the current interface has no minimum-area floor to remove single-pixel specks
+directly).
 
 The calibrated gate (`py -3 experiments/dense_membrane_fill.py --z 1456 --uf-min 0.6
 --suppress-organelles --blob-max-area 150.0 --blob-max-eccentricity 0.85 --blob-dilate-px 1`) reported
@@ -107,11 +104,13 @@ Reproduced directly (`py -3 experiments/dense_membrane_fill.py --z 1456 --sweep`
 | 0.70 | 3/11 = 0.273 | 4/13 = 0.308 |
 
 At `uf_min=0` the grown population is perfectly matched (filled=90 on both sides, 5x the sample of
-the `uf_min=0.6` row), and every other tracked stat at that row is worse under suppression too:
-foreign 139 -> 142, bleed_cells 55/117 -> 56/117, contested 25741 -> 28107 (+9%). Suppression is
-flat-to-slightly-worse at 4 of the 5 gates; `uf_min=0.6` is the sole exception, and it is also the
-smallest sample in the table, so it reads as the coincidence of one small row rather than the
-representative case.
+the `uf_min=0.6` row). Most tracked stats are worse under suppression at that row: foreign 139 ->
+142, bleed_cells 55/117 -> 56/117, contested 25741 -> 28107 (+9%), area +86% -> +89%. `mean_uf` is
+the one stat that improves (0.313 -> 0.293), the ordinary underfill/bleed tradeoff: suppression lets
+a few more cells clear the fill gate, which lowers mean underfill while raising bleed and contested
+overlap. Suppression is flat-to-slightly-worse at 4 of the 5 `new_bleed/filled` gates; `uf_min=0.6`
+is the sole exception, and it is also the smallest sample in the table, so it reads as the
+coincidence of one small row rather than the representative case.
 
 **Result: the floor does not move, confirmed across a 5x larger, population-matched sample, not just
 the narrow n=18 row first reported.** This is the plan's second documented negative outcome (temporal
