@@ -41,9 +41,19 @@ One new function, `apply_second_pass`, in `pipeline/propagate.py` alongside `app
 Runs once per finished chain, opt-in via a new `PipelineConfig.second_pass: bool = False` field
 (mirrors `blowup_guard`'s own pattern), and only for propagation-mode chains
 (`not cfg.per_slice_reseed`; per-slice already has its own guard, so per-slice chains are untouched
-here). No new CATMAID read is needed: `Session.annotate_df` is already built once at `batch.py`
-startup with `x_tif`/`y_tif` attached, the exact same shape `eval.merge_metric.load_node_table()`
-produces, so `apply_second_pass` is simply handed the already-loaded table.
+here).
+
+**Import direction constrains where the scoring call itself can live.** `pipeline/propagate.py` is
+inside this project's enforced library boundary (`tests/test_import_direction.py`): library modules
+must never import `eval`, only drivers and `eval` import the library, never the reverse. So
+`eval.merge_metric.score_chain`, the function this design needs for the trigger signal, cannot be
+called from inside `pipeline/propagate.py` directly. It is called once per chain from `batch.py` (a
+driver, free to import `eval`), and the resulting per-z records, plain dicts, no `eval` object
+identity involved, are passed into `apply_second_pass` as data. `apply_second_pass` itself only
+depends on library-internal modules (`sam2_utils.qc`'s mask loaders, `pipeline.predict.centreline_by_z`,
+`sam2_utils.alignment`), never `eval`. No new CATMAID read is needed either way: `Session.annotate_df`
+is already built once at `batch.py` startup with `x_tif`/`y_tif` attached, the exact same shape
+`eval.merge_metric.load_node_table()` produces.
 
 Three sub-steps: trigger, re-segment, fallback.
 
@@ -52,12 +62,12 @@ Three sub-steps: trigger, re-segment, fallback.
 Called from `_run_one_chain` in `batch.py`, right after the chain's final `state` comes back from
 `_run_chain_once` (post-QC, post any tier-2 rerun) and before `save_state`. Skip the whole chain
 immediately if its `qc.csv` has no flagged rows (the same `queue`/`intervene`/`flag` columns
-`build_triage_queue` already reads), so a clean chain costs nothing extra. Otherwise call
-`eval.merge_metric.score_chain(chain_dir, neuron, nodes_by_z, radius)` once for the chain. This
-reuses `pipeline.chain_masks_in_sam` internally, which already resolves each frame's own crop offset,
-so `_sam` and tier-2 `_pcrop` chains are both handled without extra code. A frame is marked for the
-second pass if its `score_chain` record has `empty=True` (dropout), `n_foreign > 0` (bleed), or
-`own_contained=False` (lost its own node).
+`build_triage_queue` already reads), so a clean chain costs nothing extra. Otherwise `batch.py` calls
+`eval.merge_metric.score_chain(chain_dir, neuron, nodes_by_z, radius)` once for the chain (this reuses
+`pipeline.chain_masks_in_sam` internally, which already resolves each frame's own crop offset, so
+`_sam` and tier-2 `_pcrop` chains are both handled without extra code), and passes the resulting
+records into `apply_second_pass`. A frame is marked for the second pass if its record has `empty=True`
+(dropout), `n_foreign > 0` (bleed), or `own_contained=False` (lost its own node).
 
 ### 2. Re-segmentation: neighbour mask-prompt
 
