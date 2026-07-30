@@ -37,9 +37,9 @@ class _FakePredictor:
     def set_image(self, image):
         self.image = image
 
-    def predict(self, *, point_coords, point_labels, box, multimask_output):
+    def predict(self, *, point_coords, point_labels, box, mask_input=None, multimask_output):
         self.last = dict(point_coords=point_coords, point_labels=point_labels,
-                         box=box, multimask_output=multimask_output)
+                         box=box, mask_input=mask_input, multimask_output=multimask_output)
         masks = np.zeros((1, 4, 4), dtype=bool)
         masks[0, 1:3, 1:3] = True
         return masks, np.array([0.9], dtype=float), np.zeros((1, 4, 4), dtype=float)
@@ -74,6 +74,21 @@ def test_no_box_forwards_box_none():
     pipeline.image_predict(fp, _IMG, pr)
     assert fp.last["box"] is None
     assert fp.last["point_coords"] is not None
+
+
+def test_mask_input_forwards_when_given():
+    fp = _FakePredictor()
+    pr = Prompts(points_sam=np.array([[2.0, 2.0]]), labels=np.array([1]))
+    hint = np.zeros((1, 256, 256), dtype=np.float32)
+    pipeline.image_predict(fp, _IMG, pr, mask_input=hint)
+    assert fp.last["mask_input"] is hint
+
+
+def test_mask_input_defaults_to_none():
+    fp = _FakePredictor()
+    pr = Prompts(points_sam=np.array([[2.0, 2.0]]), labels=np.array([1]))
+    pipeline.image_predict(fp, _IMG, pr)
+    assert fp.last["mask_input"] is None
 
 
 def _main() -> int:

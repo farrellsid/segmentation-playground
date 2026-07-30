@@ -228,11 +228,31 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
     return best_idx, masks[best_idx], (float(scores[best_idx]) if best_idx < scores.size else 0.0)
 
 
+def mask_to_low_res_logits(mask: np.ndarray) -> np.ndarray:
+    """Convert a full-resolution boolean mask into SAM2's 1x256x256 low-res logits
+    format, so a previously-saved mask can stand in for a `mask_input` hint.
+
+    SAM2's `mask_input` contract (verified against the installed SAM2ImagePredictor.predict
+    docstring) is a low-resolution mask, `1xHxW` with `H=W=256`, "typically coming from a
+    previous prediction iteration", i.e. real logits, not a binary mask. This resizes the
+    mask to 256x256 (nearest-neighbour, preserves the hard edge) and maps True to +8.0 and
+    False to -8.0, values far enough from 0 that SAM2's internal 0-threshold reliably
+    recovers the same shape.
+    """
+    import cv2
+
+    m = mask.astype(np.uint8)
+    resized = cv2.resize(m, (256, 256), interpolation=cv2.INTER_NEAREST)
+    logits = np.where(resized > 0, 8.0, -8.0).astype(np.float32)
+    return logits[np.newaxis, :, :]
+
+
 def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
                   multimask: bool = False, select_contain_radius_px: int = 0,
                   select_area_bounds: tuple[float, float] = (0.0, 1.0),
                   select_exclude_neg: bool = False,
                   select_generous: bool = False,
+                  mask_input: Optional[np.ndarray] = None,
                   ) -> tuple[np.ndarray, float, np.ndarray]:
     """Run image-mode SAM2 on the anchor frame.
 
@@ -254,6 +274,10 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
     as None when there are none, so a box-only seed is valid. This is a no-op for the
     batch, whose box_sam is None here (box_from_mask runs AFTER this call).
 
+    `mask_input`, when given, is a `1x256x256` low-res logits array forwarded straight to
+    SAM2's own `mask_input` parameter (see `mask_to_low_res_logits` to build one from a
+    saved boolean mask); `None` (default) omits it, unchanged from today.
+
     Lift from: 'Image Prediction' cell.
     The GUI refinement loop wraps this call (re-predict on each point/box edit).
     """
@@ -269,6 +293,7 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
             point_coords=pts if has_pts else None,
             point_labels=labs if has_pts else None,
             box=box,
+            mask_input=mask_input,
             multimask_output=multimask,
         )
     if not multimask:

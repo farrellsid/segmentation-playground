@@ -46,7 +46,7 @@ class _StubPredictor:
     the low-res logits with the full-res mask (that raises IndexError on real SAM2).
     """
     def set_image(self, img): self._hw = img.shape[:2]
-    def predict(self, point_coords=None, point_labels=None, box=None, multimask_output=False):
+    def predict(self, point_coords=None, point_labels=None, box=None, mask_input=None, multimask_output=False):
         h, w = self._hw
         m = np.zeros((h, w), dtype=bool)
         if point_coords is not None and len(point_coords):
@@ -66,11 +66,11 @@ class _RecordingStubPredictor(_StubPredictor):
         self.seen_labels = []
         self.seen_coords = []
 
-    def predict(self, point_coords=None, point_labels=None, box=None, multimask_output=False):
+    def predict(self, point_coords=None, point_labels=None, box=None, mask_input=None, multimask_output=False):
         self.seen_coords.append(None if point_coords is None else np.array(point_coords))
         self.seen_labels.append(None if point_labels is None else np.array(point_labels))
         return super().predict(point_coords=point_coords, point_labels=point_labels,
-                               box=box, multimask_output=multimask_output)
+                               box=box, mask_input=mask_input, multimask_output=multimask_output)
 
 
 def test_segment_per_slice_drops_out_of_window_negatives(tmp_path):
