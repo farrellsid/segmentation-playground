@@ -36,6 +36,27 @@ class _StubPredictor:
         return masks, scores, logits
 
 
+class _StubPredictorNoMaskInput:
+    """Mirrors Sam3ImagePredictor's real signature: no mask_input parameter at all.
+    predict() always returns a mask covering the seeded point at the narrow radius,
+    since there is no hint channel to widen it."""
+    def set_image(self, img):
+        self._hw = img.shape[:2]
+
+    def predict(self, point_coords=None, point_labels=None, box=None,
+               multimask_output=False):
+        h, w = self._hw
+        m = np.zeros((h, w), dtype=bool)
+        if point_coords is not None and len(point_coords):
+            x, y = int(point_coords[0][0]), int(point_coords[0][1])
+            r = 8
+            m[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1] = True
+        masks = m[None]
+        scores = np.array([0.9])
+        logits = np.zeros((1, 256, 256), dtype=np.float32)
+        return masks, scores, logits
+
+
 def _write_mask(masks_dir, z, mask):
     cv2.imwrite(str(masks_dir / f"mask_{z:04d}.png"), (mask.astype("uint8") * 255))
 
@@ -77,6 +98,44 @@ def test_apply_second_pass_reseeds_a_dropout_frame(tmp_path):
 
     outcomes = prop.apply_second_pass(
         _StubPredictor(), str(frames_dir), frame_to_z, None, chain, annotate_df,
+        chain_dir, records, cfg=cfg, min_neighbour_area_ratio=0.5)
+
+    assert outcomes == {1402: "corrected"}
+    fixed = qc_mod._load_binary(masks_dir / "mask_1402.png")
+    assert fixed.any()
+
+
+def test_apply_second_pass_runs_without_mask_input_support(tmp_path):
+    """A predictor shaped like Sam3ImagePredictor (no mask_input parameter) must not
+    raise even though a real neighbour mask is available and would normally build a
+    non-None hint; apply_second_pass should degrade to a point-only re-predict and
+    still complete, producing a sensible outcome."""
+    frames_dir, masks_dir, frame_to_z = _make_chain(tmp_path)
+    chain_dir = masks_dir.parent
+
+    good = np.zeros((40, 40), dtype=bool)
+    good[15:25, 15:25] = True                 # 100 px, centred on (20, 20)
+    for z in (1400, 1401, 1403, 1404):
+        _write_mask(masks_dir, z, good)
+    _write_mask(masks_dir, 1402, np.zeros((40, 40), dtype=bool))   # dropout frame
+
+    chain = {"cell_name": "AVAL", "nodes": ["n0"]}
+    annotate_df = pd.DataFrame({
+        "node_id": ["n0"], "cell_name": ["AVAL"], "z": [1402],
+        "x_tif": [160.0], "y_tif": [160.0],     # scale 8 -> _sam (20, 20), inside `good`'s footprint
+    })
+    records = [
+        {"z": 1400, "own_contained": True, "n_foreign": 0, "empty": False},
+        {"z": 1401, "own_contained": True, "n_foreign": 0, "empty": False},
+        {"z": 1402, "own_contained": False, "n_foreign": 0, "empty": True},
+        {"z": 1403, "own_contained": True, "n_foreign": 0, "empty": False},
+        {"z": 1404, "own_contained": True, "n_foreign": 0, "empty": False},
+    ]
+    cfg = cfgmod.PipelineConfig(scale=8)
+
+    # must not raise TypeError: this is the SAM3 crash reproduction
+    outcomes = prop.apply_second_pass(
+        _StubPredictorNoMaskInput(), str(frames_dir), frame_to_z, None, chain, annotate_df,
         chain_dir, records, cfg=cfg, min_neighbour_area_ratio=0.5)
 
     assert outcomes == {1402: "corrected"}

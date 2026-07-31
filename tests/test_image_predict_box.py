@@ -91,6 +91,26 @@ def test_mask_input_defaults_to_none():
     assert fp.last["mask_input"] is None
 
 
+class _FakePredictorNoMaskInput:
+    """Mirrors Sam3ImagePredictor's real signature: no mask_input parameter at all."""
+
+    def set_image(self, image):
+        self.image = image
+
+    def predict(self, *, point_coords, point_labels, box, multimask_output):
+        masks = np.zeros((1, 4, 4), dtype=bool)
+        masks[0, 1:3, 1:3] = True
+        return masks, np.array([0.9], dtype=float), np.zeros((1, 4, 4), dtype=float)
+
+
+def test_mask_input_none_is_omitted_for_predictors_without_the_param():
+    fp = _FakePredictorNoMaskInput()
+    pr = Prompts(points_sam=np.array([[2.0, 2.0]]), labels=np.array([1]))
+    # must not raise TypeError, this is the SAM3-shaped predictor case
+    mask, score, logits = pipeline.image_predict(fp, _IMG, pr, mask_input=None)
+    assert mask.any()
+
+
 def _main() -> int:
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

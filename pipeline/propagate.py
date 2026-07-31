@@ -411,12 +411,19 @@ def apply_second_pass(
     flagged).
     """
     import cv2
+    import inspect
 
     from sam2_utils import qc as qc_mod   # lazy: keeps pipeline import free of qc's heavy deps
 
     flagged = select_second_pass_frames(records)
     if not flagged:
         return {}
+
+    # Not every backend's predict() accepts mask_input (e.g. Sam3ImagePredictor has no
+    # such parameter at all). When it is missing, fall back to a point-only re-predict
+    # instead of building a hint image_predict would then have to drop, this still has
+    # real value (a point-only re-predict corrects some flagged frames on its own).
+    supports_mask_input = "mask_input" in inspect.signature(image_predictor.predict).parameters
 
     chain_dir = Path(chain_dir)
     masks_dir = chain_dir / "masks"
@@ -447,7 +454,8 @@ def apply_second_pass(
                 point_sam = np.asarray([[float(pos_sam[0]), float(pos_sam[1])]])
                 point_pred = cw.sam_to_crop(point_sam) if cw is not None else point_sam
                 prompts = Prompts(points_sam=point_pred, labels=np.asarray([1]))
-                mask_hint = mask_to_low_res_logits(masks_by_z[neighbour_z])
+                mask_hint = (mask_to_low_res_logits(masks_by_z[neighbour_z])
+                            if supports_mask_input else None)
 
                 new_mask, _score, _logits = image_predict(
                     image_predictor, image, prompts, mask_input=mask_hint)

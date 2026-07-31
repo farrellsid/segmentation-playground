@@ -287,15 +287,17 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
     labs = np.asarray(prompts.labels, dtype=int)
     has_pts = len(pts) > 0
     box = None if prompts.box_sam is None else np.asarray(prompts.box_sam, dtype=float)
+    kwargs = dict(
+        point_coords=pts if has_pts else None,
+        point_labels=labs if has_pts else None,
+        box=box,
+        multimask_output=multimask,
+    )
+    if mask_input is not None:
+        kwargs["mask_input"] = mask_input
     with torch.inference_mode():
         image_predictor.set_image(image_sam)
-        masks, scores, logits = image_predictor.predict(
-            point_coords=pts if has_pts else None,
-            point_labels=labs if has_pts else None,
-            box=box,
-            mask_input=mask_input,
-            multimask_output=multimask,
-        )
+        masks, scores, logits = image_predictor.predict(**kwargs)
     if not multimask:
         return masks[0].astype(bool), float(scores[0]), logits
     best, mask_b, score = _select_anchor_mask(
