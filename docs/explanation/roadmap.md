@@ -883,6 +883,72 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
     mean_centroid_drift_px=5.45 frac_low_iou=0.285 frac_gap1=1.000`. Retro-scoring specific trees for a
     per-slice-vs-propagation comparison is a follow-on use of the tool, not something this landing did.
 
+13. **Propagation second pass** (Phase 1.5). LANDED 2026-07-30, verified on one real chain, an
+    uncalibrated first signal, not a verdict. Re-segments a finished propagation chain's flagged
+    frames instead of discarding or re-running the whole chain: `select_second_pass_frames` and
+    `find_second_pass_neighbour` (`pipeline/propagate.py`) pick the flagged z's and the nearest
+    unflagged neighbour frame in the same chain, and `apply_second_pass` re-predicts each flagged
+    frame from that neighbour's mask plus the frame's own skeleton-node point, falling back to
+    `apply_blowup_guard`'s existing neighbour-copy-and-flag-for-review behaviour when the
+    re-predicted mask fails a sanity check or no unflagged neighbour exists. The mask hint needed a
+    new `image_predict` parameter (`mask_input`, `pipeline/predict.py`) and a new
+    `mask_to_low_res_logits` helper to convert a saved boolean mask into the low-res logits SAM2's
+    `predict()` expects. Both are new `PipelineConfig` fields, off by default:
+    `second_pass: bool = False` and `second_pass_min_neighbour_area_ratio: float = 0.5`, driven by
+    two new `batch.py` flags, `--second-pass` and `--second-pass-min-neighbour-area-ratio`, wired
+    into `_run_one_chain` and folded into each chain's `qc.csv` as a new `second_pass` column
+    (`"corrected"` clears that frame's triage flags, `"guard_fallback"` forces them so a human still
+    sees it). Full design and rationale, including the `foreign_frame_rate=0.252` vs `dropout_rate=0.141`
+    vs `mean_z2z_iou=0.686` diagnostic that motivated it (propagation trades bleed for consistency
+    against SAM3 per-slice's `foreign_frame_rate=0.087`, ADR 0017):
+    `docs/superpowers/specs/2026-07-30-propagation-second-pass-design.md`.
+
+    **Import-direction constraint.** The trigger signal needs `eval.merge_metric.score_chain`, but
+    `pipeline/propagate.py` sits inside the enforced library boundary
+    (`tests/test_import_direction.py`: library code never imports `eval`). So `score_chain` is
+    called once per chain from `batch.py` (a driver, free to import `eval`), and the resulting
+    per-z records are passed into `apply_second_pass` as plain dicts. `apply_second_pass` itself
+    only touches library-internal modules, never `eval`.
+
+    **Nucleus-capture neighbour guard, limits carried forward from the design.** A neighbour frame
+    whose mask captured only the nested nucleus reads as clean to `score_chain` (contained,
+    no foreign nodes, non-empty), so an unguarded search would seed a fix with a mask that is
+    itself wrong. The guard requires a neighbour candidate's area to be at or above
+    `min_neighbour_area_ratio * median` of the chain's unflagged-frame areas. Stated limits, not
+    softened: it only helps when nucleus-capture affects a minority of the chain's frames, since the
+    guard compares against the chain's own median; if the anchor itself was nucleus-captured, the
+    median area is already nucleus-sized and nothing looks anomalous. It also does not help the case
+    where a nested membrane structurally traps the point prompt, a shape problem the area heuristic
+    cannot see.
+
+    **Task 5's real verification (one chain, `AIZL/chain_51`, `target_tier2_s1forced_neg_sam3_merged`,
+    11 frames, 5 flagged: 1 dropout, 4 foreign-bleed).** Two findings, one fixed, one not:
+    - **SAM3 crash, found and fixed.** `apply_second_pass` crashed immediately against the real
+      `Sam3ImagePredictor` (`TypeError`, its `predict()` has no `mask_input` parameter at all). On a
+      real `--second-pass --backend sam3` run this would mark every chain with a flagged frame
+      `FAILED` after a successful propagation, discarding its DONE/FLAGGED status and forcing a full
+      re-propagation from scratch on resume, a real regression, not a hypothetical one, since it
+      reproduced on the first real chain tried. Fixed (commit `802669e`): `image_predict` now only
+      forwards `mask_input` when it is not `None`, and `apply_second_pass` checks the predictor's
+      capability once via `inspect.signature` and falls back to a point-only re-predict (seeded by
+      the skeleton node alone, no mask-shape hint) on any backend without `mask_input` support.
+      Verified against the real `Sam3ImagePredictor` on local GPU. SAM2's path is unchanged.
+    - **Accept-gate gap, found, not fixed this landing.** The accept/reject gate only checks that
+      the re-predicted mask contains the frame's own node; it never checks whether the specific
+      foreign node that triggered a bleed flag is actually gone. On this chain's 5 touched frames
+      (point-only re-predict, since the mask hint is not available on SAM3), 2 genuinely resolved
+      their trigger (the dropout frame, and the foreign-bleed frame nearest the chain's clean
+      block, `n_foreign` 1 -> 0), but 3 were tagged `"corrected"`, with their `qc.csv` triage flags
+      cleared, while `n_foreign` stayed exactly 1 with the same foreign node id as before. A
+      `"corrected"` count from any future full run should not be read as a "fixed" count without
+      this caveat; it is independent of the SAM3 crash and would apply on SAM2 too. A future
+      iteration should check the specific triggering node/reason, not just the frame's own node.
+
+    One small chain, first signal on both fronts, not a verdict: the crash is not a one-chain fluke
+    (it follows directly from the SAM3 adapter's signature and would reproduce on every SAM3 chain
+    the feature touches, now fixed), but the accept-gate finding is a real, structural limitation of
+    the shipped design. See `.git/sdd/task-5-report.md` for the full before/after tables.
+
 `bigimg` (SAM2 `image_size` 2048) stays retired: it crashes off-distribution and its output would be
 unvalidated; the resolution goal is served by cropping / tiling.
 

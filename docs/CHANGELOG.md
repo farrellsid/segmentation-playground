@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-07-30, propagation second pass: neighbour-seeded re-segmentation lands, SAM3 crash found and fixed, accept-gate gap flagged](#r-2026-07-30-second-pass)
 - [2026-07-29, organelle blob suppression: the intensity/texture filter lands, calibrated against real EM, the floor still does not move](#r-2026-07-29-organelle-blob)
 - [2026-07-29, z-to-z consistency metric: a temporal ruler for the merge metric's per-frame blind spot](#r-2026-07-29-z2z)
 - [2026-07-29, nucleus-capture detector: GUI label added, NucleoNet spot-checked and verdicted](#r-2026-07-29-nucleus)
@@ -42,6 +43,49 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-07-30-second-pass"></a>
+## 2026-07-30, propagation second pass: neighbour-seeded re-segmentation lands, SAM3 crash found and fixed, accept-gate gap flagged
+
+Phase 1.5's re-anchoring lever. A finished propagation chain's flagged frames (dropout or foreign-node
+bleed, from `eval.merge_metric.score_chain`) now get a targeted re-segmentation pass instead of being
+discarded or forcing a full chain re-run: `select_second_pass_frames` and `find_second_pass_neighbour`
+(`pipeline/propagate.py`) find the flagged z's and their nearest unflagged neighbour in the same
+chain, and `apply_second_pass` re-predicts each flagged frame from that neighbour's mask plus the
+frame's own skeleton-node point, falling back to `apply_blowup_guard`'s existing neighbour-copy when
+the result fails a sanity check or no unflagged neighbour exists. This needed a new `mask_input`
+parameter on `image_predict` (`pipeline/predict.py`) and a `mask_to_low_res_logits` helper to convert
+a saved boolean mask into SAM2's expected low-res logits. Both gated off by default:
+`PipelineConfig.second_pass: bool = False` and `second_pass_min_neighbour_area_ratio: float = 0.5`,
+driven by new `batch.py --second-pass`/`--second-pass-min-neighbour-area-ratio` flags, folded into
+each chain's `qc.csv` as a `second_pass` column (`"corrected"` clears that frame's triage flags,
+`"guard_fallback"` forces them for human review). Because `pipeline/propagate.py` is inside the
+enforced library boundary and cannot import `eval`, the trigger's `score_chain` call lives in
+`batch.py` instead, with the resulting records passed into `apply_second_pass` as plain dicts. Full
+design, including the diagnostic that motivated it (propagation's `foreign_frame_rate=0.252` against
+SAM3 per-slice's `0.087`, same backend, per ADR 0017) and the nucleus-capture neighbour guard's
+stated limits (it only helps when nucleus-capture affects a minority of a chain's frames, and cannot
+catch a structurally trapped point prompt), see
+`docs/superpowers/specs/2026-07-30-propagation-second-pass-design.md`.
+
+Real verification against one chain, `AIZL/chain_51` (`target_tier2_s1forced_neg_sam3_merged`, 11
+frames, 5 flagged), turned up two findings. First, a real crash: `apply_second_pass` raised
+`TypeError` against the real `Sam3ImagePredictor`, whose `predict()` has no `mask_input` parameter at
+all, which on a real `--second-pass --backend sam3` run would mark every touched chain `FAILED` after
+a successful propagation and force a full re-propagation on resume. Fixed (commit `802669e`):
+`image_predict` now omits `mask_input` unless it is not `None`, and `apply_second_pass` checks the
+predictor's signature once and falls back to a point-only re-predict on any backend without the
+parameter. Verified against the real predictor on local GPU; SAM2's path is unchanged. Second, an
+unfixed gap: the accept/reject gate only checks that the re-predicted mask contains the frame's own
+node, never whether the specific foreign node that triggered a bleed flag is gone. On the verification
+chain's 5 touched frames, only 2 genuinely resolved their trigger; the other 3 were tagged
+`"corrected"`, with `qc.csv` cleared, while `n_foreign` stayed unchanged at the same foreign node id.
+A `"corrected"` count should not be read as a "fixed" count without this caveat, and it remains open
+for a future iteration. One small chain: a first signal on both fronts, not a verdict, though the
+crash itself is not a one-chain fluke, it follows directly from the SAM3 adapter's signature. See
+`.git/sdd/task-5-report.md` for the full before/after tables and the roadmap's item 13 (§5b).
 
 ---
 
