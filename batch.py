@@ -438,13 +438,18 @@ def _apply_second_pass_and_update_qc(session, cfg, neuron: str, chain: dict,
 
     if "second_pass" not in qc_df.columns:
         qc_df["second_pass"] = ""
-    # corrected: the second pass actually fixed the frame, so clear the
-    # triage columns build_triage_queue reads and let it drop out of review.
-    # guard_fallback: a neighbour-copy stand-in, not a real fix, so force
-    # those same columns True, mirroring apply_blowup_guard's own
-    # zero-confidence intent (no live frame_conf/pred_iou dict exists
-    # post-hoc, so queue the frame for a human directly).
-    tag_to_flag_value = {"corrected": False, "guard_fallback": True}
+    # Both outcomes force the triage columns build_triage_queue reads to True,
+    # keeping the frame queued for a human. corrected is NOT trusted to have
+    # actually fixed the frame: real verification (Task 5) found 3 of 5
+    # corrected frames on a real chain still had their triggering problem
+    # unresolved, so clearing the flags there would silently drop still-broken
+    # frames out of review. guard_fallback is a neighbour-copy stand-in, not a
+    # real fix either, mirroring apply_blowup_guard's own zero-confidence
+    # intent (no live frame_conf/pred_iou dict exists post-hoc, so queue the
+    # frame for a human directly). The `second_pass` column still records the
+    # real tag ("corrected" vs "guard_fallback") for a human reviewer; only
+    # triage-queue membership is affected.
+    tag_to_flag_value = {"corrected": True, "guard_fallback": True}
     for z, tag in outcomes.items():
         row = qc_df["z"] == z
         qc_df.loc[row, "second_pass"] = tag
@@ -505,8 +510,17 @@ def _run_one_chain(
                 else "kept tier-2 (_pcrop)")
         print(f"[batch] tier-2 re-run done {neuron}/chain_{chain_idx:02d}: "
               f"{kept}, status={getattr(state, 'status', '?')}")
-    _apply_second_pass_and_update_qc(session, cfg, neuron, chain, chain_dir, state)
     save_state(state, chain_dir / "state.json")
+    # Must run AFTER save_state: _apply_second_pass_and_update_qc's internal
+    # score_chain call reads state.json back off disk to learn the chain's
+    # crop space (crop_window). Calling it before save_state means score_chain
+    # reads a missing or stale state.json, mis-reads the crop space, flags
+    # every frame as foreign-node, and apply_second_pass finds no eligible
+    # neighbours anywhere, so the whole pass silently no-ops.
+    try:
+        _apply_second_pass_and_update_qc(session, cfg, neuron, chain, chain_dir, state)
+    except Exception as e:          # optional post-pass must never sink an already-done chain
+        print(f"[batch] second pass skipped {neuron}/chain_{chain_idx:02d}: {e}")
     return state
 
 
