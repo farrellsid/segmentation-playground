@@ -397,9 +397,13 @@ def _tier2_overrides(cfg) -> dict:
 def _apply_second_pass_and_update_qc(session, cfg, neuron: str, chain: dict,
                                      chain_dir: Path, state) -> None:
     """Run the propagation second pass on a finished chain and fold its outcomes into
-    qc.csv, so _triage.csv (rebuilt from qc.csv every run) reflects the corrected state
-    instead of the stale pre-pass flags. No-op when second_pass is off, the chain used
-    per-slice re-seeding (already has its own guard), or the chain has nothing flagged.
+    qc.csv, recording what happened for a human reviewer. Both "corrected" and
+    "guard_fallback" outcomes still force flag/intervene/queue to True, so the frame
+    stays in _triage.csv: real verification found "corrected" does not reliably mean
+    the frame's original trigger actually resolved, so this pass records evidence for
+    a human to check rather than silently clearing the queue on an unverified claim.
+    No-op when second_pass is off, the chain used per-slice re-seeding (already has
+    its own guard), or the chain has nothing flagged.
     """
     import pandas as pd
 

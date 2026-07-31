@@ -60,8 +60,8 @@ parameter on `image_predict` (`pipeline/predict.py`) and a `mask_to_low_res_logi
 a saved boolean mask into SAM2's expected low-res logits. Both gated off by default:
 `PipelineConfig.second_pass: bool = False` and `second_pass_min_neighbour_area_ratio: float = 0.5`,
 driven by new `batch.py --second-pass`/`--second-pass-min-neighbour-area-ratio` flags, folded into
-each chain's `qc.csv` as a `second_pass` column (`"corrected"` clears that frame's triage flags,
-`"guard_fallback"` forces them for human review). Because `pipeline/propagate.py` is inside the
+each chain's `qc.csv` as a `second_pass` column recording which tag applied, `"corrected"` or
+`"guard_fallback"`. Because `pipeline/propagate.py` is inside the
 enforced library boundary and cannot import `eval`, the trigger's `score_chain` call lives in
 `batch.py` instead, with the resulting records passed into `apply_second_pass` as plain dicts. Full
 design, including the diagnostic that motivated it (propagation's `foreign_frame_rate=0.252` against
@@ -81,11 +81,24 @@ parameter. Verified against the real predictor on local GPU; SAM2's path is unch
 unfixed gap: the accept/reject gate only checks that the re-predicted mask contains the frame's own
 node, never whether the specific foreign node that triggered a bleed flag is gone. On the verification
 chain's 5 touched frames, only 2 genuinely resolved their trigger; the other 3 were tagged
-`"corrected"`, with `qc.csv` cleared, while `n_foreign` stayed unchanged at the same foreign node id.
+`"corrected"` while `n_foreign` stayed unchanged at the same foreign node id.
 A `"corrected"` count should not be read as a "fixed" count without this caveat, and it remains open
 for a future iteration. One small chain: a first signal on both fronts, not a verdict, though the
 crash itself is not a one-chain fluke, it follows directly from the SAM3 adapter's signature. See
 `.git/sdd/task-5-report.md` for the full before/after tables and the roadmap's item 13 (§5b).
+
+The final whole-plan review (commit `306da30`) caught a third, more basic problem the real-chain
+verification above could not see, since it always ran against a chain whose `state.json` was already
+correct on disk: `_apply_second_pass_and_update_qc` was called before `save_state`, so on a chain's
+first real run its internal `score_chain` call read a missing or stale `state.json`, mis-learned the
+chain's crop space, and flagged every frame with dozens of phantom foreign nodes, which meant no
+frame ever had an eligible neighbour and the whole pass silently did nothing. Fixed by moving the
+call to after `save_state`. The same review also reversed the `"corrected"` clear-flags behavior
+described above: given the accept-gate gap just above, clearing a frame's triage flags on an
+unverified `"corrected"` tag was actively hiding still-broken frames from review, so both
+`"corrected"` and `"guard_fallback"` now force `flag`/`intervene`/`queue` back to `True`, the
+`second_pass` column still records which tag applied. A failure inside the pass is now also isolated
+in a `try/except`, so it cannot fail an already-successful chain.
 
 ---
 
