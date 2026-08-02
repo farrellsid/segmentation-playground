@@ -218,10 +218,18 @@ def load_or_init_manifest(
         return seed
 
     existing = pd.read_csv(manifest_path)
-    for col in ("status", "error"):
+    # pd.read_csv infers an all-blank column as float64 (NaN), so a manifest
+    # saved after a run where every row's anchor_reasons/error/status happened
+    # to be blank reloads those columns as float64. The next _update_row call
+    # then fails with pandas.errors.LossySetitemError trying to write a real
+    # empty string into what pandas now thinks is a float column. Recast every
+    # column this run can write a literal string into back to object, matching
+    # the fresh seed's own dtype. anchor_reasons is '' whenever the anchor
+    # passed (the common case), so this is not a rare edge case in practice.
+    for col in ("status", "error", "anchor_reasons"):
         if col in existing.columns:
             existing[col] = existing[col].astype("object")
-    
+
     # Append any new (neuron, chain_idx) not already tracked.
     have = set(zip(existing["neuron"], existing["chain_idx"]))
     new_rows = seed[~seed.apply(lambda r: (r["neuron"], r["chain_idx"]) in have, axis=1)]
