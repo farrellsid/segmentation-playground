@@ -19,6 +19,12 @@
 # PRESET selects the config; the two SAM3 whole-set runs are:
 #   sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,OUT_ROOT=/scratch/$USER/target_perslice_only_guard_sam3 cluster/run_array.sh
 #   sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3 cluster/run_array.sh
+#
+# Optional propagation second pass (unset means no --second-pass flag, same as before this
+# existed). Set SECOND_PASS=1 on top of a propagation-preset run to turn it on; it writes into
+# whatever OUT_ROOT you give it, a SEPARATE tree from the plain-propagation run, the second pass
+# does not save a plain-propagation copy on its own:
+#   sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,SECOND_PASS=1,OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3_secondpass cluster/run_array.sh
 
 #SBATCH --job-name=sam2-target
 #SBATCH --account=def-mzhen        # bare account; Slurm auto-routes to _gpu via --gres
@@ -80,6 +86,21 @@ SAM3_CKPT=${SAM3_CKPT:-}
 BACKEND_ARGS=(--backend "$SAM_BACKEND")
 if [ -n "$SAM3_CKPT" ]; then
     BACKEND_ARGS+=(--sam3-checkpoint "$SAM3_CKPT")
+fi
+
+# --- optional propagation second-pass pass-through -----------------------------
+# Unset, no flag is appended, same as every existing run (second_pass defaults False
+# in PipelineConfig, so this only matters for propagation-mode presets, per_slice
+# presets ignore it). SECOND_PASS=1 turns it on; SECOND_PASS_AREA_RATIO overrides the
+# nucleus-capture neighbour-eligibility floor (default 0.5) if set.
+SECOND_PASS=${SECOND_PASS:-}
+SECOND_PASS_AREA_RATIO=${SECOND_PASS_AREA_RATIO:-}
+
+if [ -n "$SECOND_PASS" ]; then
+    BACKEND_ARGS+=(--second-pass)
+fi
+if [ -n "$SECOND_PASS_AREA_RATIO" ]; then
+    BACKEND_ARGS+=(--second-pass-min-neighbour-area-ratio "$SECOND_PASS_AREA_RATIO")
 fi
 
 # --- run ---------------------------------------------------------------------

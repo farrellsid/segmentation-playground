@@ -14,15 +14,21 @@ Motivation and the 2-chain result this scales up: `docs/explanation/sam3-bakeoff
 
 ## What this run produces
 
-Two SAM3 trees, matched to the two SAM2 baselines from the Phase 1 close-out so the comparison
-is a clean model swap, nothing else changes:
+SAM3 trees, matched to the SAM2 baselines from the Phase 1 close-out so the comparison is a
+clean model swap, nothing else changes:
 
 | Config | SAM2 baseline preset | SAM3 run |
 |---|---|---|
 | Per-slice | `original_perslice_only_guard` | same preset, `--backend sam3` |
 | Propagation | `original_tier2_s1forced_neg` | same preset, `--backend sam3` |
+| Propagation + second pass | `original_tier2_s1forced_neg` | same preset, `--backend sam3`, `--second-pass` |
 
-SAM2 is not re-run. Its baseline trees already exist; this only adds the two SAM3 trees.
+SAM2 is not re-run. Its baseline trees already exist; this only adds the SAM3 trees.
+
+The second-pass config is not a variant of the plain propagation output, it is a full separate
+run: `apply_second_pass` mutates flagged frames' masks in place after propagation finishes, so a
+`--second-pass` run does not also leave behind an untouched plain-propagation copy anywhere. If
+you want both trees to compare, submit both configs to different `OUT_ROOT`s.
 
 ## 1. Upload the checkpoint
 
@@ -151,11 +157,11 @@ per-chain time by the chunk size and the number of chunks to size `--time` for t
 and remember SAM3 is roughly 3 to 4x slower per cell than SAM2 (see Caveats below), so do not
 reuse the SAM2 array's `--time` value unchanged.
 
-## 4. Submit the two full SAM3 whole-set runs
+## 4. Submit the full SAM3 whole-set runs
 
 Once the smoke chunk confirms the environment and gives a walltime estimate, size the array from
-`make_chunks.py`'s printed count and submit both configs. These are the two confirmed commands
-(`cluster/run_array.sh`'s own usage comment carries the same pair):
+`make_chunks.py`'s printed count and submit each config you want. These are the three confirmed
+commands (`cluster/run_array.sh`'s own usage comment carries the same set):
 
 ```bash
 sbatch --array=0-<N-1>%<concurrency> \
@@ -169,14 +175,22 @@ sbatch --array=0-<N-1>%<concurrency> \
 SAM3_CKPT=$HOME/projects/def-mzhen/<user>/sam3_checkpoint,\
 OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3 \
   cluster/run_array.sh
+
+sbatch --array=0-<N-1>%<concurrency> \
+  --export=ALL,VENV=$HOME/sam3env,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,\
+SAM3_CKPT=$HOME/projects/def-mzhen/<user>/sam3_checkpoint,SECOND_PASS=1,\
+OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3_secondpass \
+  cluster/run_array.sh
 ```
 
-Both runs read the same uploaded checkpoint and differ only in `PRESET` and `OUT_ROOT`. `PRESET`
-picks the matching SAM2 baseline config (`original_perslice_only_guard` for per-slice,
-`original_tier2_s1forced_neg` for propagation) so the only thing that changes between a SAM3
-tree and its SAM2 counterpart is the backend. Always set `SAM3_CKPT` when `SAM_BACKEND=sam3`:
-without it the adapter falls back to its local dev default path, which does not exist on Narval
-and fails at model load.
+All three read the same uploaded checkpoint and differ only in `PRESET`, `SECOND_PASS`, and
+`OUT_ROOT`. `PRESET` picks the matching SAM2 baseline config (`original_perslice_only_guard` for
+per-slice, `original_tier2_s1forced_neg` for propagation, the same preset again for propagation
+plus the second pass) so the only thing that changes between a SAM3 tree and its SAM2 counterpart
+is the backend, and between the plain-propagation and second-pass trees is `SECOND_PASS`. Always
+set `SAM3_CKPT` when `SAM_BACKEND=sam3`: without it the adapter falls back to its local dev
+default path, which does not exist on Narval and fails at model load. The three runs are fully
+independent, submit them in any order, or all at once if your allocation has room.
 
 **Merging and downloading (same shape as the SAM2 flow).** `OUT_ROOT` is the SHARD ROOT:
 `run_array.sh` points its `SHARD_ROOT` at `OUT_ROOT`, so each array task writes its own
@@ -192,23 +206,26 @@ python cluster/merge_shards.py --shard-root /scratch/$USER/target_perslice_only_
     --out /scratch/$USER/target_perslice_only_guard_sam3_merged
 python cluster/merge_shards.py --shard-root /scratch/$USER/target_tier2_s1forced_neg_sam3 \
     --out /scratch/$USER/target_tier2_s1forced_neg_sam3_merged
+python cluster/merge_shards.py --shard-root /scratch/$USER/target_tier2_s1forced_neg_sam3_secondpass \
+    --out /scratch/$USER/target_tier2_s1forced_neg_sam3_secondpass_merged
 ```
 
 - **Download.** `cluster/stage_download.sh` auto-globs `/scratch/$USER/*_merged`, so it picks up
-  both `*_sam3_merged` trees with no edit and tars each (dereferencing the shard symlinks) into
+  every `*_merged` tree with no edit and tars each (dereferencing the shard symlinks) into
   `/scratch/$USER/downloads/`. Pull those tarballs with Globus or scp.
 
 ## 5. Score locally
 
-Pull the two SAM3 trees down (see above) next to your local copies of the two SAM2 baseline
-trees, then score all four in one call so the comparison table is generated consistently:
+Pull the SAM3 trees down (see above) next to your local copies of the SAM2 baseline trees, then
+score them all in one call so the comparison table is generated consistently:
 
 ```bash
 py -3 -m eval.merge_metric \
   --root <local>/original_perslice_only_guard \
   --root <local>/target_perslice_only_guard_sam3_merged \
   --root <local>/original_tier2_s1forced_neg \
-  --root <local>/target_tier2_s1forced_neg_sam3_merged
+  --root <local>/target_tier2_s1forced_neg_sam3_merged \
+  --root <local>/target_tier2_s1forced_neg_sam3_secondpass_merged
 ```
 
 This prints one summary line per tree: `foreign_frame_rate`, `dropout_rate`,
@@ -230,7 +247,18 @@ full target-worm scale.
   populates it never fires on the SAM3 adapter). This is inert for `eval.merge_metric`, which is
   mask-only and never reads `pred_iou`, but treat any other QC or analysis that reads `pred_iou`
   as disabled for SAM3 runs.
-- **SAM3 must write to its own `OUT_ROOT` and never overwrite a SAM2 baseline tree.** Both
-  `OUT_ROOT` values above are new paths; double-check before submitting that neither equals nor
-  nests inside an existing SAM2 baseline tree. There is no code-level guard against this, only
-  the path you choose.
+- **SAM3 must write to its own `OUT_ROOT` and never overwrite a SAM2 or a different SAM3 baseline
+  tree.** Every `OUT_ROOT` above is a distinct new path; double-check before submitting that none
+  equals or nests inside an existing tree. There is no code-level guard against this, only the
+  path you choose. This matters more with `SECOND_PASS=1`: it mutates the flagged frames' saved
+  masks in place, so pointing it at the plain-propagation `OUT_ROOT` would silently corrupt that
+  baseline rather than produce a comparable second tree.
+- **`SECOND_PASS=1` adds real per-chain time on top of propagation's own.** Every chain with at
+  least one flagged frame runs an extra `eval.merge_metric.score_chain` pass plus a real SAM3
+  image-mode re-predict per touched frame. Size the second-pass array's `--time` from its own
+  smoke chunk, not the plain-propagation array's, the two are not directly comparable.
+- **The accept-gate on `--second-pass` frames does not verify the original trigger actually
+  resolved** (documented in `docs/explanation/roadmap.md`'s item 13 and the 2026-07-30 CHANGELOG
+  entry): real verification found a `"corrected"` tag on 3 of 5 touched frames on one chain did
+  not actually clear the bleed that flagged it. Both `"corrected"` and `"guard_fallback"` frames
+  stay in `_triage.csv` for this reason, so a human still needs to look before trusting either.
