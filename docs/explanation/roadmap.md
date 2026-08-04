@@ -399,6 +399,36 @@ Two threads, now that I have GT:
 - Decimate with quadric edge collapse (small `max_error`); smooth with **Taubin** (volume-preserving)
   not Laplacian (shrinks thin tubes); export PLY/OBJ to Blender. No morphological pre-smoothing.
 
+### 4.9 Ideas raised, not yet scoped (2026-08-04)
+
+Three directions raised in conversation, not designed or built. Recorded here so they are not lost
+before someone has time to scope them properly.
+
+- **Spill/underfill-informed conflict resolution.** Not a new direction, this is where 2c/2d and the
+  dense multi-neuron overlay TODO already point: merge every per-slice mask into one dense labelmap,
+  then resolve overlaps with membrane-aware arbitration instead of first-writer-wins, validated
+  against the merge metric. The open blocker is the membrane map itself, not the arbitration logic:
+  both classical levers tried against it (2b.5's organelle suppression and temporal projection) came
+  back negative, so this inherits that ceiling until a learned membrane map (Phase 3) or some other
+  fix lands.
+- **A feabas-style global optimization for propagation drift.** feabas
+  (github.com/YuelongWu/feabas) is an FEA-based global optimizer for large-scale EM montage and
+  stitching, used to correct accumulated deformation across many sections at once rather than
+  pairwise. The proposed parallel: propagation's drift is also a greedy, frame-to-frame accumulation
+  problem, so a similar global optimization, treating a chain's mask boundary as something like a
+  deformable mesh solved jointly across the whole z-range and anchored by high-confidence slices,
+  might reduce drift the way feabas reduces stitching error. Unverified: nobody has read feabas's
+  actual method yet, this is a structural hypothesis based on the tool's reputation, not confirmed to
+  transfer. Would be a new architecture, not a lever, closer to Phase-3 scale than a quick experiment.
+- **AMG-generated prompts as extra input to per-slice/propagation, not just a standalone method.**
+  `sam2_utils/perframe.py`'s `match_amg_to_nodes` already does the hard part this idea worried about,
+  assigning an AMG candidate mask to the right neuron via `select_by_metric` (node containment, no
+  foreign node, membrane boundary quality). That machinery was built and measured as a standalone
+  competing method ("Approach 2" in the per-frame segmentation work, clean but blind), never as an
+  extra seed fed into the other methods. Using its matched masks as additional prompt information for
+  per-slice or propagation runs is the genuinely untried part, and the most immediately actionable of
+  the three, since the identity-matching machinery already exists and is measured.
+
 ---
 
 ## 5. Staged plan (2026-07-15 redesign: measurement-first, evidence-gated)
