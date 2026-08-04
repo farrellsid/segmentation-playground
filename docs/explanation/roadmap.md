@@ -936,15 +936,34 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
     general idea (see the item 2b.5 scope note above); neither lever unblocks 2c/2d; per the decision
     point in section 6, the classical route via this design is now exhausted and the next step is a
     learned membrane map (Phase 3).
-11. **Targeted grow-to-membrane + nucleus detection** (Phase 2c/2e). Grow-to-membrane (2c) TODO, still
+
+    Follow-up 2026-08-04, DONE, same negative-leaning verdict for a different reason. Item 2f below
+    identified real pretrained detectors for the organelles the classical detector was guessing at, so
+    `experiments/organelle_pretrained.py` swapped `detect_organelle_blobs`'s shape heuristic for a real
+    one (MitoNet + NucleoNet full-frame masks, unioned once per frame), removing the noisy-calibration
+    explanation for why suppression underperformed. Same real gate as above (z=1456, 117 neurons): at
+    the canonical `uf_min=0.6, cap=5x` gate, `new_bleed` moves 7 -> 6; across the full `uf_min` sweep
+    (0.00/0.40/0.50/0.60/0.70) it reads 34/14/11/7/3 baseline vs 33/14/11/6/3 pretrained, a one-cell
+    dent at two of five gates and flat at the rest, versus the classical detector's flat zero
+    everywhere. This is evidence against "the detector was just badly calibrated" and for "the
+    membrane map's own resolution is the floor," which strengthens rather than reopens the Phase 3
+    call above.
+11. **Targeted grow-to-membrane + nucleus/mitochondria detection** (Phase 2c/2e/2f). Grow-to-membrane (2c) TODO, still
     gated on item 10: wire the underfill-gated fill (uf_min ~0.6-0.7) once the map is cleaner. Nucleus
     detection (2e) PARTLY DONE 2026-07-29: the detector is identified rather than built from scratch.
     NucleoNet was spot-checked on two target-worm frames and verdicted "generalizes" (2 instances at
     z=1456, 5 at z=1472, tight boundaries, no false positives on other organelles), so the classical
-    dark-blob/thick-loop fallback was skipped per the design's gate. Still TODO: wiring the detector
-    into `multimask_generous` or any other live lever (a separate future spec) and formal
-    precision/recall scoring, blocked on the labeled set the new `"nucleus"` GUI error type starts
-    collecting. See item 2e above and the CHANGELOG's 2026-07-29 nucleus-detector entry.
+    dark-blob/thick-loop fallback was skipped per the design's gate. Recall caveat added 2026-08-04: a
+    direct human re-check at z=1456 found NucleoNet missed a real nucleus there, so "no false
+    positives" is a precision-only read, not a complete census. Mitochondria detection (2f) PARTLY
+    DONE 2026-08-04, same shape: MitoNet (empanada-napari's mitochondria model, same family as
+    NucleoNet) spot-checked on the same two frames (74 instances at z=1456, 71 at z=1472), same
+    precision-good/recall-incomplete verdict. Tried as item 10's ridge-map suppression mask source
+    (see the follow-up above, one-cell-at-best result), not yet wired into `multimask_generous` or a
+    SAM-mask mitochondrion-capture check. Still TODO for both 2e and 2f: wiring into a live pipeline
+    lever (a separate future spec) and formal precision/recall scoring, blocked on the labeled set the
+    `"nucleus"` GUI error type starts collecting. See items 2e/2f above and the CHANGELOG's
+    2026-07-29 nucleus-detector and 2026-08-04 entries.
 12. **z-to-z consistency metric** (Phase 0.a). DONE 2026-07-29: `z_transitions`/`summarize_z_consistency`
     landed in `eval/merge_metric.py`, wired into `score_run`, `format_summary`, and a new
     `--low-iou-threshold` CLI flag, writing a `_z_consistency.csv` per run tree. A smoke test against
