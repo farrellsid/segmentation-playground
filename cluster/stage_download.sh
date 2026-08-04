@@ -26,13 +26,23 @@ mkdir -p "$OUT" cluster/logs
 # Auto-discover every merged tree under scratch (so new variants are picked up without
 # editing this script), and skip any that is already tarred (idempotent: re-running only
 # packages newly-merged variants).
+#
+# A file existing is not proof it is complete: if this job is killed mid-tar (walltime limit,
+# node failure), the partial .tar.gz is left on disk, and a bare `-f` check would wrongly
+# treat that truncated archive as done on the next run. `tar -tzf` verifies the gzip stream
+# and tar structure without extracting, so a truncated file is caught and retarred instead of
+# silently shipped.
 for d in /scratch/$USER/*_merged; do
     [ -d "$d" ] || continue
     name=$(basename "$d")
     tb="$OUT/${name}.tar.gz"
     if [ -f "$tb" ]; then
-        echo "[stage] skip (already tarred): $tb"
-        continue
+        if tar -tzf "$tb" > /dev/null 2>&1; then
+            echo "[stage] skip (already tarred, verified intact): $tb"
+            continue
+        fi
+        echo "[stage] found but failed integrity check (likely truncated), retarring: $tb"
+        rm -f "$tb"
     fi
     echo "[stage] tarring $d -> $tb"
     # -h dereferences the shard symlinks so the archive holds real files.
