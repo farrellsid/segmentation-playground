@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-04, NucleoNet recall gap found, MitoNet mitochondria detector spot-checked](#r-2026-08-04-mitonet)
 - [2026-07-30, propagation second pass: neighbour-seeded re-segmentation lands, SAM3 crash found and fixed, accept-gate gap flagged](#r-2026-07-30-second-pass)
 - [2026-07-29, organelle blob suppression: the intensity/texture filter lands, calibrated against real EM, the floor still does not move](#r-2026-07-29-organelle-blob)
 - [2026-07-29, z-to-z consistency metric: a temporal ruler for the merge metric's per-frame blind spot](#r-2026-07-29-z2z)
@@ -43,6 +44,38 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-04-mitonet"></a>
+## 2026-08-04, NucleoNet recall gap found, MitoNet mitochondria detector spot-checked
+
+A human visual re-check of the NucleoNet renders from the 2026-07-29 gate run (z=1456, z=1472)
+confirmed the "no false positives" verdict but surfaced a gap the original writeup did not carry:
+z=1456 has at least one visible nucleus NucleoNet did not detect. The GATE VERDICT stands (NucleoNet
+generalizes, no false positives on organelles), but the roadmap's NucleoNet section
+(`docs/explanation/roadmap.md` §4.5) now carries an explicit recall caveat: this detector can miss
+real nuclei, not just avoid flagging non-nuclei, worth remembering before treating its output as a
+complete nucleus census for anything downstream.
+
+Separately, a naive round-plus-dark-mask heuristic proposed as a possible detector for organelle
+capture turned out, on clarification, to target mitochondria rather than nuclei: small, dark,
+round-to-elongated blobs, the same class of structure the membrane ridge map already misfires on
+(`sam2_utils/membrane.py`, see the 2026-07-29 organelle blob suppression entry below). Rather than
+build a circularity/intensity heuristic from scratch, this session checked whether a pretrained
+mitochondria detector already exists in the same registry NucleoNet came from. It does:
+`empanada-napari` ships `MitoNet_v1`, trained on the CEM-MitoLab dataset, config confirmed against
+`empanada_napari/configs/MitoNet_v1.yaml` (fetched 2026-08-04), which also closes part of the
+NucleoNet provenance gap by confirming `nms_threshold`/`nms_kernel`/`confidence_thr` are real
+training-time values, not inference-engine defaults carried over unmodified.
+`experiments/mitonet_spotcheck.py` (new, mirrors `nucleonet_spotcheck.py`'s vendoring approach) ran
+on the same two target-worm frames used for NucleoNet: 74 instances detected at z=1456, 71 at
+z=1472, both plausible mitochondria counts for a worm cross-section. A human visual check of both
+renders found the same pattern as NucleoNet: accurate on what it catches, incomplete on what it
+misses. GATE VERDICT: MitoNet generalizes for detection. This is a characterization spike only, no
+downstream consumer built; ridge-map suppression, SAM-mask mitochondrion-capture detection, and a
+general organelle classifier were all raised as candidate uses but none has been designed. See
+roadmap item 2f (§4.5).
 
 ---
 

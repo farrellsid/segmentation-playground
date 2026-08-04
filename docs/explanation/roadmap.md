@@ -779,6 +779,13 @@ every frame, ordered cheap to expensive:
   NucleoNet generalizes. Per the design's explicit gate, this skips the classical dark-blob/thick-loop
   fallback entirely: `sam2_utils/nucleus.py` and `tests/test_nucleus.py` were not built this round.
 
+  Recall gap found 2026-08-04: a direct human check against the raw z=1456 frame confirmed both
+  detections there are real nuclei (no false positives, consistent with the read above), but also found
+  the frame has at least one more visible nucleus NucleoNet did not detect. The "no false positives"
+  read still holds, precision looks good on this small sample, but the earlier writeup did not carry a
+  recall caveat and should have: this detector can miss real nuclei, not just avoid flagging non-nuclei.
+  Worth keeping in mind before treating its output as a complete nucleus census for anything downstream.
+
   Caveat worth carrying forward: four of the inference engine's hyperparameters (`nms_threshold`,
   `nms_kernel`, `confidence_thr`, `coarse_boundaries`) have unconfirmed provenance. The discovery pass
   could not tell whether they came from `NucleoNet_base_v2.yaml` or are `empanada_napari.inference.
@@ -793,6 +800,26 @@ every frame, ordered cheap to expensive:
   lever stays a separate, future spec, unchanged from the design's stated scope. See
   [[nucleus-capture-underfill]] and `docs/superpowers/specs/2026-07-29-nucleus-detector-design.md`.
   *(§4.5, §2 problem 7)*
+- **2f, mitochondria detection spike, GATE RUN 2026-08-04: MitoNet generalizes, same precision/recall
+  pattern as NucleoNet.** Raised from a naive idea: a mostly-dark round mask is probably a chain that
+  locked onto an organelle instead of the real cell. That idea turned out to name mitochondria
+  specifically (small, dark, round-to-elongated blobs), not nuclei. That is the same specificity
+  problem the ridge map already has (fires on organelles, see [[phase2-membrane-v1-visual-findings]]),
+  so this spike checked whether a pretrained detector exists for the organelle itself rather than building a
+  circularity/intensity heuristic from scratch. `empanada-napari`'s model registry (the same BSD-3-Clause
+  package NucleoNet came from) ships `MitoNet_v1`, trained on the CEM-MitoLab dataset. Its config
+  (`empanada_napari/configs/MitoNet_v1.yaml`, fetched 2026-08-04) confirms `nms_threshold=0.1`,
+  `nms_kernel=7`, `confidence_thr=0.5` as real training-time values, closing part of the provenance gap
+  the NucleoNet writeup above flags for those same three parameters. `experiments/mitonet_spotcheck.py`
+  mirrors `nucleonet_spotcheck.py`'s vendoring approach and ran on the same two target-worm frames:
+  z=1456 (74 instances detected) and z=1472 (71 instances detected), both plausible counts for
+  mitochondria density in a worm cross-section, unlike the 2-5 nuclei per frame. A human visual check of
+  both renders confirmed the same pattern already seen with NucleoNet: what MitoNet catches is accurate,
+  but it misses some real mitochondria, precision looks good, recall is incomplete. GATE VERDICT: MitoNet
+  generalizes for detection. Purely a characterization spike, no downstream consumer built yet; the
+  candidate uses raised were ridge-map organelle suppression, flagging a SAM mask that locked onto a
+  mitochondrion instead of the target cell, and a general-purpose organelle classifier, but none of the
+  three has been designed or scoped. See [[future-ideas-2026-08-04-conflict-res-feabas-amg]].
 
 The landed foundation also helps disambiguate outer-vs-inner border for the nested-membrane ceiling.
 **Ask the supervisor whether a reusable membrane model or training data survives from the prior
