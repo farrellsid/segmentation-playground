@@ -72,10 +72,29 @@ training-time values, not inference-engine defaults carried over unmodified.
 on the same two target-worm frames used for NucleoNet: 74 instances detected at z=1456, 71 at
 z=1472, both plausible mitochondria counts for a worm cross-section. A human visual check of both
 renders found the same pattern as NucleoNet: accurate on what it catches, incomplete on what it
-misses. GATE VERDICT: MitoNet generalizes for detection. This is a characterization spike only, no
-downstream consumer built; ridge-map suppression, SAM-mask mitochondrion-capture detection, and a
-general organelle classifier were all raised as candidate uses but none has been designed. See
-roadmap item 2f (§4.5).
+misses. GATE VERDICT: MitoNet generalizes for detection. Of the candidate uses raised (ridge-map
+suppression, SAM-mask mitochondrion-capture detection, a general organelle classifier), ridge-map
+suppression was picked first since it is the one with a documented open failure: the 2026-07-29
+organelle blob suppression entry below found the classical Otsu/shape detector calibrated to ~96%
+single-pixel noise and moved the real bleed floor by exactly zero. See roadmap item 2f (§4.5).
+
+`experiments/organelle_pretrained.py` (new) unions MitoNet's and NucleoNet's full-frame instance
+masks into one boolean mask (both organelle types by default, one forward pass each per frame, not
+per neuron crop) and `experiments/dense_membrane_fill.py` gained `--organelle-source
+{classical,pretrained}` so `grow_all` can slice a neuron's region out of that precomputed mask
+instead of calling `detect_organelle_blobs` on its local crop. Same real gate as the classical run
+(z=1456, 117 neurons, `new_bleed` = cells that only start engulfing a foreign node after being
+grown): baseline (no suppression) and the classical detector both land on `new_bleed=7` at the
+canonical `uf_min=0.6, cap=5x` gate; the pretrained mask (3.2% of the frame flagged, vs. the
+classical detector's much noisier ~15% per-crop footprint) lands on `new_bleed=6`. The full
+`uf_min` sweep (`0.00`/`0.40`/`0.50`/`0.60`/`0.70`) shows the same story: baseline 34/14/11/7/3
+vs. pretrained 33/14/11/6/3, a one-cell dent at best, zero at most gates. This is a materially
+different result from the classical detector's flat zero, since it is a semantically real
+organelle mask rather than 96% Otsu noise, and it still barely moves the floor. That points away
+from organelle contamination of the ridge map as the dominant driver of `new_bleed` and back toward
+the scale-8 leaky-wall problem already flagged by the 2026-07-27 dense-frame membrane-fill sweep
+(the flat ~40% bleed-per-fill rate, attributed there to the membrane map's resolution, not
+organelle noise).
 
 ---
 

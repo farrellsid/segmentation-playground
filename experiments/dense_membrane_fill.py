@@ -86,7 +86,7 @@ def _shift_diag(crops, center_i, max_shift=MAX_SHIFT):
 def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: str,
             pad: int, nodes, radius: int, *, suppress_organelles_flag: bool = False,
             blob_max_area: float = 150.0, blob_max_eccentricity: float = 0.85,
-            blob_dilate_px: int = 1):
+            blob_dilate_px: int = 1, organelle_mask_full: np.ndarray | None = None):
     """Grow each neuron to its ridge walls once, UNCAPPED, inside a local bbox+pad window.
 
     The membrane map for each neuron's crop is built from `frames`, a {z: em_gray} dict
@@ -103,7 +103,12 @@ def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: st
 
     When suppress_organelles_flag is set, small dark round organelles are detected in each
     neuron's crop and inpainted out before membrane_map runs, so the ridge map is not
-    confused by mitochondria/vesicle boundaries that are not cell membrane."""
+    confused by mitochondria/vesicle boundaries that are not cell membrane. Detection is
+    per-neuron-crop via detect_organelle_blobs (the classical shape/intensity heuristic)
+    unless organelle_mask_full is given, a precomputed full-frame boolean mask (e.g. from
+    experiments.organelle_pretrained.detect_organelles_pretrained), in which case each
+    neuron's region is sliced out of it instead, and blob_max_area/blob_max_eccentricity/
+    blob_dilate_px are ignored."""
     H, W = frames[center_z].shape[:2]
     recs = {}
     all_raw_mags: list[float] = []
@@ -125,9 +130,12 @@ def grow_all(nmasks: dict, frames: dict, center_z: int, window: int, combine: st
             crops = mb.register_crops(crops, center=center_i, max_shift=MAX_SHIFT)
         em_crop = mb.project_crops(crops, combine=combine)
         if suppress_organelles_flag:
-            organelle_mask = mb.detect_organelle_blobs(
-                em_crop, max_area=blob_max_area, max_eccentricity=blob_max_eccentricity,
-                dilate_px=blob_dilate_px)
+            if organelle_mask_full is not None:
+                organelle_mask = organelle_mask_full[y1:y2, x1:x2]
+            else:
+                organelle_mask = mb.detect_organelle_blobs(
+                    em_crop, max_area=blob_max_area, max_eccentricity=blob_max_eccentricity,
+                    dilate_px=blob_dilate_px)
             em_crop = mb.suppress_organelles(em_crop, organelle_mask)
         mem = mb.membrane_map(em_crop)
         grown, _capped = grow_to_membrane(win, mem, cap=1e9)  # no clamp; cap applied later
@@ -214,6 +222,11 @@ def main(argv=None):
                     help="max eccentricity (0=circle, close to 1=elongated) to count as an organelle")
     ap.add_argument("--blob-dilate-px", type=int, default=1,
                     help="dilate the detected organelle mask by this many px before inpainting")
+    ap.add_argument("--organelle-source", choices=["classical", "pretrained"], default="classical",
+                    help="classical = detect_organelle_blobs shape/intensity heuristic (default); "
+                         "pretrained = MitoNet+NucleoNet real detections "
+                         "(experiments.organelle_pretrained), one full-frame pass reused for "
+                         "every neuron")
     ap.add_argument("--sweep", action="store_true",
                     help="sweep the runaway cap and the underfill gate")
     ap.add_argument("--sweep-temporal", action="store_true",
@@ -251,6 +264,15 @@ def main(argv=None):
         print(f"[fill] z={args.z}: no neuron masks"); return
     print(f"[fill] z={args.z}: {len(nmasks)} neurons; growing once, uncapped (pad {args.pad}) ...")
 
+    organelle_mask_full = None
+    if args.suppress_organelles and args.organelle_source == "pretrained":
+        from experiments.organelle_pretrained import detect_organelles_pretrained
+        t_org = time.time()
+        organelle_mask_full = detect_organelles_pretrained(em_gray, dilate_px=args.blob_dilate_px)
+        print(f"[fill] pretrained organelle mask: {int(organelle_mask_full.sum())} px "
+              f"({100*organelle_mask_full.sum()/organelle_mask_full.size:.1f}% of frame) "
+              f"in {time.time()-t_org:.0f}s")
+
     nbz = nodes_by_z(load_node_table(), SCALE)
     nodes = nbz.get(args.z, [])
     n_cells = len({c for _x, _y, c, *_ in nodes})
@@ -261,7 +283,7 @@ def main(argv=None):
     recs = grow_all(nmasks, frames, args.z, args.mm_window, args.mm_combine, args.pad,
                     nodes, DEFAULT_RADIUS, suppress_organelles_flag=args.suppress_organelles,
                     blob_max_area=args.blob_max_area, blob_max_eccentricity=args.blob_max_eccentricity,
-                    blob_dilate_px=args.blob_dilate_px)
+                    blob_dilate_px=args.blob_dilate_px, organelle_mask_full=organelle_mask_full)
     raw_uf = float(np.mean([r["raw_uf"] for r in recs.values()]))
     raw_foreign = sum(r["raw_foreign"] for r in recs.values())
     raw_bleed = sum(r["raw_foreign"] > 0 for r in recs.values())
@@ -319,7 +341,8 @@ def main(argv=None):
                                       suppress_organelles_flag=args.suppress_organelles,
                                       blob_max_area=args.blob_max_area,
                                       blob_max_eccentricity=args.blob_max_eccentricity,
-                                      blob_dilate_px=args.blob_dilate_px)
+                                      blob_dilate_px=args.blob_dilate_px,
+                                      organelle_mask_full=organelle_mask_full)
                 ch, m = apply_cap(recs_t, args.cap, args.uf_min)
                 cont = contested_px(ch, (h8, w8))
                 print(f"[sweept]  {w:>4}  {combine:>8}  {m['filled']:>3}/{len(recs_t)}  "

@@ -816,10 +816,22 @@ every frame, ordered cheap to expensive:
   mitochondria density in a worm cross-section, unlike the 2-5 nuclei per frame. A human visual check of
   both renders confirmed the same pattern already seen with NucleoNet: what MitoNet catches is accurate,
   but it misses some real mitochondria, precision looks good, recall is incomplete. GATE VERDICT: MitoNet
-  generalizes for detection. Purely a characterization spike, no downstream consumer built yet; the
-  candidate uses raised were ridge-map organelle suppression, flagging a SAM mask that locked onto a
-  mitochondrion instead of the target cell, and a general-purpose organelle classifier, but none of the
-  three has been designed or scoped. See [[future-ideas-2026-08-04-conflict-res-feabas-amg]].
+  generalizes for detection. Of the three candidate uses raised (ridge-map organelle suppression,
+  flagging a SAM mask that locked onto a mitochondrion instead of the target cell, a general-purpose
+  organelle classifier), ridge-map suppression was tried next since it already has a documented open
+  failure: 2b.5's classical `detect_organelle_blobs` calibrated to ~96% single-pixel Otsu noise and
+  moved the real bleed floor by zero (2026-07-29 organelle blob suppression, see CHANGELOG).
+  `experiments/organelle_pretrained.py` unions MitoNet's and NucleoNet's full-frame detections into
+  one mask;
+  `dense_membrane_fill.py --organelle-source pretrained` slices it per neuron instead of calling the
+  classical detector. Real gate, same measurement as 2b.5 (z=1456, 117 neurons, `new_bleed`): the
+  classical detector and no suppression both land on 7 at `uf_min=0.6`; the pretrained mask lands on
+  6, and the full `uf_min` sweep (0.00/0.40/0.50/0.60/0.70) reads 34/14/11/7/3 baseline vs
+  33/14/11/6/3 pretrained, a one-cell dent at the best gate, zero at most others. Different from
+  2b.5's flat zero (this is a real organelle mask, not 96% Otsu noise), but still not a fix: the
+  floor is most likely the leaky scale-8 membrane map itself, not organelle contamination of it.
+  Mitochondrion-capture detection and the general classifier remain unscoped. See
+  [[future-ideas-2026-08-04-conflict-res-feabas-amg]].
 
 The landed foundation also helps disambiguate outer-vs-inner border for the nested-membrane ceiling.
 **Ask the supervisor whether a reusable membrane model or training data survives from the prior
