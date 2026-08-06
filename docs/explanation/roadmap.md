@@ -429,6 +429,30 @@ before someone has time to scope them properly.
   per-slice or propagation runs is the genuinely untried part, and the most immediately actionable of
   the three, since the identity-matching machinery already exists and is measured.
 
+**2026-08-06, two more, grounded in real manual-correction time this round (not just conversation).**
+Correcting real SAM3 per-slice output (AIYR, three chains) ran at a roughly constant ~20sec/frame
+regardless of chain length (a 54-frame chain took 20 minutes; a 12-frame and a 1-frame chain took
+~4 minutes combined), "not much faster to correct than drawing the whole thing by hand." That is
+per-slice's jankiness, no frame-to-frame continuity to lean on, showing up as a real human-time
+cost, not just the predicted worse-3D-mesh cost from §4.9's temporal-consistency gap (see
+[[eval-gaps-temporal-and-sam3-tradeoffs]]).
+
+- **Correction propagation in the review GUI, not yet designed.** The diagnosis: "correction is too
+  slow because propagation is not implemented yet for the correction of this." When a human fixes
+  one frame today, that fix does not carry forward, every subsequent frame in the chain needs its
+  own independent correction. Borrowing propagation's own mechanism (video-mode mask memory) inside
+  the human review loop, so a correction on frame N seeds frames N+1 onward instead of leaving them
+  untouched, is the concrete lever this points at. Different from every idea in
+  [[hybrid-propagation-perslice-metric-seed]] (A-F), those are about the automated segmentation
+  pass; this one is about the correction workflow itself.
+- **Sample real corrections as SAM3 cloud finetuning data.** At least one hand-corrected chain per
+  neuron, used as sparse finetuning input on Narval rather than only as an eval ground-truth set.
+  Connects to Phase 3's mask-decoder finetune item, but as a byproduct of review work already
+  happening instead of a dedicated GT-collection effort. Gated on correction throughput itself,
+  which the timing above shows is the current bottleneck, so this is downstream of fixing that, not
+  independent of it. Also noted: local hardware cannot run SAM3 at all, so any related spike work is
+  cloud/Narval-only, not a local check like the ridge-map spike above.
+
 ---
 
 ## 5. Staged plan (2026-07-15 redesign: measurement-first, evidence-gated)
