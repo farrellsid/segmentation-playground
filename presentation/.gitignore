@@ -1,0 +1,6 @@
+# Slidev build artifacts and dependencies. The deck itself (slides.md, slides/,
+# public/images/, outline.md) is tracked; everything generated from it is not.
+node_modules/
+dist/
+exports/
+.slidev/
