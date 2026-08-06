@@ -222,10 +222,22 @@ class CropWindow:
     # --- array slice: numpy is [row, col] = [y, x]. THE only x/y swap. ---
     def slice_tif(self) -> Tuple[slice, slice]:
         """(row_slice, col_slice) to crop a full-res _tif array: img[slice_tif()]."""
+        return self.slice_at(1)
+
+    def slice_at(self, scale: int = 1) -> Tuple[slice, slice]:
+        """(row_slice, col_slice) to crop a frame that was read at ``scale``.
+
+        origin_tif/size_tif are full-res _tif px, so a frame already downscaled by
+        ``scale`` needs the window divided by the same factor. ``scale=1`` is the
+        _tif case (``slice_tif``). Getting this wrong on a coarse frame does not
+        raise, it slices past the end and returns an empty array.
+        """
+        s = max(1, int(scale))
         x0, y0 = self.origin_tif
         w, h = self.size_tif
-        x0i, y0i = int(round(x0)), int(round(y0))
-        return (slice(y0i, y0i + h), slice(x0i, x0i + w))
+        x0i, y0i = int(round(x0 / s)), int(round(y0 / s))
+        wi, hi = max(1, int(round(w / s))), max(1, int(round(h / s)))
+        return (slice(y0i, y0i + hi), slice(x0i, x0i + wi))
 
     @property
     def crop_hw(self) -> Tuple[int, int]:

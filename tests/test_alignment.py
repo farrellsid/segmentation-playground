@@ -154,6 +154,19 @@ def test_cropwindow_slice_is_row_col():
     assert (cs.start, cs.stop) == (800, 1200)       # x
 
 
+def test_cropwindow_slice_at_scale_follows_the_downscale():
+    # A frame that was already read at `scale` needs the window divided by that
+    # scale. Slicing a scale-4 frame with full-res _tif offsets reads past the end
+    # and yields an empty crop (the --em-scale 4 GUI backdrop bug).
+    cw = _cw()
+    assert cw.slice_at(1) == cw.slice_tif()          # scale 1 is the _tif case
+    rs, cs = cw.slice_at(4)
+    assert (rs.start, rs.stop) == (150, 250)         # y / 4
+    assert (cs.start, cs.stop) == (200, 300)         # x / 4
+    frame4 = np.zeros((5000 // 4, 6000 // 4, 3), np.uint8)
+    assert frame4[cw.slice_at(4)].shape == (100, 100, 3)
+
+
 def test_cropwindow_point_roundtrip_and_center():
     cw = _cw()
     # the node sits at the crop center

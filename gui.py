@@ -535,10 +535,16 @@ class ReviewGUI:
             def _read(z):
                 img, _ = pipeline.load_frame_sam(int(z), scale=int(em_scale))   # raw EM at em_scale
                 if self._cw is not None:
-                    img = img[self._cw.slice_tif()]   # tier-2: crop to the chain window
+                    # tier-2: crop to the chain window. The window is _tif px and the
+                    # frame is already downscaled by em_scale, so the slice follows
+                    # that downscale (slice_tif() would read past the end at scale > 1).
+                    img = img[self._cw.slice_at(int(em_scale))]
                 return img
 
             sample = _read(order[0])                                # one eager read for shape/dtype
+            if sample.size == 0:                                    # empty crop: napari would
+                raise ValueError(f"empty EM crop at scale {em_scale} "  # reject the rgb stack
+                                 f"(window {self._cw.size_tif if self._cw else None})")
             lazy = [da.from_delayed(delayed(_read)(z), shape=sample.shape, dtype=sample.dtype)
                     for z in order]
             print(f"[gui] em backdrop: lazy raw EM scale-{em_scale} "
