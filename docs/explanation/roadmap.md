@@ -856,15 +856,20 @@ does membrane-aware detect plus targeted fill cut mild bleed / underfill.
 - **Finetune the SAM2 mask decoder** (decoder-first, Dice+BCE, neurite-targeted, never organelle-borrowed)
   and/or an **FGNet-style fine-grained / affinity boundary head** on frozen SAM2 features, targeting the
   domain gap, thin neurites, and the nested-membrane ceiling. *(§4.7, §4.4)*
-- **Idea raised 2026-08-06, not yet tried: predict directly on the Sato ridge map instead of raw EM,
-  zero-shot, no training.** Cheaper than either lever above, reuses `image_predict` unchanged, just swap
-  the input image. Real risk is domain shift: SAM was never validated on something that looks like a
-  thin-bright-line-on-black-background synthetic image rather than natural EM texture. A full-resolution
-  (scale-1) look at the ridge map (`docs/figures/presentation/ridge-scale1/`, z=1456, sigmas scaled ~8x
-  from the scale-8 default) shows real membranes as the brightest, thickest curves, encouraging, but also
-  shows every small dark organelle (ribosomes, vesicles, the nucleus boundary) throwing its own ring, the
-  same specificity problem as always. Untested whether SAM can still find the real cell boundary through
-  that noise. Cheap to check with a handful of real crops before investing further.
+- **Idea raised and tested 2026-08-06: predict directly on the Sato ridge map instead of raw EM,
+  zero-shot, no training. REAL NEGATIVE.** Cheaper than either lever above, reuses `image_predict`
+  unchanged, just swaps the input image; a full-resolution (scale-1) look at the ridge map
+  (`docs/figures/presentation/ridge-scale1/`) showed real membranes as the brightest, thickest
+  curves before this ran, encouraging on its face. But real SAM2 (large checkpoint), a real
+  skeleton-node point prompt (URAVL, z=1456): on raw EM, a normal single-cell mask (733px, score
+  0.91); on the ridge map from the same point, 762,533px, score 0.97, essentially the entire crop.
+  SAM read the ridge map's dark free-space as one connected foreground object rather than
+  walled-off compartments and swallowed the whole network at once, and its own confidence score
+  was HIGHER on the wrong answer, so score cannot gate this input type either. n=1 example, failure
+  is total not marginal, treat naive point-prompted SAM on the raw ridge map as closed. A different
+  prompting scheme (box, multiple points, or closing ridge-line gaps first) is untested and would
+  need its own real check, not assumed to inherit this result. Figures:
+  `docs/figures/presentation/sam-on-ridge/`.
 
 *Gate:* validated boundary improvement on the benchmark.
 
