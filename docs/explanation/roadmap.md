@@ -453,6 +453,32 @@ cost, not just the predicted worse-3D-mesh cost from §4.9's temporal-consistenc
   independent of it. Also noted: local hardware cannot run SAM3 at all, so any related spike work is
   cloud/Narval-only, not a local check like the ridge-map spike above.
 
+**2026-08-07, PI meeting, several more (student's own commentary marked apart).** Full detail in
+[[pi-meeting-2026-08-07-ideas]]. One item was a real bug, not just an idea, fixed same day: the
+presentation described automask as running with "no prompts at all," which is wrong, it samples
+its own grid of points as prompts, just not a human-placed one. The rest, unscoped:
+
+- **Per-slice naming doesn't communicate image mode on its own**, worth a rename or a consistent
+  first-use tie-in.
+- **Bounding-box prompting for per-slice, untried**: currently point-only every frame; would adding
+  a box prompt help, framed as a per-slice analogue of propagation's second-pass.
+- **Feed per-frame negative-prompt node info into propagation, not just at the seed.** The large
+  one: propagation's video mode by design only prompts once, but per-slice already computes fresh
+  own/neighbour node positions every frame regardless of method. If that could inform propagation
+  ongoingly rather than only at the anchor, the student's own read is this could functionally erase
+  the per-slice-vs-propagation split this whole results section is built around. Flagged as possibly
+  needing real changes to SAM2's memory/conditioning mechanism, not a usage-level change.
+- **FFN + node-informed agglomeration (student's own opinion, not the PI's).** Sharpens the existing
+  Phase 4 paradigm-gate entry (FFN / affinity + LSD + mutex watershed): the nodes would inform
+  agglomeration specifically, not just seeding/eval. Fold in when Phase 4 is actually scoped.
+- **Spill/overfill root-cause investigation, not done.** Real examples, especially propagation:
+  fuzzy boundary or raw membrane-intensity ambiguity? Magnitude and mechanism, not just the
+  already-measured rate, and needs real visual confirmation before proposing a fix.
+- **MitoNet/NucleoNet as an underfill-prevention filter**, a second application distinct from the
+  ridge-map-suppression use already tried this week: keep SAM's own prompting from getting confused
+  by an organelle in the first place, extending [[nucleus-capture-underfill]]'s existing
+  selective-generous-multimask lever to mitochondria too.
+
 ---
 
 ## 5. Staged plan (2026-07-15 redesign: measurement-first, evidence-gated)
