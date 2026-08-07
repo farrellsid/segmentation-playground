@@ -351,6 +351,27 @@ The single-arm failure is the field's universal failure mode; there are four com
   neighbouring objects sharply constrain the decoder's search space (Sanaat et al., SPIE Medical
   Imaging 2025, arXiv 2408.04762). This validates the existing box-seed + nearest-neighbour-negative
   design; the actionable check is to confirm no path ever falls back to a point-only seed.
+- **Box prompting for per-slice specifically, 2026-08-07, real path found, not yet built.** Per-slice
+  today re-prompts every frame with a point only, never a box, unlike the anchor. A real deep-research
+  pass (verified against SAM/SAM2 literature) supports box prompts reducing point ambiguity in
+  general, but the obvious source, CATMAID's own node radius, is a known-unreliable placeholder (see
+  [[catmaid-radius-placeholder]]), so deriving a per-slice box from it would just import that noise.
+  Real workaround: `box_from_mask` already exists and is used for the anchor crop; the same idea
+  applies per-frame, run the point-only pass once, derive a box from that mask, re-predict with the
+  box as a refinement. Self-contained, no CATMAID dependency, cheap to test, effectively a per-slice
+  second pass.
+- **Predictor-construction-time tuning, 2026-08-07, real and completely unused.** `SAM2ImagePredictor.
+  __init__` exposes `mask_threshold` (default 0.0, the logit cutoff for binary conversion, a direct
+  underfill-vs-bleed dial), `max_hole_area` (default 0, off, fills small background holes inside a
+  mostly-foreground mask), and `max_sprinkle_area` (default 0, off, removes small disconnected
+  foreground specks); `SAM2VideoPredictor.__init__` has the equivalent `fill_hole_area`. Verified
+  directly against the installed SAM2 source (`sam2_image_predictor.py`, `utils/transforms.py`'s
+  `postprocess_masks`), not assumed from docs. This project has never overridden any of them
+  (`sam2_utils/setup.py`'s `build_image_predictor` builds with zero kwargs), so every chain run so
+  far used the disabled defaults. `mask_threshold` and the hole-fill knobs map close to directly onto
+  underfill, the throughline problem across nucleus-capture, mitochondria-capture, and SAM3's own
+  conservativeness, at zero architecture risk (constructor kwargs, no model change). Probably the
+  single cheapest untried lever in this document; worth a real A/B before anything in the list below.
 
 ### 4.6 Post-processing, topology-aware, and mesh-space not morphological (Problem 6 · R7)
 
@@ -456,28 +477,54 @@ cost, not just the predicted worse-3D-mesh cost from §4.9's temporal-consistenc
 **2026-08-07, PI meeting, several more (student's own commentary marked apart).** Full detail in
 [[pi-meeting-2026-08-07-ideas]]. One item was a real bug, not just an idea, fixed same day: the
 presentation described automask as running with "no prompts at all," which is wrong, it samples
-its own grid of points as prompts, just not a human-placed one. The rest, unscoped:
+its own grid of points as prompts, just not a human-placed one.
 
 - **Per-slice naming doesn't communicate image mode on its own**, worth a rename or a consistent
-  first-use tie-in.
-- **Bounding-box prompting for per-slice, untried**: currently point-only every frame; would adding
-  a box prompt help, framed as a per-slice analogue of propagation's second-pass.
+  first-use tie-in. Cosmetic, not researched, not scoped.
+- **Bounding-box prompting for per-slice.** Now has a real path, see the new §4.5 bullet above;
+  moved out of "unscoped."
+- **Predictor-construction-time tuning** (`mask_threshold`/`max_hole_area`/`max_sprinkle_area`/
+  `fill_hole_area`), a new discovery the same day, not originally one of the PI's items but found
+  while researching them. See the new §4.5 bullet above.
 - **Feed per-frame negative-prompt node info into propagation, not just at the seed.** The large
-  one: propagation's video mode by design only prompts once, but per-slice already computes fresh
-  own/neighbour node positions every frame regardless of method. If that could inform propagation
-  ongoingly rather than only at the anchor, the student's own read is this could functionally erase
-  the per-slice-vs-propagation split this whole results section is built around. Flagged as possibly
-  needing real changes to SAM2's memory/conditioning mechanism, not a usage-level change.
-- **FFN + node-informed agglomeration (student's own opinion, not the PI's).** Sharpens the existing
-  Phase 4 paradigm-gate entry (FFN / affinity + LSD + mutex watershed): the nodes would inform
-  agglomeration specifically, not just seeding/eval. Fold in when Phase 4 is actually scoped.
+  one, researched 2026-08-07 (real deep-research pass against SAM2's actual source, not general
+  knowledge): **real negative, deprioritized.** Verified against `sam2_video_predictor.py`/
+  `sam2_base.py`: a correction only stays in the always-attended memory window for about
+  `num_maskmem-1` (~6) frames before aging out unless promoted to a permanent conditioning frame,
+  and there is no default cap on conditioning-frame count
+  (`max_cond_frames_in_attn=-1`), so forcing permanence risks unbounded compute growth over a long
+  z-stack. Confirmed video-mode correction costs MORE than per-slice, not the same, since any
+  video-mode correction runs the full memory-attention stack while `SAM2ImagePredictor` never does.
+  No precedent found for continuous per-frame correction in dense multi-instance video mode, only
+  error-triggered (not continuous) re-correction for single-object tracking. The hoped-for outcome,
+  erasing the per-slice-vs-propagation split, is not supported: this would cost more than per-slice
+  while the correction's influence fades unless paid for with unbounded compute. Not worth pursuing
+  ahead of the cheaper §4.5 levers above. Revisit only if those stall. Full findings:
+  `sam2-propagation-feasibility-findings.md` (session scratchpad, not yet committed to the repo).
+- **FFN + node-informed agglomeration (student's own opinion, not the PI's).** Researched
+  2026-08-07: real precedent exists only for using skeleton/seed priors at seed-time (FFN itself,
+  SegEM) or at proofreading/evaluation-time (GALA, guided proofreading), nothing found where a live
+  prior arbitrates merge decisions inside agglomeration itself. Either genuinely novel or genuinely
+  unexplored, and it is a different pipeline entirely, not an extension of what is running now.
+  Sharpens the existing Phase 4 paradigm-gate entry (FFN / affinity + LSD + mutex watershed) for
+  when Phase 4 is actually scoped, but premature while the cheaper SAM2-side levers above are
+  untried, consistent with this document's own measurement-first sequencing.
 - **Spill/overfill root-cause investigation, not done.** Real examples, especially propagation:
   fuzzy boundary or raw membrane-intensity ambiguity? Magnitude and mechanism, not just the
-  already-measured rate, and needs real visual confirmation before proposing a fix.
+  already-measured rate, and needs real visual confirmation before proposing a fix. Cheap, no
+  architecture risk, still worth doing regardless of anything else on this list.
 - **MitoNet/NucleoNet as an underfill-prevention filter**, a second application distinct from the
   ridge-map-suppression use already tried this week: keep SAM's own prompting from getting confused
   by an organelle in the first place, extending [[nucleus-capture-underfill]]'s existing
-  selective-generous-multimask lever to mitochondria too.
+  selective-generous-multimask lever to mitochondria too. Infrastructure already exists (both
+  detectors verified generalizing), moderate effort to wire in.
+
+**Net ranking after the 2026-08-07 research pass.** Try, roughly in order: predictor-construction
+tuning (cheapest, zero architecture risk) → spill/overfill root-cause investigation (cheap,
+informs everything else) → MitoNet/NucleoNet as underfill filter (infra exists) → self-derived box
+prompting for per-slice (cheap, no CATMAID dependency). Not now: per-frame negative-prompt
+propagation (real, researched cost that outweighs the hoped-for benefit) and FFN + node-informed
+agglomeration (novel territory, high effort, premature).
 
 ---
 
@@ -1122,6 +1169,33 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
 
 `bigimg` (SAM2 `image_size` 2048) stays retired: it crashes off-distribution and its output would be
 unvalidated; the resolution goal is served by cropping / tiling.
+
+14. **Predictor-construction-time tuning** (Phase 1.5/4.5). READY, not yet tested. Real, currently
+    unused SAM2 knobs found 2026-08-07: `mask_threshold`, `max_hole_area`, `max_sprinkle_area` on
+    `SAM2ImagePredictor`, `fill_hole_area` on `SAM2VideoPredictor`, all verified against the
+    installed source, all sitting at disabled defaults across every chain run so far. Zero
+    architecture risk (constructor kwargs only), directly targets underfill. See §4.5. The cheapest
+    untried lever in this document, worth running before item 15.
+15. **Self-derived box prompting for per-slice** (Phase 1.5/4.5). READY, not yet tested. Run the
+    existing point-only pass once, derive a box from that mask via the already-built
+    `box_from_mask`, re-predict with the box as a per-frame refinement. No CATMAID-radius
+    dependency (that source stays unreliable, see [[catmaid-radius-placeholder]]). See §4.5.
+16. **Spill/overfill root-cause investigation** (Phase 2/4.5). TODO. Real examples, especially
+    propagation: fuzzy boundary vs. raw membrane-intensity ambiguity, magnitude and mechanism, not
+    just the already-measured rate. Requires real visual confirmation before proposing a fix.
+17. **MitoNet/NucleoNet as an underfill-prevention filter** (Phase 2e/2f). TODO, infra exists.
+    Distinct from the ridge-map-suppression use already tried and found near-flat: keep SAM's own
+    prompting from getting confused by an organelle in the first place, extending
+    [[nucleus-capture-underfill]]'s selective-generous-multimask lever to mitochondria too.
+18. **Per-frame negative-prompt propagation** (Phase 4, deprioritized). Researched 2026-08-07: real
+    architectural cost (more expensive than per-slice, correction influence fades within ~6 frames
+    unless made permanent, which risks unbounded compute over a long z-stack), no precedent found.
+    Not worth building ahead of items 14-17. See §4.9's 2026-08-07 PI-meeting block for the full
+    verdict.
+19. **FFN + node-informed agglomeration** (Phase 4, deprioritized). Researched 2026-08-07: real
+    precedent exists only for seed-time or evaluation-time use of priors, not inside agglomeration
+    itself. Novel territory or unexplored territory, high effort, a different pipeline, premature
+    while 14-17 are untried.
 
 ---
 
