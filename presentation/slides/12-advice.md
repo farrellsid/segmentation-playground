@@ -3,8 +3,6 @@
 <div class="mt-1 mx-auto max-w-[62rem] text-left text-[1.05rem] leading-snug">
 
 **Segmentation**
-- The membrane map's own resolution is the real lever: two fixes aimed at its organelle noise
-  both closed negative, both point at the map itself. Higher-res, learned, or finetune SAM directly
 - Keep chipping at the per-method failure modes
 
 **Measurement and QC**
@@ -12,8 +10,9 @@
 - MitoNet and NucleoNet both work, no consumer yet, wire one into a real QC signal
 
 **Correction**
-- Propagation's re-anchoring is validated at full scope (bleed -36%, dropout -81%): close the
-  accept-gate gap, it only checks the frame's own node, not the specific flag that triggered it
+- Propagation's re-anchoring shows a real aggregate improvement at full scope, still checking the
+  actual renders for new visual artifacts before calling it a clean win; also close the accept-gate
+  gap, it only checks the frame's own node, not the specific flag that triggered it
 - Streamline the human review step
 
 </div>

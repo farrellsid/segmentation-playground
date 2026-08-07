@@ -1,11 +1,11 @@
-# And with the correction pass: bleed down 36%, dropout down 81%
+# And with the correction pass applied
 
 <div class="flex justify-center mt-2">
   <video src="/videos/dense-scroll-secondpass.mp4" autoplay loop muted playsinline controls
          style="max-height: 330px; max-width: 92%; object-fit: contain;"></video>
 </div>
 
-<div class="mt-3 text-center opacity-80">Same volume, same colours, propagation's flagged frames re-segmented from their nearest clean neighbour. Full scope, 4,041 chains: bleed rate 27.2% to 17.4%, dropout 14.0% to 2.7%, z-to-z consistency unchanged (0.681 to 0.668).</div>
+<div class="mt-3 text-center opacity-80">Same volume, same colours, propagation's flagged frames re-segmented from their nearest clean neighbour. Aggregate metric improvement measured at full scope; still checking this render for new visual artifacts before trusting it as a clean win.</div>
 
 <!--
 Opening: the propagation video again, now with the second-pass correction applied

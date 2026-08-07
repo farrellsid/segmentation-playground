@@ -4,7 +4,7 @@
   <img src="/images/before-after.png" class="max-h-[52vh] max-w-[92%] object-contain" />
 </div>
 
-<div class="mt-2 text-center opacity-80">URAVR, one slice, a real fix: the SAM2 mask fills most of the neighbouring cell (red node); the SAM3 mask stays inside its own compartment.</div>
+<div class="mt-2 text-center opacity-80">AIAR, one slice, same method (per-slice) both sides, only the backbone changes: the SAM2 mask fills most of the neighbouring cell (red node); the SAM3 mask stays inside its own compartment.</div>
 
 <div class="mt-2 text-center" style="color:#D55E00">The real cost: SAM3 is more conservative (underfill 0.62 to 1.09), so it also misses more of the true cell, plus about 2.2 to 2.5x the compute.</div>
 

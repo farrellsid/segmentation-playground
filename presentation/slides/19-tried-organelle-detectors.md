@@ -1,14 +1,8 @@
 # Already tried: detect the organelles, not their shape
 
 <div class="fig-2 flex justify-center gap-8 mt-2">
-  <div class="text-center">
-    <img src="/images/mitonet-spotcheck.png" style="max-height:230px !important; max-width:100%; object-fit:contain;" />
-    <div class="opacity-70 text-[0.9rem] mt-1">MitoNet: mitochondria</div>
-  </div>
-  <div class="text-center">
-    <img src="/images/nucleonet-spotcheck.png" style="max-height:230px !important; max-width:100%; object-fit:contain;" />
-    <div class="opacity-70 text-[0.9rem] mt-1">NucleoNet: nuclei</div>
-  </div>
+  <img src="/images/mitonet-spotcheck.png" style="max-height:230px !important; max-width:100%; object-fit:contain;" />
+  <img src="/images/nucleonet-spotcheck.png" style="max-height:230px !important; max-width:100%; object-fit:contain;" />
 </div>
 
 <div class="mt-3 mx-auto max-w-[56rem] text-center text-[0.95rem]">
