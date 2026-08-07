@@ -5,7 +5,7 @@
          style="max-height: 330px; max-width: 92%; object-fit: contain;"></video>
 </div>
 
-<div class="mt-3 text-center opacity-80">Propagation's dense map over the same band (z 1293 to 1628), same colours, full 133-neuron scope. Every slice has at least one mask; individual chains still gap before their own anchor establishes, that cost shows up as the dropout rate two slides ahead, not as a frame-level hole here.</div>
+<div class="mt-3 text-center opacity-80">Propagation's dense map over the same band (z 1293 to 1628), same colours, full 133-neuron scope.</div>
 
 <!--
 Opening: the propagation version of the last slide, same volume, same colours, different method

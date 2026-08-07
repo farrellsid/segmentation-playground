@@ -130,9 +130,7 @@ src: ./slides/11-where-it-breaks.md
 src: ./slides/17-tried-autofill.md
 ---
 
----
-src: ./slides/18-tried-temporal.md
----
+<!-- 18-tried-temporal.md pulled from the live deck for now, not verified yet. File kept on disk. -->
 
 ---
 src: ./slides/19-tried-organelle-detectors.md

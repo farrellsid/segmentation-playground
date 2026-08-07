@@ -1,26 +1,21 @@
 # Already tried: detect the organelles, not their shape
 
-<div class="fig-2 flex justify-center gap-6 mt-1">
+<div class="fig-2 flex justify-center gap-8 mt-2">
   <div class="text-center">
-    <img src="/images/mitonet-spotcheck.png" style="max-height:100px !important; max-width:100%; object-fit:contain;" />
-    <div class="opacity-70 text-[0.8rem] mt-1">MitoNet: mitochondria</div>
+    <img src="/images/mitonet-spotcheck.png" style="max-height:230px !important; max-width:100%; object-fit:contain;" />
+    <div class="opacity-70 text-[0.9rem] mt-1">MitoNet: mitochondria</div>
   </div>
   <div class="text-center">
-    <img src="/images/nucleonet-spotcheck.png" style="max-height:100px !important; max-width:100%; object-fit:contain;" />
-    <div class="opacity-70 text-[0.8rem] mt-1">NucleoNet: nuclei</div>
+    <img src="/images/nucleonet-spotcheck.png" style="max-height:230px !important; max-width:100%; object-fit:contain;" />
+    <div class="opacity-70 text-[0.9rem] mt-1">NucleoNet: nuclei</div>
   </div>
 </div>
 
-<div class="mt-2 mx-auto max-w-[56rem] text-[0.88rem] leading-tight">
+<div class="mt-3 mx-auto max-w-[56rem] text-center text-[0.95rem]">
 
 Both real, pretrained EM detectors (empanada, BSD-3-Clause), generalize on sight: tight
-boundaries, no cross-organelle false positives. Real gate, same bleed measurement as the
-membrane-fill slide (z=1456, 117 neurons, `uf_min=0.6`), baseline `new_bleed=7`:
-
-| Organelle mask source | New bleed cells | Moves the floor? |
-|---|---|---|
-| Classical shape/intensity filter | 7 | No, flat |
-| **MitoNet + NucleoNet (real detections)** | **6** | Barely, one cell |
+boundaries, no cross-organelle false positives. But even a correct organelle mask barely dents
+the ridge map's bleed floor, one cell out of 16 to 18 filled at best.
 
 </div>
 
