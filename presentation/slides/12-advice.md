@@ -12,7 +12,8 @@
 - MitoNet and NucleoNet both work, no consumer yet, wire one into a real QC signal
 
 **Correction**
-- Propagation's re-anchoring landed on one chain: broaden it, close the accept-gate gap
+- Propagation's re-anchoring is validated at full scope (bleed -36%, dropout -81%): close the
+  accept-gate gap, it only checks the frame's own node, not the specific flag that triggered it
 - Streamline the human review step
 
 </div>
@@ -27,10 +28,11 @@ last version of this deck
 - measurement: still need a real hand-corrected ground-truth set; the two detectors that already
   work (MitoNet, NucleoNet) are sitting there unused, wiring either one into a real QC signal is
   cheaper than building a new detector from scratch
-- correction: the re-anchoring pass from propagation second-pass already shipped, but it is a
-  first signal on one chain, not a verdict, and it has a known gap (checks "contains its own
-  node", not "the flagged foreign node is gone"), that needs closing before trusting it broadly;
-  human review itself is still the bottleneck underneath all of this
+- correction: the re-anchoring pass from propagation second-pass is now validated at full scope,
+  not just a one-chain signal, real numbers on the video slide a few back; still has a known gap
+  (checks "contains its own node", not "the flagged foreign node is gone"), so the true
+  improvement is probably even larger than what is already shown; human review itself is still
+  the bottleneck underneath all of this
 - open the floor here
 
 Timing: 2 to 3 minutes
