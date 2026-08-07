@@ -103,6 +103,10 @@ src: ./slides/11e-current-work-video-propagation.md
 ---
 
 ---
+src: ./slides/11f-current-work-video-secondpass.md
+---
+
+---
 src: ./slides/07-merge-metric.md
 ---
 
