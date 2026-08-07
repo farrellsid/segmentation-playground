@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-06, propagation second pass: full-scope validation, a real verdict](#r-2026-08-06-second-pass-fullscope)
 - [2026-08-04, NucleoNet recall gap found, MitoNet mitochondria detector spot-checked](#r-2026-08-04-mitonet)
 - [2026-07-30, propagation second pass: neighbour-seeded re-segmentation lands, SAM3 crash found and fixed, accept-gate gap flagged](#r-2026-07-30-second-pass)
 - [2026-07-29, organelle blob suppression: the intensity/texture filter lands, calibrated against real EM, the floor still does not move](#r-2026-07-29-organelle-blob)
@@ -44,6 +45,36 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-06-second-pass-fullscope"></a>
+## 2026-08-06, propagation second pass: full-scope validation, a real verdict
+
+Retro-scored the plain-propagation and propagation+second-pass trees fresh (Phase-0,
+`eval.merge_metric --no-membrane`), full 133-neuron target scope on both, identical 4,041 chains
+and 66,532 frames, a clean apples-to-apples comparison rather than the one curated chain the
+2026-07-30 landing verified. Bleed rate 27.2% to 17.4% (-36% relative), dropout rate 14.0% to 2.7%
+(-81% relative), total foreign nodes 23,993 to 19,537 (-18.6%), mean z-to-z IoU 0.681 to 0.668
+(flat, the temporal-consistency advantage is not traded away for this). Substantially stronger than
+the one-chain spot check suggested, and it holds despite the still-open accept-gate gap from that
+landing (the gate only checks the re-predicted mask contains its own node, not that the specific
+foreign node which triggered the flag is gone), so the true improvement is likely larger than these
+numbers, not smaller. The propagation second-pass feature now reads as a validated win at full
+scope, not an uncalibrated first signal. Also surfaced along the way: the full-scope
+plain-propagation bleed rate (27.2%) is meaningfully higher than the 21.7% quoted elsewhere in this
+document and the presentation deck, which came from a curated 15-neuron matched-comparison subset;
+not a regression, just a different, harder, more representative population, the two numbers measure
+different things and should not be compared as before/after.
+
+Also hit two real problems getting to this data. `cluster/stage_download.sh`'s idempotent skip
+check was presence-only (`-f`, not integrity-checked), so a tarball truncated by an earlier timeout
+would be silently trusted on the next run; fixed to verify with `tar -tzf` and retar on failure
+(caught two previously-unknown corrupt archives on its first real run under the fix, not just the
+one known-truncated tree, see the 2026-08-04 entry below). Separately, local extraction of the two
+big target trees hit F:'s known physical flakiness mid-write ("No such device"), unrelated to the
+tar fix; resolved by reconnecting the drive and retrying cleanly, with the partial extraction
+removed first so the retry was not overlaying stale files.
 
 ---
 
