@@ -63,10 +63,13 @@ eraser.
 The tool is a new `self._lasso` Shapes layer, built by `_new_lasso_layer` alongside `_box` and
 `_prompts` in `open_chain`. `activate_lasso_draw` arms `add_polygon_lasso`, napari's own freehand-loop
 mode, so a drag needs no custom mouse handling. Two ways in: a "draw lasso (L)" dock button next to the
-box button, and the `l` key. The button is the one to trust. napari checks the active layer's own keymap
-before the viewer's, and plain `l` is already taken twice over, by the Shapes line tool and by the Labels
-label picker, so the viewer-level `l` binding loses in exactly the states you tend to be in, right after
-opening a chain or right after a brush correction. A button click never enters that resolution chain.
+box button, and the `l` key. The button is the one to trust. `Shapes.class_keymap` itself holds nothing
+for `l` (only `Shift`), so the shadowing does not come from a per-layer keymap at all: it comes from
+napari's app-model shortcut registry (`get_settings().shortcuts.shortcuts`), which separately maps `L`
+to `napari:activate_add_line_mode` on a Shapes layer and to `napari:activate_labels_picker_mode` on a
+Labels layer. Plain `l` is already claimed twice over there, so the viewer-level `l` binding loses in
+exactly the states you tend to be in, right after opening a chain or right after a brush correction. A
+button click never enters that resolution chain.
 
 On release, `_on_lasso_drawn` (connected to the layer's `data` event) rasterizes the finished loop with
 the standalone, already-tested `_rasterize_lasso_fill` helper and writes the added pixels into the mask

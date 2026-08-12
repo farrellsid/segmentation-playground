@@ -29,8 +29,15 @@ from copy import copy
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import numpy as np
+import pytest
 
 import gui
+
+# napari is a GUI-only dependency (see the "Two layers" note above), not in this
+# project's test/dev extras, so CI does not install it. The two tests below replay
+# napari's real Shapes/ViewerModel draw sequence to catch a reentrancy bug that only
+# reproduces against real napari internals, so they need the real package, not a stub.
+pytest.importorskip("napari")
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +209,63 @@ def test_deferred_clear_empties_the_lasso_layer():
 
     assert len(lasso.data) == 0
     assert int((mask.data[0] == 1).sum()) > 0
+    del app
+
+
+def test_guard_trip_still_clears_the_lasso_layer_out_of_range_frame():
+    """A stroke that trips the frame_idx bounds guard must still end up cleared from
+    the layer, not left stuck: a stuck loop is itself part of what stretches the
+    viewer's dims T-extent past the mask's real extent, so an un-cleared loop is
+    self-sustaining. _on_lasso_drawn now runs its guarded body in a try/finally so the
+    deferred clear fires regardless of which guard returns. Needs a QApplication for
+    the deferred clear to actually fire; quietly no-ops where one cannot be created,
+    matching the tests above."""
+    try:
+        from qtpy.QtCore import QEventLoop, QTimer
+        from qtpy.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+    except Exception:                                   # noqa: BLE001 - optional dep
+        return
+
+    g, lasso, mask = _build_headless_gui()          # mask T extent is 3
+    # stub _current_frame directly rather than parking an extra shape to stretch the
+    # dims T-extent (test_out_of_range_frame_is_ignored's trick): parking a shape
+    # first fires its own ADDED event through the already-connected handler, which
+    # would confuse the shape-count assertions this test cares about
+    g._current_frame = lambda: 99                       # forces the frame_idx guard to trip
+
+    _replay_lasso_stroke(lasso, frame=0)
+    assert len(lasso.data) == 1                         # not cleared yet, by design
+
+    loop = QEventLoop()
+    QTimer.singleShot(100, loop.quit)
+    loop.exec_() if hasattr(loop, "exec_") else loop.exec()
+
+    assert len(lasso.data) == 0, "a guard trip must not leave the loop stuck on the layer"
+    assert not mask.data.any()
+    del app
+
+
+def test_guard_trip_still_clears_the_lasso_layer_no_mask():
+    """Same fix, the other named guard: self._mask is None (e.g. between chains)."""
+    try:
+        from qtpy.QtCore import QEventLoop, QTimer
+        from qtpy.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+    except Exception:                                   # noqa: BLE001 - optional dep
+        return
+
+    g, lasso, mask = _build_headless_gui()
+    g._mask = None
+
+    _replay_lasso_stroke(lasso, frame=0)
+    assert len(lasso.data) == 1                         # not cleared yet, by design
+
+    loop = QEventLoop()
+    QTimer.singleShot(100, loop.quit)
+    loop.exec_() if hasattr(loop, "exec_") else loop.exec()
+
+    assert len(lasso.data) == 0, "a guard trip must not leave the loop stuck on the layer"
     del app
 
 

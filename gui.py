@@ -554,8 +554,9 @@ class ReviewGUI:
         a specific frame (t, y, x); ``scale`` matches the other layers so a drawn loop's
         data coords stay _sam (or _pcrop), the same convention _box/_prompts already
         use. Each finished stroke is consumed immediately by _on_lasso_drawn (unioned
-        into the mask, then removed from this layer), so it never accumulates drawn
-        loops on screen."""
+        into the mask), then removed from this layer one event-loop turn later (via
+        QTimer.singleShot, see _on_lasso_drawn / _clear_lasso for why the removal can't
+        run inline), so it never accumulates drawn loops on screen."""
         layer = self.viewer.add_shapes(
             name="lasso", ndim=3, scale=scale, edge_color=_LASSO_EDGE_COLOR,
             face_color="transparent", edge_width=1.0, opacity=0.8)
@@ -576,31 +577,39 @@ class ReviewGUI:
         this callback from re-triggering on the trim _clear_lasso performs: removing
         the last shape fires REMOVING then REMOVED, never ADDED (confirmed against
         the installed napari 0.7.0's Shapes.data setter directly), so that self-write
-        is naturally ignored rather than needing a guard flag."""
+        is naturally ignored rather than needing a guard flag.
+
+        The guarded body below runs inside a try/finally so the deferred clear always
+        fires, even when a guard returns early: a loop left un-cleared would sit on
+        the layer forever, and it would also keep stretching the viewer's dims
+        T-extent past the mask's real extent (see the frame_idx guard below), which
+        is itself part of how a stroke can end up on an out-of-range frame."""
         from napari.layers.base import ActionType
         if event is not None and getattr(event, "action", None) != ActionType.ADDED:
             return
-        if self._lasso is None or self._mask is None or self.data is None:
-            return
-        shapes_data = self._lasso.data
-        if not len(shapes_data):
-            return
-        verts = np.asarray(shapes_data[-1], dtype=float)
-        frame_idx = self._current_frame()
-        if not (0 <= frame_idx < len(self._mask.data)):
-            return
-        on_frame = np.round(verts[:, 0]).astype(int) == frame_idx
-        polygon_yx = verts[on_frame][:, 1:]                    # drop t -> (y, x)
-        if len(polygon_yx) >= 3:
-            mask_hw = np.asarray(self._mask.data[frame_idx] == self.data.obj_id)
-            new_mask = _rasterize_lasso_fill(mask_hw, polygon_yx)
-            added = new_mask & ~mask_hw
-            ys, xs = np.nonzero(added)
-            if len(ys):
-                ts = np.full(len(ys), frame_idx, dtype=int)
-                self._mask.data_setitem((ts, ys, xs), self.data.obj_id)
         from qtpy.QtCore import QTimer
-        QTimer.singleShot(0, self._clear_lasso)
+        try:
+            if self._lasso is None or self._mask is None or self.data is None:
+                return
+            shapes_data = self._lasso.data
+            if not len(shapes_data):
+                return
+            verts = np.asarray(shapes_data[-1], dtype=float)
+            frame_idx = self._current_frame()
+            if not (0 <= frame_idx < len(self._mask.data)):
+                return
+            on_frame = np.round(verts[:, 0]).astype(int) == frame_idx
+            polygon_yx = verts[on_frame][:, 1:]                # drop t -> (y, x)
+            if len(polygon_yx) >= 3:
+                mask_hw = np.asarray(self._mask.data[frame_idx] == self.data.obj_id)
+                new_mask = _rasterize_lasso_fill(mask_hw, polygon_yx)
+                added = new_mask & ~mask_hw
+                ys, xs = np.nonzero(added)
+                if len(ys):
+                    ts = np.full(len(ys), frame_idx, dtype=int)
+                    self._mask.data_setitem((ts, ys, xs), self.data.obj_id)
+        finally:
+            QTimer.singleShot(0, self._clear_lasso)
 
     def _clear_lasso(self) -> None:
         """Drop the consumed shape from self._lasso. Deferred (via
@@ -608,12 +617,24 @@ class ReviewGUI:
         'data' event: napari's own Shapes.data setter starts with an unconditional
         _finish_drawing() call, and assigning .data from INSIDE the event that
         _finish_drawing() itself just emitted re-enters that same _finish_drawing()
-        call while it is still mid-flight (index not yet reset), crashing with a
+        call while its shape index is already reset to None, crashing with a
         TypeError on every real stroke (found by the final whole-branch review,
         reproduced headlessly by replaying napari's real draw sequence against a
         ViewerModel). Deferring to the next event-loop turn lets the outer
         _finish_drawing() call complete first, so the nested one it would otherwise
-        trigger never happens."""
+        trigger never happens.
+
+        Latent-race hardening: if a second stroke is already mid-flight (napari's
+        own _is_creating is True) at the moment this deferred clear fires, wiping
+        self._lasso.data now would pull the rug out from under that in-progress
+        stroke's own _finish_drawing(). No realistic GUI path has been found that
+        triggers this (the deferred timer reliably fires before the next stroke's
+        input dispatch in practice), but re-queuing the clear for the following turn
+        instead of running it is cheap insurance."""
+        if self._lasso is not None and self._lasso._is_creating:
+            from qtpy.QtCore import QTimer
+            QTimer.singleShot(0, self._clear_lasso)   # a stroke is mid-flight, try again next turn
+            return
         if self._lasso is not None and len(self._lasso.data):
             self._lasso.data = self._lasso.data[:-1]
 

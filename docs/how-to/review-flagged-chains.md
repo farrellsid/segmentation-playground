@@ -45,9 +45,10 @@ A frame slider (top/bottom) scrubs through the chain by **frame index**. Layers
 | Layer | What it is | Editable? |
 |---|---|---|
 | **box** | A blue bounding box, an optional seed for the image-phase re-predict (see §5b). One per frame; pre-loaded with the chain's *original* box at the anchor frame. | **Yes**, press `B` (or "draw box") then drag; select+delete to remove |
+| **lasso** | An orange freehand loop for extending a mask. Press `L` (or "draw lasso") then drag a loop over the area to add; on release it unions into the mask. Addition only, if you draw too much, remove it with the mask's own eraser. | **Yes**, press `L` (or "draw lasso") then drag |
 | **prompts** | The SAM2 seed points: **green = positive**, **red = negative**. Pre-loaded with the chain's *original* seed at the anchor frame. | **Yes**, click to add (in *add* mode), select+delete to remove |
 | **skeleton** | Yellow dots = this chain's CATMAID skeleton nodes per slice. Context only, these are *not* the SAM prompts. | No |
-| **mask** | The segmentation, as a paintable label layer. **Paint here** to correct a mask by hand. | **Yes**, napari brush/eraser; `Ctrl+Z` undoes |
+| **mask** | The segmentation, as a paintable label layer. **Paint here** to correct a mask by hand. | **Yes**, napari brush/eraser; `Ctrl+Z` undoes. A viewer-level fallback routes `Ctrl+Z` here even when another layer (e.g. lasso) is active |
 | **EM** | The electron-microscopy image. | No |
 
 The dock panel on the right is grouped: **chains · frames (this chain) ·
@@ -97,6 +98,7 @@ CHAIN cycle, and `↻ refresh queue` re-reads from disk in whichever mode you're
 | `.` / `,` | next / prev flagged **frame** (this chain) |
 | `p` / `n` | set new prompt points to **p**ositive / **n**egative |
 | `B` | **draw box**, activate the box layer to drag a bounding box on this frame |
+| `L` | **draw lasso**, activate the lasso layer to drag a freehand loop that unions into the mask on release |
 | `R` | **re-run image phase**, re-predict the anchor mask from the current points and/or box |
 | `G` | **resume propagation**, re-track from the current frame over the correction |
 | `S` | **save masks**, persist the current mask layer to disk now (no QC/propagation) |
@@ -105,6 +107,11 @@ CHAIN cycle, and `↻ refresh queue` re-reads from disk in whichever mode you're
 | `W` / `O` | mark the current **frame** **w**rong / **o**k (uses the error-type picker) |
 | `A` / `X` | **approve** / **reject** the whole **chain** |
 | `Z` | zoom the camera back onto the mask |
+| `Ctrl+Z` | undo, works from any layer, not just mask (falls back to the mask's own undo) |
+
+`L` can occasionally be shadowed by napari's own keybindings depending on which layer is
+active, so the "draw lasso (L)" dock button next to "draw box" is the reliable way to
+activate it.
 
 Most actions also have buttons in the dock. The per-frame **mark wrong** / **mark ok**
 are keyboard-only (`W` / `O`); their buttons were dropped to keep the dock compact. The
