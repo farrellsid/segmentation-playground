@@ -239,9 +239,17 @@ def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
                          recorded_anchor_idx, *, chain: dict, cw,
                          cfg: "pipeline.PipelineConfig", annotate_df: pd.DataFrame,
                          anchor_catmaid_z: int, neuron: str, chain_idx: int,
-                         anchor_only: bool = False) -> tuple[str, dict, int]:
+                         anchor_only: bool = False, context_frames: int = 0
+                         ) -> tuple[str, dict, int]:
     """(frames_dir, frame_to_z, anchor_frame_idx) actually usable locally: the
     recorded ones if present and `anchor_only` is not set, else freshly (re)prepared.
+
+    ``context_frames`` widens the anchor_only window symmetrically (anchor_catmaid_z
+    +/- context_frames instead of just the anchor z itself), for reviewing a mask
+    with a couple of neighbouring frames as context without paying for the whole
+    chain. Only takes effect when ``anchor_only`` is also set; ignored otherwise
+    (the full chain is already loaded, "context" is meaningless there). 0 (the
+    default) reproduces the original single-frame anchor_only behaviour exactly.
 
     ``anchor_frame_idx`` matters as much as ``frame_to_z`` here and is easy to get
     wrong: a narrowed ``frame_to_z`` (anchor_only) puts the anchor at LOCAL index 0,
@@ -275,13 +283,16 @@ def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
     if have_recorded and not anchor_only:
         return recorded_frames_dir, recorded_frame_to_z, recorded_anchor_idx
 
-    z_range = (anchor_catmaid_z, anchor_catmaid_z) if anchor_only else None
+    context = max(0, int(context_frames))
+    z_range = ((anchor_catmaid_z - context, anchor_catmaid_z + context)
+              if anchor_only else None)
     if not have_recorded:
         print(f"[gui] recorded frames_dir not found locally ({recorded_frames_dir}), "
              f"likely a stale Narval scratch path; regenerating from the source tifs"
-             f"{' (anchor only)' if anchor_only else ''}...")
+             f"{f' (anchor +/- {context})' if anchor_only else ''}...")
     elif anchor_only:
-        print("[gui] --anchor-only: preparing just the anchor frame ...")
+        print(f"[gui] --anchor-only: preparing the anchor frame "
+             f"{f'+/- {context} frames of context' if context else '(just the anchor)'} ...")
     if cw is not None:
         frames_dir, frame_to_z, anchor_idx, _n = pipeline.prepare_chain_crop_frames(
             chain, annotate_df, cw, frames_root=cfg.frames_root,
@@ -347,7 +358,7 @@ class ReviewGUI:
     def __init__(self, ctx: ReviewContext, *, reviewer: str = "", viewer=None,
                  point_size: float = 4.0, auto_zoom: bool = True, zoom_pad: float = 3.0,
                  hires_em: bool = False, em_scale: Optional[int] = None,
-                 anchor_only: bool = False):
+                 anchor_only: bool = False, context_frames: int = 0):
         """
         point_size : default diameter of prompt/skeleton points, in _sam px (was 10;
                      4 is unobtrusive at scale-8). Tune live via the dock spinbox.
@@ -373,6 +384,12 @@ class ReviewGUI:
                      resume_propagation (`G`) do not make sense with only one frame
                      loaded; resume_propagation refuses with a clear message instead
                      of silently doing something degenerate.
+        context_frames : with anchor_only, load this many frames of context on each
+                     side of the anchor (e.g. 2 -> 5 frames total) instead of just the
+                     anchor frame alone, so `,`/`.` can scrub a couple of frames either
+                     way to see how the mask should look. Ignored when anchor_only is
+                     False (the whole chain is already loaded). 0 (default) reproduces
+                     plain anchor_only's original single-frame behaviour.
         """
         import napari
         self.ctx = ctx
@@ -381,6 +398,7 @@ class ReviewGUI:
         self.auto_zoom = bool(auto_zoom)
         self.zoom_pad = float(zoom_pad)
         self.anchor_only = bool(anchor_only)
+        self.context_frames = max(0, int(context_frames))
         # em_scale selects the raw-EM backdrop downscale: 1 = full res (the old --hires-em),
         # 2 = half, 4 = quarter. None means the scale-8 JPEGs. An explicit em_scale wins over
         # --hires-em; --hires-em alone means em_scale=1.
@@ -453,14 +471,18 @@ class ReviewGUI:
                 self._state.frames_dir, self._state.frame_to_z, self._state.anchor_frame_idx,
                 chain=self.chain, cw=self._cw, cfg=self.ctx.cfg,
                 annotate_df=self.ctx.annotate_df, anchor_catmaid_z=self._state.anchor_catmaid_z,
-                neuron=neuron, chain_idx=chain_idx, anchor_only=self.anchor_only)
+                neuron=neuron, chain_idx=chain_idx, anchor_only=self.anchor_only,
+                context_frames=self.context_frames)
 
         # rebuild the overlay from disk (one definition of "how a mask is read").
         # anchor_idx MUST come from the same source as frame_to_z: a narrowed
-        # (anchor_only) frame_to_z puts the anchor at local index 0, not wherever it
-        # sat in the recorded state.json (real bug caught testing this: AIAR
-        # chain_00's anchor was frame 43 of 88, leaving anchor_idx=43 against a
-        # 1-frame stack breaks every anchor-detection check downstream).
+        # (anchor_only) frame_to_z puts the anchor at a LOCAL index (0 with no
+        # context_frames, context_frames otherwise), not wherever it sat in the
+        # recorded state.json (real bug caught testing this: AIAR chain_00's anchor
+        # was frame 43 of 88, leaving anchor_idx=43 against a 1-frame stack breaks
+        # every anchor-detection check downstream). prepare_chain_crop_frames /
+        # prepare_video_frames already compute the correct local anchor_idx for
+        # whatever z_range they were given, so no extra offset math is needed here.
         self.data = review.load_chain(chain_dir, frames_dir=frames_dir_override,
                                       frame_to_z=frame_to_z_override,
                                       anchor_idx=anchor_idx_override,
@@ -905,11 +927,13 @@ class ReviewGUI:
         if self.data is None or self._recrop_picking:
             return
         if self.anchor_only:
-            print("[gui] resume propagation is disabled in --anchor-only mode (only the "
-                 "anchor frame's video is loaded, propagating through it would not track "
-                 "anything real); use 'save masks now' to save the painted anchor, and "
-                 "run the actual propagation as a separate step (e.g. "
-                 "experiments/propagate_from_corrected_seed.py).")
+            loaded = ("only the anchor frame's video is loaded" if not self.context_frames
+                     else f"only a narrow +/-{self.context_frames}-frame context window "
+                          "is loaded, not the whole chain")
+            print(f"[gui] resume propagation is disabled in --anchor-only mode ({loaded}, "
+                 "propagating through it would not track anything real); use 'save masks "
+                 "now' to save the painted anchor, and run the actual propagation as a "
+                 "separate step (e.g. experiments/propagate_from_corrected_seed.py).")
             return
         self.ctx.ensure_predictors(need_image=False, need_video=True)
         frame_idx = self._current_frame()
@@ -1628,15 +1652,16 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
            cfg: Optional[pipeline.PipelineConfig] = None, block: bool = True,
            point_size: float = 4.0, auto_zoom: bool = True, hires_em: bool = False,
            em_scale: Optional[int] = None, anchor_only: bool = False,
-           source: Optional[Path] = None) -> ReviewGUI:
+           context_frames: int = 0, source: Optional[Path] = None) -> ReviewGUI:
     """Open the review GUI. With ``neuron``/``chain_idx`` it opens straight onto a
     chain; otherwise it opens on the first pending chain (or an empty viewer if the
     queue is empty). ``block=True`` runs napari's event loop (call from a script);
     pass False from an interactive napari/IPython session that already has one.
 
-    ``point_size`` / ``auto_zoom`` / ``hires_em`` / ``anchor_only`` forward to
-    ReviewGUI (smaller prompt points, zoom-to-mask on open, full-res EM background,
-    only-load-the-anchor-frame; see ReviewGUI).
+    ``point_size`` / ``auto_zoom`` / ``hires_em`` / ``anchor_only`` / ``context_frames``
+    forward to ReviewGUI (smaller prompt points, zoom-to-mask on open, full-res EM
+    background, only-load-the-anchor-frame, +/- N frames of context around it; see
+    ReviewGUI).
 
     ``source``, when given together with ``neuron``, auto-provisions ``output_root``
     from ``source`` via experiments.make_review_tree the FIRST time that neuron is
@@ -1662,7 +1687,7 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
     ctx = ReviewContext(Path(output_root), cfg)
     gui = ReviewGUI(ctx, reviewer=reviewer, point_size=point_size,
                     auto_zoom=auto_zoom, hires_em=hires_em, em_scale=em_scale,
-                    anchor_only=anchor_only)
+                    anchor_only=anchor_only, context_frames=context_frames)
     if neuron is not None and chain_idx is not None:
         gui.open_chain(neuron, int(chain_idx))
     else:
@@ -1714,6 +1739,11 @@ def main() -> None:
                     help="only load the anchor frame of each chain opened this session, "
                          "not the whole chain (fast open, no frame-stepping/resume-propagation; "
                          "for an 'only fix the seed' workflow, see gui.py's ReviewGUI docstring)")
+    ap.add_argument("--context-frames", type=int, default=0,
+                    help="with --anchor-only, load this many frames of context on each side "
+                         "of the anchor (e.g. 2 = 5 frames total) instead of just the anchor "
+                         "frame alone, so ,/. can scrub a little context; ignored without "
+                         "--anchor-only")
     ap.add_argument("--source", type=str, default=None,
                     help="original tree to auto-provision --neuron from into --output-root "
                          "if it is not there yet (skips experiments/make_review_tree.py as a "
@@ -1723,6 +1753,7 @@ def main() -> None:
            neuron=args.neuron, chain_idx=args.chain, reviewer=args.reviewer,
            point_size=args.point_size, auto_zoom=not args.no_auto_zoom, hires_em=args.hires_em,
            em_scale=args.em_scale, anchor_only=args.anchor_only,
+           context_frames=args.context_frames,
            source=Path(args.source) if args.source else None)
 
 

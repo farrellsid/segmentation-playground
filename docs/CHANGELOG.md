@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-12, review-session follow-ups: a shared before/after crop window, --anchor-only context frames](#r-2026-08-12-review-followups)
 - [2026-08-12, lasso-add mask tool: a freehand loop unions into the current frame's mask, undo-compatible with the paint brush](#r-2026-08-12-lasso-add)
 - [2026-08-12, `--anchor-only` prompt-seeding bug: prompts/box placed off the narrowed frame, explaining a "0/56" report](#r-2026-08-12-anchor-only-seed-bug)
 - [2026-08-10, propagation from manually verified multi-frame seeds: mechanism verified, driver built](#r-2026-08-10-propagate-from-verified)
@@ -49,6 +50,49 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-12-review-followups"></a>
+## 2026-08-12, review-session follow-ups: a shared before/after crop window, --anchor-only context frames
+
+Two small requests from a real AIAL/AIAR review pass, both landed the same day as the lasso tool.
+
+**`experiments/report_assets.py`'s before/after renders now share one crop window, computed from the
+AFTER (revised) tree.** Previously `chain-gif`/`neuron-gif` each computed their own window from
+whichever tree they were rendering: the union of that tree's own mask extent across every z, padded.
+Called once for a before tree and once for an after tree, as the module's own usage examples showed,
+the two windows could drift apart the moment a correction changed the mask's footprint (the lasso tool
+extending it outward, or a box-seed re-predict pulling it in), cropping the before render short of
+where the after mask now reaches, or vice versa. `_load_chains_masks`/`_compute_window` are pulled out
+of `build_view` as their own functions; `build_view`/`render` take an optional `window` (wx0, wy0, wx1,
+wy1 in _sam px) and use it as-is instead of recomputing one; a new `render_before_after` computes the
+window once from the AFTER tree and renders both sides to it. Two new CLI subcommands,
+`chain-gif-pair` and `neuron-gif-pair`, wrap this for the common case (the old single-tree
+`chain-gif`/`neuron-gif` are unchanged, still compute their own window, for anyone rendering just one
+side). Verified against real data (AIAL chain_00, before tree
+`resolution_experiments/target_perslice_only_guard_sam3_merged`, after tree
+`manual_verify_AIAL_AIAR`): both renders come back at the identical `378x375`, 113 frames each, not a
+coincidence of the code, the shared window forces it.
+
+**`gui.py --anchor-only` gained `--context-frames <n>`.** A real gap surfaced while reviewing: seeing
+only the anchor frame in isolation makes it hard to judge whether a correction actually matches how
+the mask should look a slice or two either way. `--context-frames n` widens the prepared z_range from
+`(anchor_z, anchor_z)` to `(anchor_z - n, anchor_z + n)`, so `,`/`.` can scrub a little context around
+the seed without paying for the whole chain's regeneration cost `--anchor-only` exists to avoid.
+Threaded through `_ensure_local_frames` (only takes effect when `anchor_only` is also set, ignored
+otherwise) down to `ReviewGUI.__init__`, `launch()`, and a new `main()` CLI flag. No new bug this
+time: `prepare_chain_crop_frames`/`prepare_video_frames` already compute the correct LOCAL anchor
+index for whatever `z_range` they are given (this is the same code path `anchor_only`'s single-frame
+case already exercised, just with a wider range), so nothing downstream needed the kind of anchor-index
+offset fix the 2026-08-12 `--anchor-only` seed-prompting bug (below) needed. Verified against real
+data (AIAL chain_03, anchor z=1518, `--context-frames 2`): exactly 5 frames prepared,
+`{0: 1516, 1: 1517, 2: 1518, 3: 1519, 4: 1520}`, anchor at local index 2.
+
+`docs/reference/cli.md`'s `gui.py` table also picked up `--anchor-only` and `--source`, both landed
+earlier in the day but never documented there.
+
+343 passed, 1 skipped; ruff clean; no dashes.
 
 ---
 

@@ -13,13 +13,26 @@ its own small frames_dir + segments dict directly from a tree's saved masks
 on ANY tree (a per-slice "before" tree or a `propagate_from_verified.py` "after" tree)
 without needing that tree to have ever been opened in a GUI.
 
-    # whole-neuron merged render, before vs after
+    # whole-neuron merged render, before vs after, EACH SIDE computes its own window
     py -3 experiments/report_assets.py neuron-gif --tree <before-tree> --neuron AIYL --out before.gif
     py -3 experiments/report_assets.py neuron-gif --tree <after-tree>  --neuron AIYL --out after.gif
 
-    # one chain, before vs after
+    # one chain, before vs after, EACH SIDE computes its own window
     py -3 experiments/report_assets.py chain-gif --tree <before-tree> --neuron AIYL --chain 0 --out before_c0.gif
     py -3 experiments/report_assets.py chain-gif --tree <after-tree>  --neuron AIYL --chain 0 --out after_c0.gif
+
+    # one chain, before vs after, BOTH SIDES cropped to the AFTER (revised) mask's own
+    # window: use this instead of two separate chain-gif calls whenever the correction
+    # may have changed the mask's extent (e.g. the lasso tool extending it outward),
+    # since two independently-computed windows can drift apart and make the pair
+    # visually misleading (the after render's own new area cropped off by the
+    # before-derived window, or vice versa).
+    py -3 experiments/report_assets.py chain-gif-pair --before <before-tree> --after <after-tree> \
+        --neuron AIYL --chain 0 --out-before before_c0.gif --out-after after_c0.gif
+
+    # whole-neuron merged render, before vs after, BOTH SIDES cropped to the AFTER tree's window
+    py -3 experiments/report_assets.py neuron-gif-pair --before <before-tree> --after <after-tree> \
+        --neuron AIYL --out-before before.gif --out-after after.gif
 
     # whole-neuron before/after metrics table
     py -3 experiments/report_assets.py metrics --before <before-tree> --after <after-tree> --neuron AIYL
@@ -30,6 +43,7 @@ import argparse
 import shutil
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -50,19 +64,12 @@ def _neuron_chain_idxs(tree: Path, neuron: str) -> list[int]:
     return sorted(int(p.name.split("_")[-1]) for p in ndir.glob("chain_*") if p.is_dir())
 
 
-def build_view(tree: Path, neuron: str, chain_idxs: list[int], tmp_dir: Path
-              ) -> tuple[Path, dict, dict]:
-    """A 0-indexed JPEG sequence + {frame_idx: {chain_idx+1: mask}} over the UNION
-    z-range of the given chains in `tree`, cropped to a FIXED window covering every
-    mask across every z (padded), not the whole raw frame: a small chain's mask is
-    imperceptible against a full worm cross-section, the same "invisible mask at
-    full-frame scale" problem this session already hit with a micro_sam spot-check
-    and fixed the same way there. Each chain gets a stable colour (chain_idx + 1, so
-    a single-chain render and a whole-neuron render use the same colour for the same
-    chain). Returns (frames_dir, segments, frame_to_z)."""
-    PAD = 40
+def _load_chains_masks(tree: Path, neuron: str, chain_idxs: list[int]) -> dict:
+    """{chain_idx: chain_masks_in_sam(chain_dir)} for every chain that has masks in
+    `tree`. Shared by build_view and render_before_after so a window computed from
+    ONE tree's masks (typically the AFTER/revised tree) can be reused when rendering
+    a DIFFERENT tree (typically the BEFORE tree)."""
     chains_masks = {}
-    all_z: set[int] = set()
     for ci in chain_idxs:
         cdir = tree / neuron / f"chain_{ci:02d}"
         if not cdir.exists():
@@ -70,7 +77,48 @@ def build_view(tree: Path, neuron: str, chain_idxs: list[int], tmp_dir: Path
         masks = pipeline.chain_masks_in_sam(cdir)
         if masks:
             chains_masks[ci] = masks
-            all_z |= set(masks.keys())
+    return chains_masks
+
+
+def _compute_window(chains_masks: dict, full_hw: tuple, pad: int = 40
+                    ) -> tuple[int, int, int, int]:
+    """(wx0, wy0, wx1, wy1) in _sam px: the union of every mask's extent across every
+    z in ``chains_masks``, padded and clipped to ``full_hw``. Extracted out of
+    build_view so a window computed from one tree can be reused verbatim when
+    rendering a different tree (see render_before_after): a correction that changes
+    a mask's spatial extent (e.g. the lasso tool extending it outward) would
+    otherwise make the before and after renders crop to two different, drifting
+    windows, misleading rather than clarifying the comparison."""
+    H, W = full_hw
+    xs0, ys0, xs1, ys1 = [], [], [], []
+    for masks in chains_masks.values():
+        for mask, x0, y0 in masks.values():
+            if not mask.any():
+                continue
+            h, w = mask.shape
+            xs0.append(x0); ys0.append(y0); xs1.append(x0 + w); ys1.append(y0 + h)
+    if not xs0:
+        raise SystemExit("[report] every mask given to _compute_window is empty")
+    wx0, wy0 = max(0, min(xs0) - pad), max(0, min(ys0) - pad)
+    wx1, wy1 = min(W, max(xs1) + pad), min(H, max(ys1) + pad)
+    return wx0, wy0, wx1, wy1
+
+
+def build_view(tree: Path, neuron: str, chain_idxs: list[int], tmp_dir: Path, *,
+               window: Optional[tuple] = None) -> tuple[Path, dict, dict]:
+    """A 0-indexed JPEG sequence + {frame_idx: {chain_idx+1: mask}} over the UNION
+    z-range of the given chains in `tree`, cropped to a FIXED window covering every
+    mask across every z (padded), not the whole raw frame: a small chain's mask is
+    imperceptible against a full worm cross-section, the same "invisible mask at
+    full-frame scale" problem this session already hit with a micro_sam spot-check
+    and fixed the same way there. Each chain gets a stable colour (chain_idx + 1, so
+    a single-chain render and a whole-neuron render use the same colour for the same
+    chain). ``window`` (wx0, wy0, wx1, wy1 in _sam px), when given, is used AS-IS
+    instead of computed from this tree's own masks: this is what lets a before/after
+    pair share one window via render_before_after, typically the AFTER/revised
+    tree's own extent. Returns (frames_dir, segments, frame_to_z)."""
+    chains_masks = _load_chains_masks(tree, neuron, chain_idxs)
+    all_z = {z for masks in chains_masks.values() for z in masks}
     if not all_z:
         raise SystemExit(f"[report] no masks for {neuron} chains {chain_idxs} in {tree}")
 
@@ -83,20 +131,11 @@ def build_view(tree: Path, neuron: str, chain_idxs: list[int], tmp_dir: Path
     _em0, full_hw = pipeline.load_frame_sam(zs[0], scale=SCALE)
     H, W = full_hw
 
-    # pass 1: the fixed window, union of every mask's extent across every z
-    xs0, ys0, xs1, ys1 = [], [], [], []
-    for masks in chains_masks.values():
-        for mask, x0, y0 in masks.values():
-            if not mask.any():
-                continue
-            h, w = mask.shape
-            xs0.append(x0); ys0.append(y0); xs1.append(x0 + w); ys1.append(y0 + h)
-    if not xs0:
-        raise SystemExit(f"[report] every mask for {neuron} chains {chain_idxs} in {tree} is empty")
-    wx0, wy0 = max(0, min(xs0) - PAD), max(0, min(ys0) - PAD)
-    wx1, wy1 = min(W, max(xs1) + PAD), min(H, max(ys1) + PAD)
+    if window is None:
+        window = _compute_window(chains_masks, full_hw)
+    wx0, wy0, wx1, wy1 = window
 
-    # pass 2: crop EM + masks to that fixed window for every z
+    # crop EM + masks to that window for every z
     segments: dict[int, dict[int, np.ndarray]] = {}
     for i, z in enumerate(zs):
         em, _ = pipeline.load_frame_sam(z, scale=SCALE)
@@ -121,15 +160,18 @@ def build_view(tree: Path, neuron: str, chain_idxs: list[int], tmp_dir: Path
 
 
 def render(tree: Path, neuron: str, chain_idxs: list[int], out_path: Path, *,
-          fmt: str, preview_scale: int = 1, keep_frames: bool = False) -> Path:
+          fmt: str, preview_scale: int = 1, keep_frames: bool = False,
+          window: Optional[tuple] = None) -> Path:
     """preview_scale default is 1 (no further downscale): the window this crops to is
     already small (one or a few branches, tens to a few hundred px), unlike to_gif's
     own default of 4 which assumes a full SCALE=8 frame. A whole-neuron render
     spanning a wide-spread arbor may want preview_scale=2 to keep the file size
-    reasonable; pass it explicitly."""
+    reasonable; pass it explicitly. ``window``, when given, is forwarded to
+    build_view as-is (see render_before_after)."""
     tag = "_".join(f"c{ci:02d}" for ci in chain_idxs) if len(chain_idxs) <= 4 else "all"
     tmp_dir = TMP_ROOT / f"{neuron}_{tag}_{tree.name}"
-    frames_dir, segments, _frame_to_z = build_view(tree, neuron, chain_idxs, tmp_dir)
+    frames_dir, segments, _frame_to_z = build_view(tree, neuron, chain_idxs, tmp_dir,
+                                                   window=window)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "gif":
@@ -142,6 +184,30 @@ def render(tree: Path, neuron: str, chain_idxs: list[int], out_path: Path, *,
         shutil.rmtree(tmp_dir)
     print(f"[report] wrote {out_path} ({len(segments)} frames, chains {chain_idxs})")
     return out_path
+
+
+def render_before_after(before_tree: Path, after_tree: Path, neuron: str,
+                        chain_idxs: list[int], out_before: Path, out_after: Path, *,
+                        fmt: str = "gif", preview_scale: int = 1) -> tuple[Path, Path]:
+    """Render a before/after pair to the SAME crop window, computed once from the
+    AFTER (revised) tree's own masks and reused for both sides. Without this, each
+    side would compute its own window from its own masks, and a correction that
+    changes a mask's spatial extent (e.g. the lasso tool extending it outward, or a
+    box-seed re-predict pulling it in) makes the two windows drift apart: the before
+    render can crop off the very area the after render newly covers, or vice versa,
+    undermining the comparison the report exists to make."""
+    after_masks = _load_chains_masks(after_tree, neuron, chain_idxs)
+    all_z = {z for masks in after_masks.values() for z in masks}
+    if not all_z:
+        raise SystemExit(f"[report] no AFTER masks for {neuron} chains {chain_idxs} in {after_tree}")
+    _em0, full_hw = pipeline.load_frame_sam(min(all_z), scale=SCALE)
+    window = _compute_window(after_masks, full_hw)
+
+    before_path = render(before_tree, neuron, chain_idxs, out_before,
+                         fmt=fmt, preview_scale=preview_scale, window=window)
+    after_path = render(after_tree, neuron, chain_idxs, out_after,
+                        fmt=fmt, preview_scale=preview_scale, window=window)
+    return before_path, after_path
 
 
 def metrics_before_after(before_tree: Path, after_tree: Path, neuron: str) -> None:
@@ -181,6 +247,29 @@ def main(argv=None):
     p_chain.add_argument("--out", required=True)
     p_chain.add_argument("--fmt", choices=["gif", "mp4"], default="gif")
 
+    p_chain_pair = sub.add_parser(
+        "chain-gif-pair",
+        help="before/after single-chain render, both sides cropped to the AFTER tree's window")
+    p_chain_pair.add_argument("--before", required=True)
+    p_chain_pair.add_argument("--after", required=True)
+    p_chain_pair.add_argument("--neuron", required=True)
+    p_chain_pair.add_argument("--chain", type=int, required=True)
+    p_chain_pair.add_argument("--out-before", required=True)
+    p_chain_pair.add_argument("--out-after", required=True)
+    p_chain_pair.add_argument("--fmt", choices=["gif", "mp4"], default="gif")
+    p_chain_pair.add_argument("--preview-scale", type=int, default=1)
+
+    p_neuron_pair = sub.add_parser(
+        "neuron-gif-pair",
+        help="before/after whole-neuron render, both sides cropped to the AFTER tree's window")
+    p_neuron_pair.add_argument("--before", required=True)
+    p_neuron_pair.add_argument("--after", required=True)
+    p_neuron_pair.add_argument("--neuron", required=True)
+    p_neuron_pair.add_argument("--out-before", required=True)
+    p_neuron_pair.add_argument("--out-after", required=True)
+    p_neuron_pair.add_argument("--fmt", choices=["gif", "mp4"], default="gif")
+    p_neuron_pair.add_argument("--preview-scale", type=int, default=1)
+
     p_metrics = sub.add_parser("metrics", help="before/after merge-metric comparison")
     p_metrics.add_argument("--before", required=True)
     p_metrics.add_argument("--after", required=True)
@@ -194,6 +283,16 @@ def main(argv=None):
         render(tree, args.neuron, chain_idxs, Path(args.out), fmt=args.fmt)
     elif args.cmd == "chain-gif":
         render(Path(args.tree), args.neuron, [args.chain], Path(args.out), fmt=args.fmt)
+    elif args.cmd == "chain-gif-pair":
+        render_before_after(Path(args.before), Path(args.after), args.neuron, [args.chain],
+                            Path(args.out_before), Path(args.out_after), fmt=args.fmt,
+                            preview_scale=args.preview_scale)
+    elif args.cmd == "neuron-gif-pair":
+        after_tree = Path(args.after)
+        chain_idxs = _neuron_chain_idxs(after_tree, args.neuron)
+        render_before_after(Path(args.before), after_tree, args.neuron, chain_idxs,
+                            Path(args.out_before), Path(args.out_after), fmt=args.fmt,
+                            preview_scale=args.preview_scale)
     elif args.cmd == "metrics":
         metrics_before_after(Path(args.before), Path(args.after), args.neuron)
 

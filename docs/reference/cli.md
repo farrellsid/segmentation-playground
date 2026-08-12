@@ -47,6 +47,9 @@ The napari review and correction GUI.
 | `--no-auto-zoom` | Do not auto-zoom to the mask on open. |
 | `--hires-em` | Load the full-resolution EM as the background. Shorthand for `--em-scale 1`. |
 | `--em-scale <n>` | Load the raw EM backdrop downscaled by `n` (1 = full res, same as `--hires-em`; 2 = half; 4 = quarter), for a lighter-memory backdrop. Useful on cluster runs where the scale-8 JPEG frames were not saved. Wins over `--hires-em` when both are given. |
+| `--anchor-only` | Only prepare/load the anchor frame of each chain opened this session, not the whole chain. For an "only fix the seed" review pass (see the design doc at `docs/superpowers/specs/2026-08-12-lasso-add-mask-tool-design.md` for the workflow this exists for); frame-stepping and resume-propagation are disabled since there is nothing to step or propagate through. Not a general default, only worth it when you specifically mean to review/correct just the seed. |
+| `--context-frames <n>` | With `--anchor-only`, load `n` frames of context on each side of the anchor (e.g. `2` = 5 frames total) instead of just the anchor frame alone, so `,`/`.` can scrub a little context around the correction. Ignored without `--anchor-only`. Default 0 (the original single-frame behaviour). |
+| `--source <dir>` | Original tree to auto-provision `--neuron` from into `--output-root` the first time that neuron is opened (skips a separate `experiments/make_review_tree.py` call). Never touches an already-provisioned neuron. |
 
 See [../how-to/review-flagged-chains.md](../how-to/review-flagged-chains.md).
 
