@@ -80,16 +80,36 @@ def _load_chains_masks(tree: Path, neuron: str, chain_idxs: list[int]) -> dict:
     return chains_masks
 
 
-def _compute_window(chains_masks: dict, full_hw: tuple, pad: int = 40
-                    ) -> tuple[int, int, int, int]:
-    """(wx0, wy0, wx1, wy1) in _sam px: the union of every mask's extent across every
-    z in ``chains_masks``, padded and clipped to ``full_hw``. Extracted out of
-    build_view so a window computed from one tree can be reused verbatim when
-    rendering a different tree (see render_before_after): a correction that changes
-    a mask's spatial extent (e.g. the lasso tool extending it outward) would
-    otherwise make the before and after renders crop to two different, drifting
-    windows, misleading rather than clarifying the comparison."""
+def padded_window(bbox: tuple[int, int, int, int], full_hw: tuple,
+                  pad_frac: float = 0.25, min_pad: int = 15
+                  ) -> tuple[int, int, int, int]:
+    """Expand a (bx0, by0, bx1, by1) bbox by a margin PROPORTIONAL to its own
+    width/height, not a fixed absolute pixel count: a fixed pad (the original
+    design, 40px every side) swamps a small neurite's already-small bbox in mostly
+    empty margin, exactly backwards from what makes a small mask legible in a
+    report table cell. A large mask instead gets a proportionally large margin, so
+    a long chain still shows real surrounding context. ``min_pad`` is an absolute
+    floor so a genuinely tiny mask (a few px) does not end up with an unusably
+    thin sliver of context from a tiny fraction of a tiny number."""
     H, W = full_hw
+    bx0, by0, bx1, by1 = bbox
+    bw, bh = bx1 - bx0, by1 - by0
+    pad_x = max(min_pad, int(round(bw * pad_frac)))
+    pad_y = max(min_pad, int(round(bh * pad_frac)))
+    wx0, wy0 = max(0, bx0 - pad_x), max(0, by0 - pad_y)
+    wx1, wy1 = min(W, bx1 + pad_x), min(H, by1 + pad_y)
+    return wx0, wy0, wx1, wy1
+
+
+def _compute_window(chains_masks: dict, full_hw: tuple, pad_frac: float = 0.25,
+                    min_pad: int = 15) -> tuple[int, int, int, int]:
+    """(wx0, wy0, wx1, wy1) in _sam px: the union of every mask's extent across every
+    z in ``chains_masks``, padded (see padded_window) and clipped to ``full_hw``.
+    Extracted out of build_view so a window computed from one tree can be reused
+    verbatim when rendering a different tree (see render_before_after): a
+    correction that changes a mask's spatial extent (e.g. the lasso tool extending
+    it outward) would otherwise make the before and after renders crop to two
+    different, drifting windows, misleading rather than clarifying the comparison."""
     xs0, ys0, xs1, ys1 = [], [], [], []
     for masks in chains_masks.values():
         for mask, x0, y0 in masks.values():
@@ -99,8 +119,8 @@ def _compute_window(chains_masks: dict, full_hw: tuple, pad: int = 40
             xs0.append(x0); ys0.append(y0); xs1.append(x0 + w); ys1.append(y0 + h)
     if not xs0:
         raise SystemExit("[report] every mask given to _compute_window is empty")
-    wx0, wy0 = max(0, min(xs0) - pad), max(0, min(ys0) - pad)
-    wx1, wy1 = min(W, max(xs1) + pad), min(H, max(ys1) + pad)
+    bbox = (min(xs0), min(ys0), max(xs1), max(ys1))
+    wx0, wy0, wx1, wy1 = padded_window(bbox, full_hw, pad_frac, min_pad)
     return wx0, wy0, wx1, wy1
 
 
@@ -167,17 +187,28 @@ def render(tree: Path, neuron: str, chain_idxs: list[int], out_path: Path, *,
     own default of 4 which assumes a full SCALE=8 frame. A whole-neuron render
     spanning a wide-spread arbor may want preview_scale=2 to keep the file size
     reasonable; pass it explicitly. ``window``, when given, is forwarded to
-    build_view as-is (see render_before_after)."""
+    build_view as-is (see render_before_after).
+
+    A single-chain render (the common case, chain-gif/chain-gif-pair) uses one
+    fixed, deliberately chosen high-contrast color (video_viz.HIGHLIGHT_COLOR) for
+    its one mask, instead of the chain-index-dependent palette cycling: with only
+    one object ever on screen, per-object color cycling picks an arbitrary,
+    sometimes low-contrast entry for no benefit. A multi-chain render (neuron-gif)
+    keeps per-chain colors, several simultaneous objects still need to be told
+    apart."""
     tag = "_".join(f"c{ci:02d}" for ci in chain_idxs) if len(chain_idxs) <= 4 else "all"
     tmp_dir = TMP_ROOT / f"{neuron}_{tag}_{tree.name}"
     frames_dir, segments, _frame_to_z = build_view(tree, neuron, chain_idxs, tmp_dir,
                                                    window=window)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    color = video_viz.HIGHLIGHT_COLOR if len(chain_idxs) == 1 else None
     if fmt == "gif":
-        video_viz.to_gif(segments, frames_dir, out_path, obj_id=None, preview_scale=preview_scale)
+        video_viz.to_gif(segments, frames_dir, out_path, obj_id=None,
+                         preview_scale=preview_scale, color=color)
     elif fmt == "mp4":
-        video_viz.to_mp4(segments, frames_dir, out_path, obj_id=None, preview_scale=preview_scale)
+        video_viz.to_mp4(segments, frames_dir, out_path, obj_id=None,
+                         preview_scale=preview_scale, color=color)
     else:
         raise ValueError(f"unknown fmt {fmt!r}")
     if not keep_frames:

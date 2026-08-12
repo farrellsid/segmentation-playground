@@ -26,6 +26,15 @@ from matplotlib import animation
 # Stable per-object palette (obj_id -> RGB float). Cycles for >10 objects.
 _PALETTE = plt.cm.tab10(np.linspace(0, 1, 10))[:, :3]
 
+# A single, deliberately chosen high-contrast color (matplotlib's tab:orange, the
+# same orange already used for "the corrected mask" elsewhere in this project, e.g.
+# gui.py's lasso tool and before_after_overlay.py's NEW_C), for callers rendering
+# ONE object at a time where per-object color cycling would only add visual noise:
+# report_assets.py's single-chain renders never have more than one mask on screen,
+# so a chain-index-dependent color was doing nothing useful and sometimes picked a
+# low-contrast entry from the cycling palette.
+HIGHLIGHT_COLOR = (1.0, 0.498, 0.0549)
+
 
 def _color_for(obj_id: int):
     return _PALETTE[int(obj_id) % len(_PALETTE)]
@@ -233,7 +242,13 @@ def grid(
 # --------------------------------------------------------------------------- #
 # Disk exports
 # --------------------------------------------------------------------------- #
-def _frames_iter(video_segments, frames_dir, obj_id, preview_scale, alpha):
+def _frames_iter(video_segments, frames_dir, obj_id, preview_scale, alpha, color=None):
+    """color, when given, overrides _color_for(oid) for every object with one fixed
+    color (see HIGHLIGHT_COLOR): for a single-object render, per-object cycling
+    picks an arbitrary, possibly low-contrast palette entry for no benefit, since
+    there is nothing else on screen to distinguish it from. Default None preserves
+    the existing per-object palette (grid/animate and any multi-object render still
+    want different colors per object)."""
     idxs = _frame_indices(video_segments, frames_dir)
     if isinstance(obj_id, int):
         want = {obj_id}
@@ -247,16 +262,16 @@ def _frames_iter(video_segments, frames_dir, obj_id, preview_scale, alpha):
         if want is not None:
             objs = {o: m for o, m in objs.items() if o in want}
         for oid, m in objs.items():
-            frame, _ = _overlay(frame, m, _color_for(oid), alpha)
+            frame, _ = _overlay(frame, m, color if color is not None else _color_for(oid), alpha)
         yield idx, frame
 
 
 def to_gif(video_segments, frames_dir, out_path, obj_id=None,
-           preview_scale=4, alpha=0.5, fps=12):
-    """Write an animated GIF (uses pillow; no ffmpeg needed)."""
+           preview_scale=4, alpha=0.5, fps=12, color=None):
+    """Write an animated GIF (uses pillow; no ffmpeg needed). color, see _frames_iter."""
     from PIL import Image
     frames = [Image.fromarray(f) for _, f in
-              _frames_iter(video_segments, frames_dir, obj_id, preview_scale, alpha)]
+              _frames_iter(video_segments, frames_dir, obj_id, preview_scale, alpha, color)]
     if not frames:
         raise ValueError("nothing to write")
     out_path = str(out_path)
@@ -266,9 +281,9 @@ def to_gif(video_segments, frames_dir, out_path, obj_id=None,
 
 
 def to_mp4(video_segments, frames_dir, out_path, obj_id=None,
-           preview_scale=2, alpha=0.5, fps=12):
-    """Write an .mp4 (uses cv2's VideoWriter; mp4v codec)."""
-    items = list(_frames_iter(video_segments, frames_dir, obj_id, preview_scale, alpha))
+           preview_scale=2, alpha=0.5, fps=12, color=None):
+    """Write an .mp4 (uses cv2's VideoWriter; mp4v codec). color, see _frames_iter."""
+    items = list(_frames_iter(video_segments, frames_dir, obj_id, preview_scale, alpha, color))
     if not items:
         raise ValueError("nothing to write")
     h, w = items[0][1].shape[:2]

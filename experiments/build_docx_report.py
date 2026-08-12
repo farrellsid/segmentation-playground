@@ -43,8 +43,9 @@ from docx import Document
 from docx.shared import Inches
 
 import pipeline
-from sam2_utils.video_viz import _color_for, _overlay
+from sam2_utils.video_viz import HIGHLIGHT_COLOR, _overlay
 from experiments.find_corrected_chains import find_corrected_chains
+from experiments.report_assets import padded_window
 
 SCALE = 8   # matches report_assets.py's SCALE, the _sam grid these masks are stored on
 
@@ -79,8 +80,9 @@ def render_uncorrected_start_frame(before_tree: Path, frames_out: Path,
     """A single anchor-frame PNG rendered directly from disk for a chain that was
     never re-rendered as a gif (chain-gif-pair only runs for corrected chains),
     because the human reviewed it and the original pipeline output was already
-    correct. Same overlay style (_color_for/_overlay, the functions to_gif/to_mp4
-    themselves use) as the corrected chains' extracted frames."""
+    correct. Same overlay style (HIGHLIGHT_COLOR/_overlay, the functions to_gif/
+    to_mp4 themselves use) and the same proportional-padding window (padded_window)
+    as the corrected chains' extracted frames, so both look consistent."""
     cdir = before_tree / neuron / f"chain_{chain_idx:02d}"
     st = json.load(open(cdir / "state.json"))
     anchor_z = st["anchor_catmaid_z"]
@@ -92,16 +94,14 @@ def render_uncorrected_start_frame(before_tree: Path, frames_out: Path,
     H, W = full_hw
     em_rgb = em if em.ndim == 3 else np.stack([em] * 3, axis=-1)
 
-    pad = 40
-    wx0, wy0 = max(0, x0 - pad), max(0, y0 - pad)
-    wx1, wy1 = min(W, x0 + w + pad), min(H, y0 + h + pad)
+    wx0, wy0, wx1, wy1 = padded_window((x0, y0, x0 + w, y0 + h), full_hw)
     em_win = em_rgb[wy0:wy1, wx0:wx1]
 
     full_mask = np.zeros((H, W), dtype=bool)
     full_mask[y0:y0 + h, x0:x0 + w] = mask
     mask_win = full_mask[wy0:wy1, wx0:wx1]
 
-    overlaid, _ = _overlay(em_win, mask_win, _color_for(chain_idx + 1), alpha=0.5)
+    overlaid, _ = _overlay(em_win, mask_win, HIGHLIGHT_COLOR, alpha=0.5)
     out_path = frames_out / f"{neuron}_chain_{chain_idx:02d}_uncorrected.png"
     Image.fromarray(overlaid.astype(np.uint8)).save(out_path)
     return out_path
