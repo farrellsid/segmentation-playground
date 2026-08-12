@@ -568,14 +568,15 @@ class ReviewGUI:
         shape was just completed, not edited or removed), rasterize it and union it
         into the current frame's mask via Labels.data_setitem (undo-tracked, so
         Ctrl+Z reverts one lasso stroke exactly like it already reverts one paint
-        stroke), then remove the consumed shape from self._lasso so it stays empty
+        stroke), then hand the consumed shape to _clear_lasso (on a deferred timer,
+        see that method for why it cannot run inline here) so the layer stays empty
         between strokes.
 
         Filtering on ActionType.ADDED (rather than a re-entrancy flag) is what keeps
-        this callback from re-triggering on its own trim below: removing the last
-        shape fires REMOVING then REMOVED, never ADDED (confirmed against the
-        installed napari 0.7.0's Shapes.data setter directly), so that self-write is
-        naturally ignored rather than needing a guard flag."""
+        this callback from re-triggering on the trim _clear_lasso performs: removing
+        the last shape fires REMOVING then REMOVED, never ADDED (confirmed against
+        the installed napari 0.7.0's Shapes.data setter directly), so that self-write
+        is naturally ignored rather than needing a guard flag."""
         from napari.layers.base import ActionType
         if event is not None and getattr(event, "action", None) != ActionType.ADDED:
             return
@@ -586,6 +587,8 @@ class ReviewGUI:
             return
         verts = np.asarray(shapes_data[-1], dtype=float)
         frame_idx = self._current_frame()
+        if not (0 <= frame_idx < len(self._mask.data)):
+            return
         on_frame = np.round(verts[:, 0]).astype(int) == frame_idx
         polygon_yx = verts[on_frame][:, 1:]                    # drop t -> (y, x)
         if len(polygon_yx) >= 3:
@@ -596,7 +599,23 @@ class ReviewGUI:
             if len(ys):
                 ts = np.full(len(ys), frame_idx, dtype=int)
                 self._mask.data_setitem((ts, ys, xs), self.data.obj_id)
-        self._lasso.data = shapes_data[:-1]
+        from qtpy.QtCore import QTimer
+        QTimer.singleShot(0, self._clear_lasso)
+
+    def _clear_lasso(self) -> None:
+        """Drop the consumed shape from self._lasso. Deferred (via
+        QTimer.singleShot(0, ...) in _on_lasso_drawn) rather than run inline in the
+        'data' event: napari's own Shapes.data setter starts with an unconditional
+        _finish_drawing() call, and assigning .data from INSIDE the event that
+        _finish_drawing() itself just emitted re-enters that same _finish_drawing()
+        call while it is still mid-flight (index not yet reset), crashing with a
+        TypeError on every real stroke (found by the final whole-branch review,
+        reproduced headlessly by replaying napari's real draw sequence against a
+        ViewerModel). Deferring to the next event-loop turn lets the outer
+        _finish_drawing() call complete first, so the nested one it would otherwise
+        trigger never happens."""
+        if self._lasso is not None and len(self._lasso.data):
+            self._lasso.data = self._lasso.data[:-1]
 
     def _seed_prompts_from_state(self) -> None:
         """Pre-load the chain's ORIGINAL seed (state.prompts) at the anchor frame, so
@@ -1296,6 +1315,8 @@ class ReviewGUI:
         self._prompt_mode.changed.connect(self._set_prompt_label)
         box_btn = PushButton(text="▭ draw box (B)")
         box_btn.changed.connect(self.activate_box_draw)
+        lasso_btn = PushButton(text="◯ draw lasso (L)")
+        lasso_btn.changed.connect(self.activate_lasso_draw)
         reset_btn = PushButton(text="⟲ reset prompts to original")
         reset_btn.changed.connect(self.reset_prompts)
 
@@ -1350,7 +1371,7 @@ class ReviewGUI:
             Label(value=", chains, "), self._mode_combo, self._neuron_combo, self._chain_combo,
             open_btn, prev_q, next_q, refresh,
             Label(value=", frames (this chain), "), prevf, nextf,
-            Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
+            Label(value=", prompts, "), self._prompt_mode, box_btn, lasso_btn, reset_btn,
             Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
             Label(value=", correct, "), rerun, resume, save_btn,
             Label(value=", recrop, "), self._grow_spin, recrop,
@@ -1392,6 +1413,16 @@ class ReviewGUI:
 
         @v.bind_key("g", overwrite=True)
         def _resume(_v): self.resume_propagation()
+
+        # viewer-level Ctrl+Z fallback: Labels.undo is a LAYER keybinding, so it only
+        # fires while the mask layer itself is active. The lasso tool deliberately
+        # leaves the Shapes layer active across strokes, which would otherwise make
+        # Ctrl+Z a no-op there. Layer bindings win over viewer bindings, so when the
+        # mask layer IS active napari's own native undo still handles it, unchanged.
+        @v.bind_key("Control-Z", overwrite=True)
+        def _undo_mask(_v):
+            if self._mask is not None:
+                self._mask.undo()
 
         @v.bind_key("s", overwrite=True)
         def _save(_v): self.save_masks_now()

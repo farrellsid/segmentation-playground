@@ -60,23 +60,49 @@ wandering membrane meant many small brush strokes instead of one gesture. Additi
 subtraction already has the eraser, and lasso plus eraser should feel like the same pairing as brush plus
 eraser.
 
-Wired the `l` key to a new `self._lasso` Shapes layer built by `_new_lasso_layer` alongside `_box` and
+The tool is a new `self._lasso` Shapes layer, built by `_new_lasso_layer` alongside `_box` and
 `_prompts` in `open_chain`. `activate_lasso_draw` arms `add_polygon_lasso`, napari's own freehand-loop
-mode, so a drag needs no custom mouse handling. On release, `_on_lasso_drawn` (connected to the layer's
-`data` event) rasterizes the finished loop with the standalone, already-tested `_rasterize_lasso_fill`
-helper and writes the added pixels into the mask through `Labels.data_setitem`, the same call the brush
-uses, so the stroke is undo-tracked and `Ctrl+Z` reverts it exactly like a paint stroke. The consumed
-shape is then dropped from `self._lasso` so the layer stays empty between strokes instead of accumulating
-drawn loops on screen.
+mode, so a drag needs no custom mouse handling. Two ways in: a "draw lasso (L)" dock button next to the
+box button, and the `l` key. The button is the one to trust. napari checks the active layer's own keymap
+before the viewer's, and plain `l` is already taken twice over, by the Shapes line tool and by the Labels
+label picker, so the viewer-level `l` binding loses in exactly the states you tend to be in, right after
+opening a chain or right after a brush correction. A button click never enters that resolution chain.
+
+On release, `_on_lasso_drawn` (connected to the layer's `data` event) rasterizes the finished loop with
+the standalone, already-tested `_rasterize_lasso_fill` helper and writes the added pixels into the mask
+through `Labels.data_setitem`, the same call the brush uses, so the stroke lands in the mask layer's own
+undo history. A bounds check on the frame index sits in front of that write, since the dims slider can
+run past the mask's real T extent whenever some other layer stretches it, which the lasso layer itself
+briefly does while a shape sits on it.
+
+Clearing the consumed shape has to wait a turn. A final whole-branch review caught that doing it inline
+crashed every real stroke. napari's `Shapes.data` setter opens with an unconditional `_finish_drawing()`
+call, so assigning `.data` from inside the `data` event that `_finish_drawing()` had itself just emitted
+re-entered that same call while its shape index was already reset to `None`, raising `TypeError: list
+indices must be integers or slices, not NoneType`. The mask edit had landed by then, but the drawn loop
+stayed on screen and the layer was left wedged with `_is_creating` still true, which broke the following
+stroke as well. `_clear_lasso` now runs on `QTimer.singleShot(0, ...)`, one event-loop turn later, after
+the outer `_finish_drawing()` has returned.
+
+`Ctrl+Z` needed a second binding to work the way this entry claims it does. `Labels.undo` is a
+layer-level keybinding, so it fires only while the mask layer is active, and the lasso deliberately
+leaves the Shapes layer active across consecutive strokes. A viewer-level `Control-Z` binding now calls
+`self._mask.undo()` as a fallback. Layer bindings outrank viewer bindings, so with the mask layer active
+napari's native undo still handles the key exactly as before, and nothing else is shadowed: neither
+Shapes, Points, nor Image binds `Ctrl+Z` natively in this version.
 
 The event filtering leans on a real napari 0.7.0 behavior: removing that last shape fires `REMOVING`
 then `REMOVED`, never `ADDED`, so filtering the callback on `event.action == ActionType.ADDED` is enough
-to ignore the trim's own self-write. No re-entrancy flag needed.
+to ignore the deferred clear's own self-write, without a re-entrancy flag.
 
-No new automated tests; this change is UI wiring over that already-tested pure helper.
-`py -3 -m pytest -q`: 338 passed, 1 skipped, same as before this change. `ruff check gui.py`: all checks
-passed. The manual smoke test (drag a loop in the live GUI, confirm the mask extends and `Ctrl+Z`
-reverts it) needs a real display and is still open, deferred to a human running the GUI directly.
+`tests/test_gui_lasso.py` now covers the event wiring, not just the pure helper. The plan had written
+that wiring off as untestable without a display, which is how the crash shipped in the first place. A
+`napari.components.ViewerModel` plus real Shapes and Labels layers turns out to be enough to replay the
+actual draw sequence (`initiate_polygon_draw`, the drag vertices, `_finish_drawing`) with no Qt widgets,
+no display, and no GPU. All three new tests fail against the pre-fix code and pass after it.
+`py -3 -m pytest -q`: 341 passed, 1 skipped. `ruff check gui.py tests/test_gui_lasso.py`: all checks
+passed. The live-GUI smoke test (drag a real loop, confirm the mask extends and `Ctrl+Z` reverts it) is
+still open for a human at a real display.
 
 ---
 
