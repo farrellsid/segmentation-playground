@@ -106,6 +106,7 @@ _MODE_CHOICES = [_MODE_FLAGGED, _MODE_EVERYTHING]
 # format) and a napari Shapes rectangle's (N, 3) vertices in (t, y, x). Pure and
 # torch/napari-free so they unit-test without a GPU or a viewer.
 _BOX_EDGE_COLOR = "#1f77b4"   # blue, distinct from the green/red prompt points
+_LASSO_EDGE_COLOR = "#ff7f0e"   # orange, distinct from box (blue) and prompts (green/red)
 
 
 def _rect_to_xyxy(verts) -> np.ndarray:
@@ -135,6 +136,28 @@ def _box_on_frame(shapes_data, frame_idx: int) -> Optional[np.ndarray]:
         if len(v) and int(round(v[0, 0])) == int(frame_idx):
             box = _rect_to_xyxy(v)
     return box
+
+
+def _rasterize_lasso_fill(mask_hw: np.ndarray, polygon_yx) -> np.ndarray:
+    """Union a freehand lasso polygon's interior into a single-frame (H, W) mask.
+
+    ``polygon_yx`` is an (N, 2) array of (y, x) vertices in the same pixel space as
+    ``mask_hw`` (matching how prompts/box vertices already round-trip in this file).
+    Returns a NEW boolean array; ``mask_hw`` is never mutated. A degenerate polygon
+    (fewer than 3 vertices) returns a copy of ``mask_hw`` unchanged: napari's own
+    add_polygon_lasso mode already drops anything that small before this is ever
+    called from _on_lasso_drawn (confirmed against the installed napari 0.7.0
+    source, Shapes._finish_drawing), so this guard only matters for a direct call,
+    e.g. from a test."""
+    import cv2
+    mask_hw = np.asarray(mask_hw, dtype=bool)
+    polygon_yx = np.asarray(polygon_yx, dtype=float)
+    if len(polygon_yx) < 3:
+        return mask_hw.copy()
+    poly_xy = np.round(polygon_yx[:, ::-1]).astype(np.int32)   # cv2 wants (x, y)
+    filled = np.zeros(mask_hw.shape, dtype=np.uint8)
+    cv2.fillPoly(filled, [poly_xy], 1)
+    return mask_hw | filled.astype(bool)
 
 
 # =============================================================================
