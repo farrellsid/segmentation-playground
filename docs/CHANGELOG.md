@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-12, lasso-add mask tool: a freehand loop unions into the current frame's mask, undo-compatible with the paint brush](#r-2026-08-12-lasso-add)
 - [2026-08-12, `--anchor-only` prompt-seeding bug: prompts/box placed off the narrowed frame, explaining a "0/56" report](#r-2026-08-12-anchor-only-seed-bug)
 - [2026-08-10, propagation from manually verified multi-frame seeds: mechanism verified, driver built](#r-2026-08-10-propagate-from-verified)
 - [2026-08-09, spill/overfill documentation prep: real membrane-pass cost measured, a stale CSV trap found, micro_sam and square-mask spot-checks](#r-2026-08-09-spill-doc-prep)
@@ -48,6 +49,34 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-12-lasso-add"></a>
+## 2026-08-12, lasso-add mask tool: a freehand loop unions into the current frame's mask, undo-compatible with the paint brush
+
+Long boundary-stretch corrections were tedious with brush-only painting: extending a mask along a
+wandering membrane meant many small brush strokes instead of one gesture. Addition only, by design:
+subtraction already has the eraser, and lasso plus eraser should feel like the same pairing as brush plus
+eraser.
+
+Wired the `l` key to a new `self._lasso` Shapes layer built by `_new_lasso_layer` alongside `_box` and
+`_prompts` in `open_chain`. `activate_lasso_draw` arms `add_polygon_lasso`, napari's own freehand-loop
+mode, so a drag needs no custom mouse handling. On release, `_on_lasso_drawn` (connected to the layer's
+`data` event) rasterizes the finished loop with the standalone, already-tested `_rasterize_lasso_fill`
+helper and writes the added pixels into the mask through `Labels.data_setitem`, the same call the brush
+uses, so the stroke is undo-tracked and `Ctrl+Z` reverts it exactly like a paint stroke. The consumed
+shape is then dropped from `self._lasso` so the layer stays empty between strokes instead of accumulating
+drawn loops on screen.
+
+The event filtering leans on a real napari 0.7.0 behavior: removing that last shape fires `REMOVING`
+then `REMOVED`, never `ADDED`, so filtering the callback on `event.action == ActionType.ADDED` is enough
+to ignore the trim's own self-write. No re-entrancy flag needed.
+
+No new automated tests; this change is UI wiring over that already-tested pure helper.
+`py -3 -m pytest -q`: 338 passed, 1 skipped, same as before this change. `ruff check gui.py`: all checks
+passed. The manual smoke test (drag a loop in the live GUI, confirm the mask extends and `Ctrl+Z`
+reverts it) needs a real display and is still open, deferred to a human running the GUI directly.
 
 ---
 

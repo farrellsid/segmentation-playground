@@ -4,7 +4,8 @@ gui.py: napari review / triage / correction GUI.
 The one human-facing tool: one triage queue, one review tool. It reads the
 batch's flagged chains, lets a human scrub a chain, inspect
 why frames flagged, edit the SAM2 prompts (positive **and** negative points, plus a
-drawn bounding box), paint an anchor mask, re-run the image phase, and resume
+drawn bounding box), paint an anchor mask (brush, or a freehand lasso that unions
+a new area in), re-run the image phase, and resume
 propagation over the interruptible ``PropagationSession``, then writes the corrected
 masks + QC back to disk and logs every decision as a training label.
 
@@ -401,7 +402,7 @@ class ReviewGUI:
         self.session: Optional[pipeline.PropagationSession] = None  # built lazily on resume
 
         # layers (set in open_chain)
-        self._img = self._mask = self._skel = self._prompts = self._box = None
+        self._img = self._mask = self._skel = self._prompts = self._box = self._lasso = None
         self._lscale = (1.0, 1.0, 1.0)   # _sam->EM world scale of the current chain's layers
         self._populating = False         # re-entrancy guard for the neuron->chain cascade
         self._recrop_picking = False     # True while the full-frame recrop region picker is open
@@ -502,6 +503,7 @@ class ReviewGUI:
         self._skel.editable = False
         self._prompts = self._new_prompts_layer(scale=lscale)
         self._box = self._new_box_layer(scale=lscale)
+        self._lasso = self._new_lasso_layer(scale=lscale)
         # pre-load the chain's original seed (points + box) at the anchor frame
         self._seed_prompts_from_state()
 
@@ -545,6 +547,56 @@ class ReviewGUI:
             name="box", ndim=3, scale=scale, edge_color=_BOX_EDGE_COLOR,
             face_color="transparent", edge_width=1.0, opacity=0.8)
         return layer
+
+    def _new_lasso_layer(self, scale=(1.0, 1.0, 1.0)):
+        """An empty Shapes layer for freehand loop-and-union mask additions (the 'L'
+        key arms add_polygon_lasso mode for the next stroke). ndim=3 so a loop binds to
+        a specific frame (t, y, x); ``scale`` matches the other layers so a drawn loop's
+        data coords stay _sam (or _pcrop), the same convention _box/_prompts already
+        use. Each finished stroke is consumed immediately by _on_lasso_drawn (unioned
+        into the mask, then removed from this layer), so it never accumulates drawn
+        loops on screen."""
+        layer = self.viewer.add_shapes(
+            name="lasso", ndim=3, scale=scale, edge_color=_LASSO_EDGE_COLOR,
+            face_color="transparent", edge_width=1.0, opacity=0.8)
+        layer.events.data.connect(self._on_lasso_drawn)
+        return layer
+
+    def _on_lasso_drawn(self, event=None) -> None:
+        """napari Shapes 'data' event handler for self._lasso: on a freshly finished
+        freehand loop (event.action == ActionType.ADDED, napari's own signal that a
+        shape was just completed, not edited or removed), rasterize it and union it
+        into the current frame's mask via Labels.data_setitem (undo-tracked, so
+        Ctrl+Z reverts one lasso stroke exactly like it already reverts one paint
+        stroke), then remove the consumed shape from self._lasso so it stays empty
+        between strokes.
+
+        Filtering on ActionType.ADDED (rather than a re-entrancy flag) is what keeps
+        this callback from re-triggering on its own trim below: removing the last
+        shape fires REMOVING then REMOVED, never ADDED (confirmed against the
+        installed napari 0.7.0's Shapes.data setter directly), so that self-write is
+        naturally ignored rather than needing a guard flag."""
+        from napari.layers.base import ActionType
+        if event is not None and getattr(event, "action", None) != ActionType.ADDED:
+            return
+        if self._lasso is None or self._mask is None or self.data is None:
+            return
+        shapes_data = self._lasso.data
+        if not len(shapes_data):
+            return
+        verts = np.asarray(shapes_data[-1], dtype=float)
+        frame_idx = self._current_frame()
+        on_frame = np.round(verts[:, 0]).astype(int) == frame_idx
+        polygon_yx = verts[on_frame][:, 1:]                    # drop t -> (y, x)
+        if len(polygon_yx) >= 3:
+            mask_hw = np.asarray(self._mask.data[frame_idx] == self.data.obj_id)
+            new_mask = _rasterize_lasso_fill(mask_hw, polygon_yx)
+            added = new_mask & ~mask_hw
+            ys, xs = np.nonzero(added)
+            if len(ys):
+                ts = np.full(len(ys), frame_idx, dtype=int)
+                self._mask.data_setitem((ts, ys, xs), self.data.obj_id)
+        self._lasso.data = shapes_data[:-1]
 
     def _seed_prompts_from_state(self) -> None:
         """Pre-load the chain's ORIGINAL seed (state.prompts) at the anchor frame, so
@@ -648,6 +700,17 @@ class ReviewGUI:
         self.viewer.layers.selection.active = self._box
         self._box.mode = "add_rectangle"
         print("[gui] box draw mode: drag a rectangle on this frame, then 'R' to re-predict")
+
+    def activate_lasso_draw(self, *_) -> None:
+        """Make the lasso layer active in add_polygon_lasso mode, so the next
+        freehand drag draws a loop that unions into the mask on release (the 'L'
+        key)."""
+        if self._lasso is None:
+            print("[gui] no chain open; nothing to draw a lasso on")
+            return
+        self.viewer.layers.selection.active = self._lasso
+        self._lasso.mode = "add_polygon_lasso"
+        print("[gui] lasso mode: drag a loop over the area to add, release to commit")
 
     # -- view helpers ----------------------------------------------------------
     def _load_hires_stack(self, frame_to_z: dict, t: int, em_scale: int = 1):
@@ -1320,6 +1383,9 @@ class ReviewGUI:
 
         @v.bind_key("b", overwrite=True)
         def _box(_v): self.activate_box_draw()
+
+        @v.bind_key("l", overwrite=True)
+        def _lasso_key(_v): self.activate_lasso_draw()
 
         @v.bind_key("r", overwrite=True)
         def _rerun(_v): self.rerun_image_phase()
