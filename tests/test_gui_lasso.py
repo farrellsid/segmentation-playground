@@ -22,6 +22,7 @@ Run either way:
 
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import sys
 from copy import copy
@@ -34,10 +35,13 @@ import pytest
 import gui
 
 # napari is a GUI-only dependency (see the "Two layers" note above), not in this
-# project's test/dev extras, so CI does not install it. The two tests below replay
-# napari's real Shapes/ViewerModel draw sequence to catch a reentrancy bug that only
-# reproduces against real napari internals, so they need the real package, not a stub.
-pytest.importorskip("napari")
+# project's test/dev extras, so CI does not install it. The layer-2 tests below
+# replay napari's real Shapes/ViewerModel draw sequence to catch a reentrancy bug
+# that only reproduces against real napari internals, so they need the real package,
+# not a stub. Skipped per-test (not a module-level importorskip) so the layer-1
+# tests above them, genuinely torch/napari-free, still run in CI.
+_HAS_NAPARI = importlib.util.find_spec("napari") is not None
+_needs_napari = pytest.mark.skipif(not _HAS_NAPARI, reason="napari not installed (CI)")
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +146,7 @@ def _replay_lasso_stroke(layer, frame=0, dx=0):
     layer._finish_drawing()
 
 
+@_needs_napari
 def test_real_lasso_stroke_does_not_crash_and_unions_the_mask():
     """Regression test for the re-entrancy crash found by the final whole-branch
     review. The original code cleared the consumed shape inline (self._lasso.data =
@@ -170,6 +175,7 @@ def test_real_lasso_stroke_does_not_crash_and_unions_the_mask():
     assert int((mask.data[0] == 1).sum()) > painted
 
 
+@_needs_napari
 def test_out_of_range_frame_is_ignored():
     """The dims slider can outrun the mask's real T extent (any layer with a longer
     T stretches it, including the lasso layer itself while a shape sits on it), so
@@ -187,6 +193,7 @@ def test_out_of_range_frame_is_ignored():
     assert not mask.data.any()
 
 
+@_needs_napari
 def test_deferred_clear_empties_the_lasso_layer():
     """The other half of the fix: once a Qt event loop turn happens, the deferred
     _clear_lasso really does drop the consumed shape. Needs a QApplication, so it
@@ -212,6 +219,7 @@ def test_deferred_clear_empties_the_lasso_layer():
     del app
 
 
+@_needs_napari
 def test_guard_trip_still_clears_the_lasso_layer_out_of_range_frame():
     """A stroke that trips the frame_idx bounds guard must still end up cleared from
     the layer, not left stuck: a stuck loop is itself part of what stretches the
@@ -246,6 +254,7 @@ def test_guard_trip_still_clears_the_lasso_layer_out_of_range_frame():
     del app
 
 
+@_needs_napari
 def test_guard_trip_still_clears_the_lasso_layer_no_mask():
     """Same fix, the other named guard: self._mask is None (e.g. between chains)."""
     try:

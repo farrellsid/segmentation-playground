@@ -102,8 +102,31 @@ to ignore the deferred clear's own self-write, without a re-entrancy flag.
 that wiring off as untestable without a display, which is how the crash shipped in the first place. A
 `napari.components.ViewerModel` plus real Shapes and Labels layers turns out to be enough to replay the
 actual draw sequence (`initiate_polygon_draw`, the drag vertices, `_finish_drawing`) with no Qt widgets,
-no display, and no GPU. All three new tests fail against the pre-fix code and pass after it.
-`py -3 -m pytest -q`: 341 passed, 1 skipped. `ruff check gui.py tests/test_gui_lasso.py`: all checks
+no display, and no GPU. Five tests exercise that wiring (the crash regression itself, an out-of-range
+frame, the deferred clear actually firing, and two guard-trip cases below), all failing against the
+pre-fix code and passing after it. napari is not in this project's CI extras, so each of the five is
+skipped there rather than failing the build; the three pure-helper tests carry no such guard and still
+run everywhere.
+
+A re-review of the fix caught two more gaps: an early-return guard (the frame bounds check, or
+`self._mask`/`self.data` being `None`) returned before the deferred clear was scheduled, leaving that stroke's
+loop stuck on the layer forever, which is itself self-sustaining since a stuck shape is exactly the kind
+of thing that stretches the dims T-extent past the mask's own range. `_on_lasso_drawn`'s guarded body now
+runs inside `try`/`finally` so the clear is always scheduled, verified with two more tests that trip each
+guard and confirm the layer still ends up empty. The other gap was this doc: the how-to
+(`docs/how-to/review-flagged-chains.md`) never mentioned the lasso layer, the `L` key, or the button, so
+the feature existed without being discoverable; both its layer table and its keyboard-shortcut table
+cover it now.
+
+One more hardening pass: the latent-race requeue in `_clear_lasso` (a second stroke mid-flight when the
+deferred clear fires) originally resubmitted itself every 0ms, which is fine for the ordinary case where
+`_is_creating` clears within a turn or two, but an unrelated exception earlier in `_on_lasso_drawn` can
+leave `_is_creating` stuck permanently true (napari only resets it after a successful finish), and an
+unbounded 0ms resubmit against a permanently stuck flag spins the event loop forever. The requeue is now
+a capped, spaced retry (50ms, 20 attempts) instead, and reads `_is_creating` through `getattr` so a future
+napari rename fails toward clearing the layer rather than raising inside a timer callback.
+
+`py -3 -m pytest -q`: 343 passed, 1 skipped. `ruff check gui.py tests/test_gui_lasso.py`: all checks
 passed. The live-GUI smoke test (drag a real loop, confirm the mask extends and `Ctrl+Z` reverts it) is
 still open for a human at a real display.
 

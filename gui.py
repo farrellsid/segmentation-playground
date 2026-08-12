@@ -403,6 +403,7 @@ class ReviewGUI:
 
         # layers (set in open_chain)
         self._img = self._mask = self._skel = self._prompts = self._box = self._lasso = None
+        self._lasso_clear_retries = 0    # bounds _clear_lasso's mid-flight-stroke requeue
         self._lscale = (1.0, 1.0, 1.0)   # _sam->EM world scale of the current chain's layers
         self._populating = False         # re-entrancy guard for the neuron->chain cascade
         self._recrop_picking = False     # True while the full-frame recrop region picker is open
@@ -630,11 +631,22 @@ class ReviewGUI:
         stroke's own _finish_drawing(). No realistic GUI path has been found that
         triggers this (the deferred timer reliably fires before the next stroke's
         input dispatch in practice), but re-queuing the clear for the following turn
-        instead of running it is cheap insurance."""
-        if self._lasso is not None and self._lasso._is_creating:
-            from qtpy.QtCore import QTimer
-            QTimer.singleShot(0, self._clear_lasso)   # a stroke is mid-flight, try again next turn
+        instead of running it is cheap insurance. getattr (not a direct attribute
+        read) so a future napari rename fails toward "clear now" instead of an
+        AttributeError inside a QTimer callback. The requeue itself is bounded (a
+        50ms delay, capped retries) rather than an immediate 0ms resubmit: an
+        unrelated exception earlier in _on_lasso_drawn's try block can leave
+        _is_creating permanently True (napari only clears it after a successful
+        finish), and an unbounded 0ms requeue against a permanently-stuck flag would
+        spin the event loop indefinitely; capping it just means a truly stuck lasso
+        layer stops retrying instead of busy-looping forever."""
+        if self._lasso is not None and getattr(self._lasso, "_is_creating", False):
+            self._lasso_clear_retries += 1
+            if self._lasso_clear_retries <= 20:      # ~1s of retries at 50ms, then give up
+                from qtpy.QtCore import QTimer
+                QTimer.singleShot(50, self._clear_lasso)
             return
+        self._lasso_clear_retries = 0
         if self._lasso is not None and len(self._lasso.data):
             self._lasso.data = self._lasso.data[:-1]
 
