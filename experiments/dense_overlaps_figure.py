@@ -45,7 +45,7 @@ from sam2_utils import membrane as mb
 from sam2_utils.perframe import resolve_overlaps_argmax, resolve_overlaps_watershed
 
 INDEX_CACHE = Path("docs/figures/sam3-bakeoff/dense-overlay/_index.json")
-OUT_DIR = Path("docs/figures/presentation/dense-overlaps")
+OUT_DIR = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\dense-overlaps")
 SCALE = 8
 
 

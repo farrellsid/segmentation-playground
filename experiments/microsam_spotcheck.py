@@ -49,7 +49,7 @@ from pipeline.state import Prompts
 from sam2_utils import setup as sam2_setup
 from eval.merge_metric import load_node_table
 
-OUT_DIR = Path("docs/figures/presentation/microsam-spotcheck")
+OUT_DIR = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\microsam-spotcheck")
 SCALE = 8
 DEFAULT_MODEL_TYPE = "vit_l_em_organelles"
 

@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 import pipeline
 from experiments import dense_overlay as do
 
-OUT_DIR = Path("docs/figures/presentation/mitonet-spotcheck")
+OUT_DIR = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\mitonet-spotcheck")
 SCALE = 8
 
 # Vendored the same way as nucleonet_spotcheck.py: constants from empanada_napari/configs/

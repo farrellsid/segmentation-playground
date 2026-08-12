@@ -11,7 +11,7 @@ node:
   - DROPOUT : the mask misses its own node (own node not covered = omission).
 
 Run:  py -3 experiments/merge_metric_diagram.py
-Out:  docs/figures/presentation/merge-metric-diagram/merge-metric-diagram.{png,svg}
+Out:  F:\ZhenLab\Data\repo_offload\presentation_figures\merge-metric-diagram\merge-metric-diagram.{png,svg}
 """
 from __future__ import annotations
 
@@ -179,8 +179,7 @@ def build():
 
 
 def main():
-    out_dir = Path(__file__).resolve().parent.parent / \
-        "docs" / "figures" / "presentation" / "merge-metric-diagram"
+    out_dir = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\merge-metric-diagram")
     out_dir.mkdir(parents=True, exist_ok=True)
     fig = build()
     png = out_dir / "merge-metric-diagram.png"

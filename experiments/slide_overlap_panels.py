@@ -23,7 +23,7 @@ matplotlib.use("Agg")
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 
-SRC = Path("docs/figures/presentation/dense-overlaps")
+SRC = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\dense-overlaps")
 INK = "#222222"
 
 WAYS = [

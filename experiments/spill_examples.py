@@ -48,7 +48,7 @@ from eval.merge_metric import DEFAULT_RADIUS, load_node_table, nodes_by_z
 
 SCALE = 8
 TREE = Path(r"F:\ZhenLab\Data\output_masks\target_tier2_s1forced_neg_sam3_merged")
-OUT_DIR = Path("docs/figures/presentation/spill-overfill-examples")
+OUT_DIR = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\spill-overfill-examples")
 PAD = 30
 
 # (neuron, chain_idx, z, z2, kind, label). z2 is the deliberately-chosen second frame (see the

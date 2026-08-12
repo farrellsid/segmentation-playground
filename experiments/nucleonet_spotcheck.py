@@ -40,7 +40,7 @@ import matplotlib.pyplot as plt
 import pipeline
 from experiments import dense_overlay as do
 
-OUT_DIR = Path("docs/figures/presentation/nucleonet-spotcheck")
+OUT_DIR = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\nucleonet-spotcheck")
 SCALE = 8
 
 # The constants and functions below (the NUCLEONET_* values and the two helper functions,

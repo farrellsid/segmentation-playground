@@ -7,7 +7,7 @@ Two measures, both fractions on [0, 1], so they share ONE y-axis (no dual axis).
 Okabe-Ito colours (colourblind-safe), thin marks, direct end-labels, recessive grid.
 
 Run: py -3 experiments/progress_arc_figure.py
-Out: docs/figures/presentation/progress-arc/progress_arc.png
+Out: F:\ZhenLab\Data\repo_offload\presentation_figures\progress-arc\progress_arc.png
 """
 from pathlib import Path
 
@@ -81,7 +81,7 @@ ax.text(0, 1.03, "Merge metric on the 16-neuron set; lower bleed and higher cove
         transform=ax.transAxes, fontsize=11, color=MUTED)
 
 fig.tight_layout()
-out = Path("docs/figures/presentation/progress-arc/progress_arc.png")
+out = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\progress-arc\progress_arc.png")
 out.parent.mkdir(parents=True, exist_ok=True)
 fig.savefig(out, bbox_inches="tight", facecolor="white")
 print(f"wrote {out}")

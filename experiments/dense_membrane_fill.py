@@ -39,7 +39,7 @@ from pipeline.predict import _point_in_mask
 from eval.merge_metric import load_node_table, nodes_by_z, DEFAULT_RADIUS
 
 INDEX_CACHE = Path("docs/figures/sam3-bakeoff/dense-overlay/_index.json")
-OUT_DIR = Path("docs/figures/presentation/dense-membrane-fill")
+OUT_DIR = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\dense-membrane-fill")
 SCALE = 8
 MAX_SHIFT = 5  # must match mb.register_crops's max_shift so _shift_diag reports on the
                # threshold actually applied, not a hardcoded number that could drift from it

@@ -100,7 +100,7 @@ def main():
         a.set_xticks([]); a.set_yticks([])
     fig.suptitle(f"Membrane autofill: {args.neuron} chain_{args.chain:02d} z={args.z}", fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    out = Path("docs/figures/presentation/autofill-demo")
+    out = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\autofill-demo")
     out.mkdir(parents=True, exist_ok=True)
     f = out / f"{args.neuron}_chain{args.chain:02d}_z{args.z}.png"
     fig.savefig(f, dpi=140); plt.close(fig)

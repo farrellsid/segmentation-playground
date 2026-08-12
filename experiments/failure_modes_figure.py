@@ -17,7 +17,7 @@ Panels b and c read per-chain masks from the scored tree on F:, the same grid
 eval.merge_metric scores, so the picture and the CSV agree by construction.
 
 Run: py -3 experiments/failure_modes_figure.py
-Out: docs/figures/presentation/failure-modes/failure_modes.png
+Out: F:\ZhenLab\Data\repo_offload\presentation_figures\failure-modes\failure_modes.png
 """
 from __future__ import annotations
 
@@ -179,7 +179,7 @@ fig.text(0.5, 0.028,
          "green star = the chain's own skeleton node      blue outline = the predicted mask",
          ha="center", fontsize=10.5, color="#666666")
 
-out = Path("docs/figures/presentation/failure-modes/failure_modes.png")
+out = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\failure-modes\failure_modes.png")
 out.parent.mkdir(parents=True, exist_ok=True)
 fig.savefig(out, bbox_inches="tight", facecolor="white")
 print(f"wrote {out}")

@@ -8,7 +8,7 @@ of transcribing them, so the chart always matches what the sweep actually report
 model, real masks read from disk.
 
 Run: py -3 experiments/temporal_sweep_figure.py
-Out: docs/figures/presentation/temporal-sweep/temporal_sweep.png
+Out: F:\ZhenLab\Data\repo_offload\presentation_figures\temporal-sweep\temporal_sweep.png
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from eval.merge_metric import DEFAULT_RADIUS, load_node_table, nodes_by_z
 import pipeline
 
 BLUE, ORANGE, GREEN, MUTED = "#0072B2", "#E69F00", "#009E73", "#6b7280"
-OUT_DIR = Path("docs/figures/presentation/temporal-sweep")
+OUT_DIR = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\temporal-sweep")
 Z = 1456
 PAD = 18
 CAP = 5.0

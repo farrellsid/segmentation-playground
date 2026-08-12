@@ -10,7 +10,7 @@ of thresholds tau (walls = membrane_map > tau), and measure the tradeoff:
 The useful tau minimises underfill while keeping bleed near zero. CPU only.
 
 Run: py -3 experiments/autofill_tau_sweep.py [--n 40]
-Out: docs/figures/presentation/autofill-demo/tau_sweep.png
+Out: F:\ZhenLab\Data\repo_offload\presentation_figures\autofill-demo\tau_sweep.png
 """
 from __future__ import annotations
 
@@ -144,7 +144,7 @@ def main():
     ax.text(0, 1.06, f"Autofill tau sweep: underfill falls, bleed rises  (n={len(samples)} masks)",
             transform=ax.transAxes, fontsize=13, fontweight="bold", color="#222")
     fig.tight_layout()
-    out = Path("docs/figures/presentation/autofill-demo/tau_sweep.png")
+    out = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\autofill-demo\tau_sweep.png")
     fig.savefig(out, bbox_inches="tight", facecolor="white")
     print(f"base underfill {base_uf:.3f}; best tau {taus[star]} "
           f"(underfill {mean_uf[star]:.3f}, bleed {bleed_rate[star]:.3f})")

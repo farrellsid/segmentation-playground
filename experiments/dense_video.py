@@ -34,7 +34,7 @@ import cv2
 import pipeline
 from experiments import dense_overlay as do
 
-DEFAULT_FRAMES = Path("docs/figures/presentation/dense-scroll/frames")
+DEFAULT_FRAMES = Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\dense-scroll\frames")
 DEFAULT_OUT = Path("presentation/public/videos")
 
 

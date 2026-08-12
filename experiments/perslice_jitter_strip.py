@@ -3,7 +3,7 @@ slices, side by side, to show the janky boundary that per-slice can produce even
 when each frame is metrically fine. CPU only, disk masks.
 
 Run: py -3 experiments/perslice_jitter_strip.py [--neuron URAVL --chain 5]
-Out: docs/figures/presentation/autofill-demo/../perslice-jitter.png  (public/images too)
+Out: F:\ZhenLab\Data\repo_offload\presentation_figures\autofill-demo\perslice-jitter.png  (public/images too)
 """
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def main():
                  f"(the boundary jumps)", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.92))
     for out in (Path("public/images/perslice-jitter.png"),
-                Path("docs/figures/presentation/autofill-demo/perslice-jitter.png")):
+                Path(r"F:\ZhenLab\Data\repo_offload\presentation_figures\autofill-demo\perslice-jitter.png")):
         out.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out, dpi=140)
     plt.close(fig)
