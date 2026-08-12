@@ -211,6 +211,67 @@ class ReviewContext:
 # Frame stack loading (EM JPEGs -> a sliceable (T, H, W, 3) array)
 # =============================================================================
 
+def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
+                         recorded_anchor_idx, *, chain: dict, cw,
+                         cfg: "pipeline.PipelineConfig", annotate_df: pd.DataFrame,
+                         anchor_catmaid_z: int, neuron: str, chain_idx: int,
+                         anchor_only: bool = False) -> tuple[str, dict, int]:
+    """(frames_dir, frame_to_z, anchor_frame_idx) actually usable locally: the
+    recorded ones if present and `anchor_only` is not set, else freshly (re)prepared.
+
+    ``anchor_frame_idx`` matters as much as ``frame_to_z`` here and is easy to get
+    wrong: a narrowed ``frame_to_z`` (anchor_only) puts the anchor at LOCAL index 0,
+    not wherever it sat in the full chain (found for real: AIAR chain_00's anchor was
+    frame 43 of 88; loading the narrowed 1-frame stack with the recorded
+    ``anchor_frame_idx=43`` left every anchor-detection check in the GUI comparing
+    against an index that no longer exists in the loaded stack).
+
+    `state.json`'s `frames_dir` is an ABSOLUTE path baked in at generation time. For a
+    chain generated on Narval, that is a Slurm scratch path
+    (`/localscratch/<jobid>/frames/...`), deleted the moment that job ended; on Windows
+    a leading `/` in that string also gets misread as "root of the current drive"
+    (`D:\\localscratch\\...`), so the failure is a FileNotFoundError deep in image
+    loading, not an obviously-stale-path message. Regenerating is cheap for a legacy
+    `_sam` chain: the decode cache (`_ensure_cached_frames`) is keyed by z + scale,
+    shared across chains, so only the first chain to touch a given z-range actually
+    re-decodes it. A tier-2 `_pcrop` chain has NO such shared cache (every chain's
+    crop window is unique), so regenerating its full z-range is genuinely the slow
+    part for a long chain, confirmed for real: AIAR chain_00, 88 tier-2 frames, ~45s.
+
+    `anchor_only=True` (the review GUI's `--anchor-only` flag) narrows the prepared
+    range to just the anchor z (`z_range=(anchor_catmaid_z, anchor_catmaid_z)`),
+    skipping that cost entirely for a "only fix the seed" session: real per-frame
+    stack loading was already fast (dask's lazy path, confirmed: ~3s to open a
+    40-frame stack, ~0.05s for the first frame), the slow part was decoding frames
+    nobody was going to look at. `review.load_chain` already drops any saved mask
+    whose z is not in the given `frame_to_z` (see sam2_utils/review.py), so a
+    narrowed `frame_to_z` cascades cleanly into a single-frame session with no
+    other change needed."""
+    have_recorded = (Path(recorded_frames_dir) / "00000.jpg").exists()
+    if have_recorded and not anchor_only:
+        return recorded_frames_dir, recorded_frame_to_z, recorded_anchor_idx
+
+    z_range = (anchor_catmaid_z, anchor_catmaid_z) if anchor_only else None
+    if not have_recorded:
+        print(f"[gui] recorded frames_dir not found locally ({recorded_frames_dir}), "
+             f"likely a stale Narval scratch path; regenerating from the source tifs"
+             f"{' (anchor only)' if anchor_only else ''}...")
+    elif anchor_only:
+        print("[gui] --anchor-only: preparing just the anchor frame ...")
+    if cw is not None:
+        frames_dir, frame_to_z, anchor_idx, _n = pipeline.prepare_chain_crop_frames(
+            chain, annotate_df, cw, frames_root=cfg.frames_root,
+            anchor_catmaid_z=anchor_catmaid_z, neuron=neuron, chain_idx=chain_idx,
+            z_range=z_range)
+    else:
+        frames_dir, frame_to_z, anchor_idx, _n = pipeline.prepare_video_frames(
+            chain, annotate_df, scale=cfg.scale, frames_root=cfg.frames_root,
+            anchor_catmaid_z=anchor_catmaid_z, neuron=neuron, chain_idx=chain_idx,
+            z_range=z_range)
+    print(f"[gui] frames ready at {frames_dir} ({len(frame_to_z)} frame(s))")
+    return frames_dir, frame_to_z, anchor_idx
+
+
 def _load_frame_stack(frames_dir: str, n_frames: int):
     """Return an array-like (T, H, W, 3) uint8 over the chain's 0-indexed JPEGs.
 
@@ -261,7 +322,8 @@ class ReviewGUI:
 
     def __init__(self, ctx: ReviewContext, *, reviewer: str = "", viewer=None,
                  point_size: float = 4.0, auto_zoom: bool = True, zoom_pad: float = 3.0,
-                 hires_em: bool = False, em_scale: Optional[int] = None):
+                 hires_em: bool = False, em_scale: Optional[int] = None,
+                 anchor_only: bool = False):
         """
         point_size : default diameter of prompt/skeleton points, in _sam px (was 10;
                      4 is unobtrusive at scale-8). Tune live via the dock spinbox.
@@ -277,6 +339,16 @@ class ReviewGUI:
                      The MASK stays scale-8 either way (the only resolution it was
                      propagated/saved at; sharper masks need the tier-2 per-chain crop); it
                      is scaled to overlay whatever EM resolution is loaded.
+        anchor_only : only prepare/load the anchor frame of each chain opened this
+                     session, not the whole chain (see _ensure_local_frames). For the
+                     "only fix the seed" workflow: a real, if unintuitive, savings,
+                     since the per-frame STACK load was already fast via dask's lazy
+                     path, the actual cost was decoding every OTHER frame nobody was
+                     going to look at, especially for a tier-2 chain (no shared decode
+                     cache there, unlike legacy _sam). `,`/`.` frame-stepping and
+                     resume_propagation (`G`) do not make sense with only one frame
+                     loaded; resume_propagation refuses with a clear message instead
+                     of silently doing something degenerate.
         """
         import napari
         self.ctx = ctx
@@ -284,6 +356,7 @@ class ReviewGUI:
         self.point_size = float(point_size)
         self.auto_zoom = bool(auto_zoom)
         self.zoom_pad = float(zoom_pad)
+        self.anchor_only = bool(anchor_only)
         # em_scale selects the raw-EM backdrop downscale: 1 = full res (the old --hires-em),
         # 2 = half, 4 = quarter. None means the scale-8 JPEGs. An explicit em_scale wins over
         # --hires-em; --hires-em alone means em_scale=1.
@@ -325,13 +398,11 @@ class ReviewGUI:
         self.neuron, self.chain_idx = neuron, chain_idx
         self.chain = self.ctx.find_chain(neuron, chain_idx)
 
-        # rebuild the overlay from disk (one definition of "how a mask is read")
-        self.data = review.load_chain(chain_dir, verbose=True)
-        self.qc_df = self.data.qc if isinstance(self.data.qc, pd.DataFrame) else None
         # the chain's serialized state carries the ORIGINAL seed (prompts.points_sam
         # / labels / box_sam), loaded so we can pre-populate the prompts layer with
         # it rather than starting empty (else "re-run image phase" has no positive
-        # point). Also reused by _anchor_dict.
+        # point). Also reused by _anchor_dict. Loaded BEFORE review.load_chain (not
+        # after, as before) because frames_dir may need regenerating first, see below.
         sp = chain_dir / "state.json"
         self._state = pipeline.load_state(sp) if sp.exists() else None
         # tier-2 chains were propagated/saved in a per-chain crop space (_pcrop). The
@@ -344,6 +415,32 @@ class ReviewGUI:
             self._cw = alignment.CropWindow.from_dict(self._state.crop_window)
             print(f"[gui] tier-2 crop chain: _pcrop window {self._cw.size_tif} "
                   f"@ crop_scale {self._cw.crop_scale}")
+
+        # frames_dir is an absolute path baked in at generation time; on a different
+        # machine (or after a Narval scratch dir was cleaned up) it may not exist here
+        # any more, regenerate it from the source tifs rather than crash on open.
+        # anchor_only additionally narrows this to just the anchor z regardless of
+        # whether the full recording exists, see _ensure_local_frames.
+        frames_dir_override, frame_to_z_override, anchor_idx_override = None, None, None
+        if (self._state is not None and self._state.frames_dir
+                and self._state.anchor_catmaid_z is not None):
+            frames_dir_override, frame_to_z_override, anchor_idx_override = _ensure_local_frames(
+                self._state.frames_dir, self._state.frame_to_z, self._state.anchor_frame_idx,
+                chain=self.chain, cw=self._cw, cfg=self.ctx.cfg,
+                annotate_df=self.ctx.annotate_df, anchor_catmaid_z=self._state.anchor_catmaid_z,
+                neuron=neuron, chain_idx=chain_idx, anchor_only=self.anchor_only)
+
+        # rebuild the overlay from disk (one definition of "how a mask is read").
+        # anchor_idx MUST come from the same source as frame_to_z: a narrowed
+        # (anchor_only) frame_to_z puts the anchor at local index 0, not wherever it
+        # sat in the recorded state.json (real bug caught testing this: AIAR
+        # chain_00's anchor was frame 43 of 88, leaving anchor_idx=43 against a
+        # 1-frame stack breaks every anchor-detection check downstream).
+        self.data = review.load_chain(chain_dir, frames_dir=frames_dir_override,
+                                      frame_to_z=frame_to_z_override,
+                                      anchor_idx=anchor_idx_override,
+                                      warn_unmapped=not self.anchor_only, verbose=True)
+        self.qc_df = self.data.qc if isinstance(self.data.qc, pd.DataFrame) else None
 
         # frame stack + dims
         t = max(self.data.video_segments) + 1 if self.data.video_segments else 0
@@ -433,13 +530,25 @@ class ReviewGUI:
         Coords are _sam (or _pcrop), the layer scale handles overlay, matching the
         round-trips in _prompts_for_frame / _box_for_frame. The box seeds only the
         image phase; resume still propagates the mask, not the box. Best-effort: a
-        chain with no serialized prompts (legacy) just leaves the layers empty."""
+        chain with no serialized prompts (legacy) just leaves the layers empty.
+
+        The seed frame index is ``self.data.anchor_idx``, not
+        ``self._state.anchor_frame_idx``: the latter is the RAW recorded index
+        (e.g. 56 of a 113-frame chain), which is only valid against the recorded
+        frame_to_z. A narrowed load (anchor_only) puts the anchor at local index 0,
+        and placing the seed points/box at the raw 56 instead put them a frame
+        napari's dims slider only reaches because THESE layers stretch its T-extent
+        past the single real image slice: the mask looked right at frame 0, but
+        the prompts/box, sitting invisibly at frame 56, looked missing and the
+        slider read "0/56" (real bug, found from a user report opening AIAL
+        chain_00 with --anchor-only)."""
         st = self._state
-        if st is None or st.prompts is None or st.anchor_frame_idx is None:
+        if (st is None or st.prompts is None or st.anchor_frame_idx is None
+                or self.data is None or self.data.anchor_idx is None):
             return
         pts = np.asarray(st.prompts.points_sam, dtype=float)
         labs = np.asarray(st.prompts.labels, dtype=int)
-        af = int(st.anchor_frame_idx)
+        af = int(self.data.anchor_idx)
         if len(pts):
             data = np.column_stack([np.full(len(pts), af, float), pts[:, 1], pts[:, 0]])  # (t,y,x)
             label_strs = ["positive" if int(l) == 1 else "negative" for l in labs]
@@ -656,6 +765,13 @@ class ReviewGUI:
         Then save masks, re-run QC, persist state, and mark the chain CORRECTED.
         """
         if self.data is None or self._recrop_picking:
+            return
+        if self.anchor_only:
+            print("[gui] resume propagation is disabled in --anchor-only mode (only the "
+                 "anchor frame's video is loaded, propagating through it would not track "
+                 "anything real); use 'save masks now' to save the painted anchor, and "
+                 "run the actual propagation as a separate step (e.g. "
+                 "experiments/propagate_from_corrected_seed.py).")
             return
         self.ctx.ensure_predictors(need_image=False, need_video=True)
         frame_idx = self._current_frame()
@@ -1358,24 +1474,66 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
            chain_idx: Optional[int] = None, reviewer: str = "",
            cfg: Optional[pipeline.PipelineConfig] = None, block: bool = True,
            point_size: float = 4.0, auto_zoom: bool = True, hires_em: bool = False,
-           em_scale: Optional[int] = None) -> ReviewGUI:
+           em_scale: Optional[int] = None, anchor_only: bool = False,
+           source: Optional[Path] = None) -> ReviewGUI:
     """Open the review GUI. With ``neuron``/``chain_idx`` it opens straight onto a
     chain; otherwise it opens on the first pending chain (or an empty viewer if the
     queue is empty). ``block=True`` runs napari's event loop (call from a script);
     pass False from an interactive napari/IPython session that already has one.
 
-    ``point_size`` / ``auto_zoom`` / ``hires_em`` forward to ReviewGUI (smaller
-    prompt points, zoom-to-mask on open, full-res EM background; see ReviewGUI)."""
+    ``point_size`` / ``auto_zoom`` / ``hires_em`` / ``anchor_only`` forward to
+    ReviewGUI (smaller prompt points, zoom-to-mask on open, full-res EM background,
+    only-load-the-anchor-frame; see ReviewGUI).
+
+    ``source``, when given together with ``neuron``, auto-provisions ``output_root``
+    from ``source`` via experiments.make_review_tree the FIRST time that neuron is
+    opened (this used to be a required separate manual step,
+    ``py -3 experiments/make_review_tree.py ...``, before every ``gui.py`` open).
+    Idempotent and safe by construction: only runs when ``output_root / neuron``
+    does not already have at least one chain directory, so an already-provisioned
+    (possibly already corrected) neuron is never re-copied and never loses work.
+    Requesting a genuinely fresh copy is still the explicit manual script, this is
+    strictly a "set it up if it is missing" convenience, not a "keep it in sync"
+    one; the working copy diverges from `source` on purpose the moment you correct
+    something in it."""
     import napari
-    ctx = ReviewContext(Path(output_root) if output_root else config.OUTPUT_ROOT, cfg)
+    output_root = Path(output_root) if output_root else config.OUTPUT_ROOT
+    if source is not None and neuron is not None:
+        if (Path(output_root) / neuron).exists():
+            print(f"[gui] {neuron} already provisioned at {output_root}, "
+                 f"not re-copying from --source (would lose any correction in progress)")
+        else:
+            print(f"[gui] {neuron} not found at {output_root}, provisioning from {source} ...")
+            from experiments.make_review_tree import make_review_tree
+            make_review_tree(Path(source), [neuron], Path(output_root))
+    ctx = ReviewContext(Path(output_root), cfg)
     gui = ReviewGUI(ctx, reviewer=reviewer, point_size=point_size,
-                    auto_zoom=auto_zoom, hires_em=hires_em, em_scale=em_scale)
+                    auto_zoom=auto_zoom, hires_em=hires_em, em_scale=em_scale,
+                    anchor_only=anchor_only)
     if neuron is not None and chain_idx is not None:
         gui.open_chain(neuron, int(chain_idx))
     else:
         pend = gui.queue.pending(include_in_review=True)
+        if neuron is not None:
+            # --neuron alone (no --chain) used to be silently ignored here: pend[0]
+            # opened the first pending chain in the WHOLE queue regardless of which
+            # neuron was asked for, real bug, caught opening a different neuron than
+            # requested. Filter to the requested neuron; fall back to its first chain
+            # on disk (not necessarily "pending") if it has no flagged/pending chains,
+            # so --neuron always opens something from that neuron, never a stranger.
+            pend = [p for p in pend if p[0] == neuron]
+            if not pend:
+                chain_idxs = sorted(
+                    int(p.name.split("_")[-1])
+                    for p in (ctx.output_root / neuron).glob("chain_*") if p.is_dir())
+                if chain_idxs:
+                    print(f"[gui] {neuron} has no pending/flagged chains, "
+                         f"opening its first chain ({chain_idxs[0]}) instead")
+                    pend = [(neuron, chain_idxs[0])]
         if pend:
             gui.open_chain(*pend[0])
+        elif neuron is not None:
+            print(f"[gui] no chains found for neuron {neuron} under {ctx.output_root}")
         else:
             print("[gui] review queue is empty (no chains with manifest status 'flagged' "
                   "left undisposed). Open one manually via the queue picker.")
@@ -1399,11 +1557,20 @@ def main() -> None:
     ap.add_argument("--em-scale", type=int, default=None,
                     help="raw-EM backdrop downscale: 1=full (= --hires-em), 2=half, 4=quarter "
                          "(lighter memory). Wins over --hires-em when both are given.")
+    ap.add_argument("--anchor-only", action="store_true",
+                    help="only load the anchor frame of each chain opened this session, "
+                         "not the whole chain (fast open, no frame-stepping/resume-propagation; "
+                         "for an 'only fix the seed' workflow, see gui.py's ReviewGUI docstring)")
+    ap.add_argument("--source", type=str, default=None,
+                    help="original tree to auto-provision --neuron from into --output-root "
+                         "if it is not there yet (skips experiments/make_review_tree.py as a "
+                         "separate manual step; never touches an already-provisioned neuron)")
     args = ap.parse_args()
     launch(Path(args.output_root) if args.output_root else None,
            neuron=args.neuron, chain_idx=args.chain, reviewer=args.reviewer,
            point_size=args.point_size, auto_zoom=not args.no_auto_zoom, hires_em=args.hires_em,
-           em_scale=args.em_scale)
+           em_scale=args.em_scale, anchor_only=args.anchor_only,
+           source=Path(args.source) if args.source else None)
 
 
 if __name__ == "__main__":

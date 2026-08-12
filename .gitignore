@@ -30,6 +30,14 @@ experiments/ab_eval/
 
 # Vendored upstream SAM2 example notebooks (~24 MB) — reference only, not project code.
 examples/
+# Cached vendor API docs (SAM2/SAM3/napari/pgf-tikz PDFs and notebooks, ~41 MB) — reference
+# only, not authored, same reasoning as examples/ above.
+api_docs/
+
+# Rendered presentation assets (per-frame renders, videos): large, regenerable from the source
+# scripts in experiments/, kept on F: instead of in git. The presentation/ deck itself (Slidev
+# markdown) is small and stays tracked; only the bulky rendered output lives here.
+docs/figures/presentation/
 
 # data/ contents are not committed (CATMAID-derived + large GT). Track only the
 # groundtruth scaffold README. (`data/*` not `data/` so git descends to find the negation.)

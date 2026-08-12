@@ -420,10 +420,10 @@ Two threads, now that I have GT:
 - Decimate with quadric edge collapse (small `max_error`); smooth with **Taubin** (volume-preserving)
   not Laplacian (shrinks thin tubes); export PLY/OBJ to Blender. No morphological pre-smoothing.
 
-### 4.9 Ideas raised, not yet scoped (2026-08-04)
+### 4.9 Ideas raised, not yet scoped
 
-Three directions raised in conversation, not designed or built. Recorded here so they are not lost
-before someone has time to scope them properly.
+Recorded here so they are not lost before someone has time to scope them properly. Once an idea gets
+a real design or a queue slot, it moves to §5b and is removed from here, not kept in both places.
 
 - **Spill/underfill-informed conflict resolution.** Not a new direction, this is where 2c/2d and the
   dense multi-neuron overlay TODO already point: merge every per-slice mask into one dense labelmap,
@@ -450,12 +450,12 @@ before someone has time to scope them properly.
   per-slice or propagation runs is the genuinely untried part, and the most immediately actionable of
   the three, since the identity-matching machinery already exists and is measured.
 
-**2026-08-06, two more, grounded in real manual-correction time this round (not just conversation).**
-Correcting real SAM3 per-slice output (AIYR, three chains) ran at a roughly constant ~20sec/frame
-regardless of chain length (a 54-frame chain took 20 minutes; a 12-frame and a 1-frame chain took
-~4 minutes combined), "not much faster to correct than drawing the whole thing by hand." That is
-per-slice's jankiness, no frame-to-frame continuity to lean on, showing up as a real human-time
-cost, not just the predicted worse-3D-mesh cost from §4.9's temporal-consistency gap (see
+**2026-08-06, grounded in real manual-correction time (not just conversation).** Correcting real
+SAM3 per-slice output (AIYR, three chains) ran at a roughly constant ~20sec/frame regardless of
+chain length (a 54-frame chain took 20 minutes; a 12-frame and a 1-frame chain took ~4 minutes
+combined), "not much faster to correct than drawing the whole thing by hand." That is per-slice's
+jankiness, no frame-to-frame continuity to lean on, showing up as a real human-time cost, not just
+the predicted worse-3D-mesh cost from the temporal-consistency gap (see
 [[eval-gaps-temporal-and-sam3-tradeoffs]]).
 
 - **Correction propagation in the review GUI, not yet designed.** The diagnosis: "correction is too
@@ -474,57 +474,21 @@ cost, not just the predicted worse-3D-mesh cost from §4.9's temporal-consistenc
   independent of it. Also noted: local hardware cannot run SAM3 at all, so any related spike work is
   cloud/Narval-only, not a local check like the ridge-map spike above.
 
-**2026-08-07, PI meeting, several more (student's own commentary marked apart).** Full detail in
+**2026-08-07, PI meeting.** Full detail, including the student's own commentary marked apart:
 [[pi-meeting-2026-08-07-ideas]]. One item was a real bug, not just an idea, fixed same day: the
-presentation described automask as running with "no prompts at all," which is wrong, it samples
-its own grid of points as prompts, just not a human-placed one.
+presentation described automask as running with "no prompts at all," which is wrong, it samples its
+own grid of points as prompts, just not a human-placed one.
 
 - **Per-slice naming doesn't communicate image mode on its own**, worth a rename or a consistent
   first-use tie-in. Cosmetic, not researched, not scoped.
-- **Bounding-box prompting for per-slice.** Now has a real path, see the new §4.5 bullet above;
-  moved out of "unscoped."
-- **Predictor-construction-time tuning** (`mask_threshold`/`max_hole_area`/`max_sprinkle_area`/
-  `fill_hole_area`), a new discovery the same day, not originally one of the PI's items but found
-  while researching them. See the new §4.5 bullet above.
-- **Feed per-frame negative-prompt node info into propagation, not just at the seed.** The large
-  one, researched 2026-08-07 (real deep-research pass against SAM2's actual source, not general
-  knowledge): **real negative, deprioritized.** Verified against `sam2_video_predictor.py`/
-  `sam2_base.py`: a correction only stays in the always-attended memory window for about
-  `num_maskmem-1` (~6) frames before aging out unless promoted to a permanent conditioning frame,
-  and there is no default cap on conditioning-frame count
-  (`max_cond_frames_in_attn=-1`), so forcing permanence risks unbounded compute growth over a long
-  z-stack. Confirmed video-mode correction costs MORE than per-slice, not the same, since any
-  video-mode correction runs the full memory-attention stack while `SAM2ImagePredictor` never does.
-  No precedent found for continuous per-frame correction in dense multi-instance video mode, only
-  error-triggered (not continuous) re-correction for single-object tracking. The hoped-for outcome,
-  erasing the per-slice-vs-propagation split, is not supported: this would cost more than per-slice
-  while the correction's influence fades unless paid for with unbounded compute. Not worth pursuing
-  ahead of the cheaper §4.5 levers above. Revisit only if those stall. Full findings:
-  `sam2-propagation-feasibility-findings.md` (session scratchpad, not yet committed to the repo).
-- **FFN + node-informed agglomeration (student's own opinion, not the PI's).** Researched
-  2026-08-07: real precedent exists only for using skeleton/seed priors at seed-time (FFN itself,
-  SegEM) or at proofreading/evaluation-time (GALA, guided proofreading), nothing found where a live
-  prior arbitrates merge decisions inside agglomeration itself. Either genuinely novel or genuinely
-  unexplored, and it is a different pipeline entirely, not an extension of what is running now.
-  Sharpens the existing Phase 4 paradigm-gate entry (FFN / affinity + LSD + mutex watershed) for
-  when Phase 4 is actually scoped, but premature while the cheaper SAM2-side levers above are
-  untried, consistent with this document's own measurement-first sequencing.
-- **Spill/overfill root-cause investigation, not done.** Real examples, especially propagation:
-  fuzzy boundary or raw membrane-intensity ambiguity? Magnitude and mechanism, not just the
-  already-measured rate, and needs real visual confirmation before proposing a fix. Cheap, no
-  architecture risk, still worth doing regardless of anything else on this list.
-- **MitoNet/NucleoNet as an underfill-prevention filter**, a second application distinct from the
-  ridge-map-suppression use already tried this week: keep SAM's own prompting from getting confused
-  by an organelle in the first place, extending [[nucleus-capture-underfill]]'s existing
-  selective-generous-multimask lever to mitochondria too. Infrastructure already exists (both
-  detectors verified generalizing), moderate effort to wire in.
 
-**Net ranking after the 2026-08-07 research pass.** Try, roughly in order: predictor-construction
-tuning (cheapest, zero architecture risk) → spill/overfill root-cause investigation (cheap,
-informs everything else) → MitoNet/NucleoNet as underfill filter (infra exists) → self-derived box
-prompting for per-slice (cheap, no CATMAID dependency). Not now: per-frame negative-prompt
-propagation (real, researched cost that outweighs the hoped-for benefit) and FFN + node-informed
-agglomeration (novel territory, high effort, premature).
+Four other ideas from that meeting were researched the same day and already carry a real verdict or
+a queue slot, so they live in §5b now instead of being duplicated here: box prompting for per-slice
+(item 15), predictor-construction-time tuning (item 14), per-frame negative-prompt propagation
+(item 18, researched and deprioritized), and FFN + node-informed agglomeration (item 19, researched
+and deprioritized). Two more from the same meeting, the spill/overfill investigation and
+MitoNet/NucleoNet as an underfill filter, turned out to restate existing queue items rather than add
+anything new, see items 16 and 17.
 
 ---
 
@@ -663,6 +627,46 @@ every frame, ordered cheap to expensive:
   or correct the seed mask on the anchor slice before the chain propagates. More human time per chain,
   but a clean seed is the highest-leverage single input to propagation quality, so it is worth it on hard
   or high-value chains. The manual counterpart to metric best-seed; pairs with the review GUI.
+  **2026-08-10, built, then narrowed to what the real workflow needs.** First built for MULTIPLE
+  manually-verified frames per chain, generalizing this lever beyond a single seed: verified against the
+  installed `sam2_video_predictor.py` that `propagate_in_video`'s default start frame is "the earliest
+  conditioning frame" regardless of how many exist, and an already-conditioned frame is returned verbatim
+  during a sweep rather than re-predicted, so no new SAM2-level mechanism was needed for multi-frame
+  seeding, only calling `add_new_mask` more than once before the existing bidirectional sweep. Landed as
+  `pipeline.propagate.propagate_from_verified_masks` (4 real unit tests,
+  `tests/test_propagate_from_verified_masks.py`) plus `experiments/propagate_from_verified.py`.
+
+  The actual workflow turned out narrower: only the ANCHOR frame gets manually corrected, not scattered
+  frames, and the compute-heavy runs happen on Narval/CCDB, not locally. That makes the multi-frame
+  machinery unnecessary for this specific case (seeding EVERY frame is a real degenerate case worth
+  recording: the memory encoder never runs, since it is skipped both when a mask is added and when an
+  already-conditioned frame is read back verbatim during a sweep, so an all-frames-seeded chain produces
+  zero propagation effect, identical to plain per-slice), "only fix the seed" is exactly the single-anchor
+  case `propagate()` already handled. Landed instead:
+
+  - `experiments/find_corrected_chains.py`: which chains actually changed, a direct pixel diff of the
+    anchor mask (working tree vs. source), not a GUI-state lookup. `_manifest.csv`'s `"corrected"` status
+    was checked and rejected as the signal, it is only set by `resume_propagation`, which runs its own
+    local re-propagation immediately, so by the time a chain shows that status its whole tail has already
+    changed, not just the hand-painted frame.
+  - `experiments/propagate_from_corrected_seed.py`: re-propagates a corrected chain in TWO variants for
+    comparison (mask-seed direct, and box-seed, a box derived from the corrected mask via the existing
+    `box_from_mask` alongside the chain's original point prompts), both through `propagate()` unchanged.
+  - `experiments/make_review_tree.py`: fixed a real silent bug in the working-copy setup (the GUI opened
+    empty because `_manifest.csv`/`_triage.csv` were never copied, only the neuron dirs) and made it
+    general, any neuron list, not just AIYL/AIYR.
+  - `cluster/run_reprop_corrected_seed.sh`: the Narval side, one Slurm array task per corrected chain from
+    `find_corrected_chains.py`'s manifest. Not yet smoke-tested on Narval.
+  - `experiments/report_assets.py`: headless before/after chain and whole-neuron renders plus a
+    merge-metric comparison, for the "Pipeline Report" deliverable. Reuses
+    `sam2_utils.video_viz.to_gif`/`to_mp4` (the same functions `gui_neuron.py`'s "export overlay" button
+    calls), no napari needed.
+
+  Working data: `F:\ZhenLab\Data\output_masks\manual_verify_AIYL_AIYR` (AIYL + AIYR's SAM3 per-slice
+  output, `resolution_experiments/target_perslice_only_guard_sam3_merged`, for hand-correction via
+  `gui.py`). The multi-frame machinery (`propagate_from_verified_masks`, `propagate_from_verified.py`)
+  is not removed, real, tested, and stays available if a future workflow needs more than the anchor
+  seeded, just not what this round uses. See the CHANGELOG's 2026-08-10 entry for the full trail.
 - **Second-pass re-anchoring of flagged / blown frames**: re-segment only the frames QC flagged
   (image-mode or neighbour-seed), rather than the blow-up guard's current copy-the-neighbour patch.
 - **Neighbour-seed** a detected-wrong frame from its most-correct neighbour, and **union of two no-spill
@@ -1170,6 +1174,10 @@ Mapped to the phases above. DONE / PARTLY DONE / READY / TODO.
 `bigimg` (SAM2 `image_size` 2048) stays retired: it crashes off-distribution and its output would be
 unvalidated; the resolution goal is served by cropping / tiling.
 
+Items 14-19 all trace back to the 2026-08-07 PI meeting ([[pi-meeting-2026-08-07-ideas]]), ordered
+roughly cheapest/most-actionable first: 14-15 need no new infrastructure, 16-17 reuse infrastructure
+that already exists, and 18-19 are researched-and-deprioritized rather than queued to try next.
+
 14. **Predictor-construction-time tuning** (Phase 1.5/4.5). READY, not yet tested. Real, currently
     unused SAM2 knobs found 2026-08-07: `mask_threshold`, `max_hole_area`, `max_sprinkle_area` on
     `SAM2ImagePredictor`, `fill_hole_area` on `SAM2VideoPredictor`, all verified against the
@@ -1180,22 +1188,96 @@ unvalidated; the resolution goal is served by cropping / tiling.
     existing point-only pass once, derive a box from that mask via the already-built
     `box_from_mask`, re-predict with the box as a per-frame refinement. No CATMAID-radius
     dependency (that source stays unreliable, see [[catmaid-radius-placeholder]]). See §4.5.
-16. **Spill/overfill root-cause investigation** (Phase 2/4.5). TODO. Real examples, especially
-    propagation: fuzzy boundary vs. raw membrane-intensity ambiguity, magnitude and mechanism, not
-    just the already-measured rate. Requires real visual confirmation before proposing a fix.
+16. **Spill/overfill root-cause investigation** (Phase 2/4.5). PARTLY DONE, 2026-08-09: real
+    examples now exist with both signals and a first mechanism read, not yet a systematic survey.
+    Needed both the foreign-node signal (already scored) and the mild-bleed signal (the membrane
+    pass, never run on the SAM3 propagation trees before this). Real cost measured at ~1.05s/frame
+    end to end, ~19h for the full 129-neuron tree, so scoped instead to the 20 highest-foreign-node
+    neurons, scored overnight via the new resumable `experiments/overnight_membrane_scan.py`
+    (`score_run` has no error handling and writes once at the end, unsafe for an unattended
+    multi-hour run given F: has dropped repeatedly this session). All 20 finished clean in ~63
+    minutes (faster than estimated), stitched into `_merge_metric_membrane_subset.csv` under
+    `output_masks/target_tier2_s1forced_neg_sam3_merged`: 485 chains, 12,067 frames,
+    `foreign_frame_rate=0.458`, `mild_bleed_rate=0.019`, `spanning_merge_rate=0.066`,
+    `underfill=0.625`. See the CHANGELOG's 2026-08-09 entry, including a stale-CSV trap found in
+    the `resolution_experiments/` copy of this tree (do not score from that copy) and a real bug
+    fixed in `eval.concat_merge_shards`'s shard-sort key.
+
+    **Four real examples rendered** (`experiments/spill_examples.py`,
+    `docs/figures/presentation/spill-overfill-examples/`), revised after a real methodology
+    problem was caught (both by direct PI-style feedback and by checking the data): the first
+    pass picked single worst FRAMES by foreign-node count and paired each with "the next
+    chronological frame", but for a chain that is bad basically everywhere that pairing just shows
+    more of the same, not a scenario. Checking each example chain's own timeline from its anchor
+    (`anchor_catmaid_z`, read straight from `state.json`) outward found the real reason: all three
+    original picks (`SAAVL chain_17`, `SMDDL chain_03`, `AVJR chain_03`) already had a foreign
+    node AT THE ANCHOR FRAME ITSELF, there was no clean-to-bled transition to show because they
+    never started clean.
+
+    That distinction is the real finding, and the examples now document it directly, two kinds:
+
+    - **`bad_seed`**: the anchor frame is already contaminated. `SAAVL chain_17`, anchor z=1460,
+      already touches 1 foreign node there; by z=1568 (108 frames out) the mask has grown into a
+      long band along what reads as body wall muscle, engulfing 9 foreign nodes AND losing its own
+      node entirely (`own_contained=False`, confirmed against the CSV, not just the render). A
+      small seed-level contamination compounding into a severe, own-target-losing chronic bleed.
+      `AVJR chain_03`, anchor z=1610, is worse at the seed itself (6 foreign nodes already) and
+      stays in the same range (8 at z=1607), a mask that was never on-target rather than one that
+      drifted there.
+    - **`drift`**: the anchor is genuinely clean (own node contained, zero foreign nodes), and
+      real search across the 20-neuron subset's full per-chain timelines found 137 chains with
+      this property. `SABD chain_25` (anchor z=1407) stays completely clean for 77 propagated
+      frames before its first foreign-node hit at z=1330; `SIADR chain_06` (anchor z=1404) stays
+      clean for 23 frames before onset at z=1427. Both render as a genuine transition pair (last
+      clean frame vs. first bled frame): a tight, well-contained mask sitting inside a real,
+      clearly bounded compartment, then a small bulge crossing a real (often locally weaker)
+      membrane boundary into the neighbour where the foreign node sits. This is the clean
+      "propagation caused this" story the `bad_seed` chains cannot tell.
+
+    Two rendering bugs found and fixed while building these: node markers only showed a green star
+    for an OWN node found INSIDE the mask (score_chain's real logic checks ANY of a neuron's own
+    nodes at that z, since a neuron can have more than one branch point at the same z, e.g. AVJR
+    had three distinct nodes at z=1607); fixed to draw every own node, hollow when the mask misses
+    it, filled when contained, which is what surfaced the SAAVL own-target-loss finding above.
+    Second, letting an own node expand the crop window blew the window out to include unrelated
+    distant branches, shrinking the actual mask to a speck; fixed to size the window from the mask
+    and foreign nodes only, with the axes limits locked before any off-window node is scattered
+    (an unlocked scatter call was auto-expanding the whole view, the same shrink-to-speck symptom
+    from a different cause).
+
+    Still open: a systematic survey beyond these four (137 real `drift` candidates exist to pick
+    from), and how common `bad_seed` is relative to `drift` across the tree, not established by
+    four hand-picked chains.
 17. **MitoNet/NucleoNet as an underfill-prevention filter** (Phase 2e/2f). TODO, infra exists.
     Distinct from the ridge-map-suppression use already tried and found near-flat: keep SAM's own
     prompting from getting confused by an organelle in the first place, extending
     [[nucleus-capture-underfill]]'s selective-generous-multimask lever to mitochondria too.
-18. **Per-frame negative-prompt propagation** (Phase 4, deprioritized). Researched 2026-08-07: real
-    architectural cost (more expensive than per-slice, correction influence fades within ~6 frames
-    unless made permanent, which risks unbounded compute over a long z-stack), no precedent found.
-    Not worth building ahead of items 14-17. See §4.9's 2026-08-07 PI-meeting block for the full
-    verdict.
-19. **FFN + node-informed agglomeration** (Phase 4, deprioritized). Researched 2026-08-07: real
-    precedent exists only for seed-time or evaluation-time use of priors, not inside agglomeration
-    itself. Novel territory or unexplored territory, high effort, a different pipeline, premature
-    while 14-17 are untried.
+18. **Per-frame negative-prompt propagation** (Phase 4, deprioritized). The idea: feed per-frame
+    skeleton-node info (positive plus neighbouring-node negatives) into propagation continuously,
+    not just at the seed, which would in principle erase the per-slice-vs-propagation split
+    entirely. Researched 2026-08-07 against SAM2's actual source
+    (`sam2_video_predictor.py`/`sam2_base.py`), not general knowledge: **real negative.** A
+    correction only stays in the always-attended memory window for about `num_maskmem-1` (~6)
+    frames before aging out unless promoted to a permanent conditioning frame, and there is no
+    default cap on conditioning-frame count (`max_cond_frames_in_attn=-1`), so forcing permanence
+    risks unbounded compute growth over a long z-stack. Confirmed video-mode correction costs MORE
+    than per-slice, not the same, since any video-mode correction runs the full memory-attention
+    stack while `SAM2ImagePredictor` never does. No precedent found for continuous per-frame
+    correction in dense multi-instance video mode, only error-triggered (not continuous)
+    re-correction for single-object tracking. The hoped-for outcome is not supported: this would
+    cost more than per-slice while the correction's influence fades unless paid for with unbounded
+    compute. Not worth building ahead of items 14-17; revisit only if those stall. Full findings:
+    `sam2-propagation-feasibility-findings.md` (session scratchpad, not yet committed to the repo).
+19. **FFN + node-informed agglomeration** (Phase 4, deprioritized). Student's own idea, not the
+    PI's: instead of pushing SAM2 further, try a SOTA affinity/agglomeration method (FFN-style) and
+    inform the agglomeration process directly with our skeleton nodes. Researched 2026-08-07: real
+    precedent exists only for using skeleton/seed priors at seed-time (FFN itself, SegEM) or at
+    proofreading/evaluation-time (GALA, guided proofreading), nothing found where a live prior
+    arbitrates merge decisions inside agglomeration itself. Either genuinely novel or genuinely
+    unexplored territory, and it is a different pipeline entirely, not an extension of what is
+    running now. Sharpens the existing Phase 4 paradigm-gate entry (FFN / affinity + LSD + mutex
+    watershed) for when Phase 4 is actually scoped, but premature while the cheaper SAM2-side
+    levers in items 14-17 are untried.
 
 ---
 

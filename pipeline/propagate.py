@@ -303,6 +303,53 @@ def propagate(video_predictor, frames_dir: str, prompts: Prompts,
         session.close()
 
 
+def propagate_from_verified_masks(video_predictor, frames_dir: str,
+                                  masks_by_frame: dict[int, np.ndarray], *, obj_id: int,
+                                  subtimings: Optional[dict] = None
+                                  ) -> tuple[dict[int, dict[int, np.ndarray]], dict[int, float], dict[int, float]]:
+    """Seed EVERY frame in ``masks_by_frame`` as its own conditioning frame (not just a
+    single anchor), then propagate bidirectionally to fill in the rest. The manually
+    verified/corrected-mask counterpart to ``propagate()``'s single-anchor driver.
+
+    No new SAM2-level mechanism was needed for this, only seeding more than one frame
+    before running the existing bidirectional sweep. Verified against the installed
+    ``sam2_video_predictor.py``: ``propagate_in_video``'s default ``start_frame_idx`` is
+    "the earliest frame with input points/mask" regardless of how many conditioning
+    frames exist, and a frame already in ``cond_frame_outputs`` is returned verbatim
+    during a sweep, never re-predicted. So a normal forward-then-reverse bidirectional
+    sweep rooted at the earliest verified frame correctly threads through and preserves
+    every OTHER verified frame it passes along the way, and that frame's own encoded
+    memory is available (not aged out, conditioning frames never age out of the
+    attention window) for whatever comes after it in the same sweep direction.
+
+    ``masks_by_frame``: {frame_idx (0-based, video-local): mask bool HxW in the
+    propagation space}, at least one entry, every mask already the SAME shape the
+    session's frames use (image_size or the crop size propagation runs in, matching
+    what ``add_mask``/``add_new_mask`` already expects; this function does not resize).
+    Which frames belong in this dict, e.g. only the frames a human actually corrected
+    versus every frame of an existing per-slice run, is a caller decision, not something
+    this function infers.
+
+    Returns the same shape as ``propagate()``: (video_segments, frame_conf, pred_iou).
+    """
+    if not masks_by_frame:
+        raise ValueError("masks_by_frame must have at least one entry")
+    _t = perf_counter()
+    session = PropagationSession(video_predictor, frames_dir, obj_id=obj_id)
+    if subtimings is not None:
+        subtimings["jpeg_load"] = perf_counter() - _t
+    try:
+        for frame_idx, mask in masks_by_frame.items():
+            session.add_mask(int(frame_idx), mask)
+        _t = perf_counter()
+        session.run_bidirectional()
+        if subtimings is not None:
+            subtimings["propagate_only"] = perf_counter() - _t
+        return session.video_segments, session.frame_conf, session.pred_iou
+    finally:
+        session.close()
+
+
 def _node_id_at(annotate_df: pd.DataFrame, catmaid_z: int, x_tif: float, y_tif: float):
     """The node_id backing a real (non-interpolated) centreline point, or None.
 

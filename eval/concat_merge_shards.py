@@ -43,6 +43,16 @@ SHARD_GLOB = "_merge_metric.shard_*.csv"
 Z_SHARD_GLOB = "_z_consistency.shard_*.csv"
 
 
+def _shard_sort_key(p: Path):
+    """Sort shard files by their trailing suffix: numerically when the cluster's
+    integer shard index (``shard_<i>.csv``) is there, alphabetically otherwise (a
+    neuron-named shard, e.g. ``membrane_shard_SDQR.csv``). Ordering is cosmetic,
+    concatenation is a plain row union either way, so this only needs to not crash
+    on a non-numeric suffix, not produce a specific order across the two kinds."""
+    suffix = p.stem.split("_")[-1]
+    return (0, int(suffix)) if suffix.isdigit() else (1, suffix)
+
+
 def split_neurons(neurons: Sequence[str], n_shards: int) -> List[List[str]]:
     """Split ``neurons`` into ``n_shards`` balanced, contiguous, disjoint chunks.
 
@@ -148,8 +158,7 @@ def concat_tree(tree: Path, out_csv: Path | None = None,
     with no z-consistency shards skips this step entirely: the summary and printed
     line simply omit the z segment, same as a tree scored with no z data."""
     tree = Path(tree)
-    shard_csvs = sorted(tree.glob(shard_glob),
-                        key=lambda p: int(p.stem.split("_")[-1]))
+    shard_csvs = sorted(tree.glob(shard_glob), key=_shard_sort_key)
     if not shard_csvs:
         raise SystemExit(f"[concat] no {shard_glob} shards under {tree}")
     df = concat_shard_frames(shard_csvs)
@@ -157,8 +166,7 @@ def concat_tree(tree: Path, out_csv: Path | None = None,
     df.to_csv(dest, index=False)
     summary = summarize_concat(df)
 
-    z_shard_csvs = sorted(tree.glob(Z_SHARD_GLOB),
-                          key=lambda p: int(p.stem.split("_")[-1]))
+    z_shard_csvs = sorted(tree.glob(Z_SHARD_GLOB), key=_shard_sort_key)
     if z_shard_csvs:
         z_df = concat_shard_z_transitions(z_shard_csvs)
         if len(z_df):

@@ -28,9 +28,19 @@ def prepare_video_frames(chain: dict, annotate_df: pd.DataFrame, *, scale: int,
                          frames_root: Optional[Path],
                          anchor_catmaid_z: int,
                          neuron: str, chain_idx: int,
-                         frame_store: Optional[FrameStore] = None
+                         frame_store: Optional[FrameStore] = None,
+                         z_range: Optional[tuple[int, int]] = None,
                          ) -> tuple[str, dict[int, int], int, int]:
     """Give SAM2 the 0-indexed downscaled JPEG sequence it needs -> with reuse.
+
+    ``z_range``, when given, OVERRIDES the chain's own node-derived z-extent (the
+    default, None, still spans every node as before): pass e.g.
+    ``(anchor_catmaid_z, anchor_catmaid_z)`` to prepare just the anchor frame, for a
+    caller that only needs to look at or seed one z, not browse the whole chain (the
+    review GUI's `--anchor-only` mode). The shared decode cache is unaffected either
+    way, keyed by z + scale, so narrowing this never re-decodes a z some other call
+    already cached, and widening it back out later is equally cheap for whatever is
+    already cached.
 
     Two-tier layout under frames_root:
       * a shared cache  ``frames_cache_s{scale}/z{file_z}.jpg`` -> each frame
@@ -58,14 +68,17 @@ def prepare_video_frames(chain: dict, annotate_df: pd.DataFrame, *, scale: int,
     if frames_root is None:
         raise ValueError("PipelineConfig.frames_root must be set for video frame prep")
 
-    # z-extent over ALL chain nodes (non-monotonic in z -> can't use nodes[0]/[-1])
-    chain_z = [
-        int(annotate_df.loc[
-            annotate_df["node_id"].astype(str) == str(n), "z"
-        ].item())
-        for n in chain["nodes"]
-    ]
-    start_z, end_z = min(chain_z), max(chain_z)
+    if z_range is not None:
+        start_z, end_z = z_range
+    else:
+        # z-extent over ALL chain nodes (non-monotonic in z -> can't use nodes[0]/[-1])
+        chain_z = [
+            int(annotate_df.loc[
+                annotate_df["node_id"].astype(str) == str(n), "z"
+            ].item())
+            for n in chain["nodes"]
+        ]
+        start_z, end_z = min(chain_z), max(chain_z)
 
     fs = frame_store or TifFrameStore()
     anchor_key = fs.key_of_z(anchor_catmaid_z)
@@ -382,7 +395,8 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
                               frames_root: Optional[Path],
                               anchor_catmaid_z: int,
                               neuron: str, chain_idx: int,
-                              frame_store: Optional[FrameStore] = None
+                              frame_store: Optional[FrameStore] = None,
+                              z_range: Optional[tuple[int, int]] = None,
                               ) -> tuple[str, dict[int, int], int, int]:
     """Tier-2 video frames: the chain's frames cropped to `cw` and saved as a
     0-indexed JPEG view in `_pcrop` space.
@@ -391,7 +405,11 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     ``cw.crop_scale``, the SAME crop-then-downscale as ``anchor_crop_predict``, so
     the anchor seed (computed in the crop) and the propagated frames share EXACT
     `_pcrop` pixels. Unlike ``prepare_video_frames`` there is no cross-chain decode
-    cache (every chain's window is unique). The per-frame read goes through
+    cache (every chain's window is unique), which makes ``z_range`` (see
+    ``prepare_video_frames``'s docstring, same override, e.g.
+    ``(anchor_catmaid_z, anchor_catmaid_z)`` for just the anchor) even more worth
+    using here: there is no shared cache to fall back on, every z this prepares gets
+    decoded fresh, every time. The per-frame read goes through
     ``_read_tif_window``: a windowed memmap slice that pages in only the
     window's rows instead of decoding the whole ~85 MB frame, which is where this
     function's wall-time lived. View dir is namespaced by neuron+chain+crop_scale and
@@ -404,13 +422,16 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     if frames_root is None:
         raise ValueError("PipelineConfig.frames_root must be set for video frame prep")
 
-    chain_z = [
-        int(annotate_df.loc[
-            annotate_df["node_id"].astype(str) == str(n), "z"
-        ].item())
-        for n in chain["nodes"]
-    ]
-    start_z, end_z = min(chain_z), max(chain_z)
+    if z_range is not None:
+        start_z, end_z = z_range
+    else:
+        chain_z = [
+            int(annotate_df.loc[
+                annotate_df["node_id"].astype(str) == str(n), "z"
+            ].item())
+            for n in chain["nodes"]
+        ]
+        start_z, end_z = min(chain_z), max(chain_z)
 
     fs = frame_store or TifFrameStore()
     anchor_key = fs.key_of_z(anchor_catmaid_z)
