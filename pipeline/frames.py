@@ -172,12 +172,34 @@ def load_frame_sam(catmaid_z: int, *, scale: int,
     `frame_store` selects the EM source; the default (TifFrameStore) is the original
     tif-stack path. Lift from: parse_file_z + tif glob + cv2.imread + downscale_image.
     """
+    import time
+
     import cv2
 
     fs = frame_store or TifFrameStore()
     src_path = fs.file_for_z(catmaid_z)
 
-    image_full = cv2.cvtColor(cv2.imread(str(src_path)), cv2.COLOR_BGR2RGB)
+    # Real, recurring failure mode reading these ~9216x9230 full-res frames from the
+    # network-mounted EM store (F:), confirmed at least twice under different root
+    # causes: transient F: read failures (imread returns None, the same file reads
+    # fine in isolation moments later) and system RAM exhaustion under concurrent
+    # heavy jobs (imread raises an explicit OutOfMemoryError; each frame is ~255MB).
+    # A retry-with-backoff absorbs both: it rides out a brief disk hiccup, and it
+    # gives a concurrent process time to finish and release memory. It does NOT fix
+    # sustained RAM pressure by itself, avoid running more than one heavy render/
+    # score job at a time on this machine (19.7GB total RAM measured 2026-08-14).
+    n_attempts = 8
+    raw = None
+    for attempt in range(n_attempts):
+        raw = cv2.imread(str(src_path))
+        if raw is not None:
+            break
+        if attempt < n_attempts - 1:
+            time.sleep(3.0)
+    if raw is None:
+        raise IOError(f"cv2.imread returned None for {src_path} after {n_attempts} attempts")
+
+    image_full = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
     H_full, W_full = image_full.shape[:2]
     image_sam = _downscale_image(image_full, scale)
     return image_sam, (H_full, W_full)

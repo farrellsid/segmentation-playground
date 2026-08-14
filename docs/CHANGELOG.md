@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-14, re-propagation comparison report: mask-seed vs box-seed, a real underfill fix found, transient F:/RAM read failures hardened](#r-2026-08-14-reprop-comparison)
 - [2026-08-12, review-session follow-ups: a shared before/after crop window, --anchor-only context frames](#r-2026-08-12-review-followups)
 - [2026-08-12, lasso-add mask tool: a freehand loop unions into the current frame's mask, undo-compatible with the paint brush](#r-2026-08-12-lasso-add)
 - [2026-08-12, `--anchor-only` prompt-seeding bug: prompts/box placed off the narrowed frame, explaining a "0/56" report](#r-2026-08-12-anchor-only-seed-bug)
@@ -50,6 +51,62 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-14-reprop-comparison"></a>
+## 2026-08-14, re-propagation comparison report: mask-seed vs box-seed, a real underfill fix found, transient F:/RAM read failures hardened
+
+Report tooling for the AIA/AIY re-propagation job (2026-08-13, `cluster/run_reprop_corrected_seed.sh`
+run on 45 AIA + 42 AIY corrected chains, mask-seed and box-seed variants each): compares the two
+seeding strategies against each other and against the pre-reprop tail.
+
+**`experiments/report_assets.py` gained `render_reprop_triple`/`chain-gif-triple` and
+`neuron-gif-triple`.** Renders before/mask-seed/box-seed to ONE shared crop window per chain (or,
+for `neuron-gif-triple`, per neuron, every reprop'd chain overlaid in one crop), computed from the
+union of both reprop trees' masks since neither variant is more "correct" a priori. Also gained
+`metrics_reprop`/`metrics-reprop`, a merge-metric comparison restricted to a manifest's reprop'd
+chains (not a neuron's full chain list, which would average in dozens of untouched chains and make
+the comparison meaningless). `experiments/render_reprop_report.py` (new) batches the per-chain
+triples from a manifest CSV, idempotent (skips a chain whose three gifs already exist).
+`experiments/build_reprop_docx_report.py` (new) assembles the actual `.docx`: a per-chain table
+keyed to each variant's own FARTHEST-from-anchor frame (not the anchor frame, identical across all
+three trees by construction, so it would show no difference at all), plus a whole-neuron "Merged
+Render" section (middle-frame snapshot, since a multi-chain merge has no single anchor or far end to
+key off).
+
+**Real finding: both reprop variants score WORSE than the pre-reprop tail on the Phase-0 bleed
+metrics, consistently across all 4 sides (AIAL/AIAR/AIYL/AIYR), but this reads backwards without the
+membrane pass.** `foreign_frame_rate`/`total_foreign_nodes` go up in every case (e.g. AIYR
+mask-seed: 0.150 -> 0.339). Enabling `membrane_source="auto"` (off by default in the earlier
+`metrics_before_after`, on here) surfaces the real story: `mean_underfill_fraction` drops 6-8x in
+every case (AIAL: 2.10 -> 0.26; AIYR: 1.69 -> 0.25), and `mean_boundary_on_membrane` improves too
+(+0.09 to +0.12). The pre-reprop tail was badly underfilled (visually confirmed: AIYL chain_03's
+farthest frame was a thin sliver before, a properly cell-sized mask after, both variants), and reprop
+fixes that at the cost of the mask now genuinely reaching neighbouring territory it previously missed
+by being wrong in a different way. **Mask-seed beats box-seed on overfill in all 4 sides** while
+matching it on the underfill fix, so it remains the better default of the two.
+
+**`pipeline/frames.py::load_frame_sam` gained a bounded retry (8 attempts, 3s apart) around
+`cv2.imread`.** Confirmed under real load from this report's whole-neuron merged renders (176-364
+full-res ~9216x9230 frames read per run): two distinct failure modes hit the same call site, transient
+F: read failures (`imread` returns `None`, the identical file reads fine moments later) and system
+RAM exhaustion under concurrent heavy jobs (`imread` raises an explicit `OutOfMemoryError`, one frame
+is ~255MB; this machine has 19.7GB total). The retry absorbs both by construction (rides out a disk
+hiccup, or gives a concurrent process time to finish and free memory), but does not fix sustained RAM
+pressure by itself: avoid running more than one heavy render/score job (including gui.py) at a time.
+
+**Delivery gap found and fixed**: the docx's "Renders" column note pointed at a local F: path
+("the real files are under F:\...\<neuron>\"), useless to a supervisor who does not have that drive.
+Fixed in both `build_reprop_docx_report.py` and the earlier `build_docx_report.py` to say the gif
+files travel alongside the document instead. Delivered as `AIA_reprop_report.zip` /
+`AIY_reprop_report.zip` (docx + every referenced gif at the right relative paths, verified by
+listing the zip's own root entries against the note text). One correction worth recording: Google
+Docs CAN autoplay an animated GIF, but only via "Insert Image > By URL" (a live reference), never for
+an uploaded file or a docx import, which always flattens to a static raster; Word never animates a
+GIF regardless of insertion method.
+
+343 passed, 1 skipped; ruff clean; no dashes.
 
 ---
 

@@ -174,8 +174,9 @@ def build_report(before_tree: Path, after_tree: Path, neurons: list[str], assets
         "Start Frame columns show the ANCHOR frame (the frame that was actually "
         "corrected), one static image per chain. Render columns name the animated "
         "gif for that chain instead of embedding it, since neither Word nor Google "
-        f"Docs plays animated GIFs; the real files are under {assets}\\<neuron>\\ "
-        "if you want to see the actual motion."
+        "Docs plays animated GIFs; the real gif files are included alongside this "
+        "document (same folder/zip you got this from), under <neuron>\\, if you want "
+        "to see the actual motion."
     ).italic = True
 
     all_missing: dict[str, list[int]] = {}

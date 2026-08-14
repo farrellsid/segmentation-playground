@@ -34,12 +34,35 @@ without needing that tree to have ever been opened in a GUI.
     py -3 experiments/report_assets.py neuron-gif-pair --before <before-tree> --after <after-tree> \
         --neuron AIYL --out-before before.gif --out-after after.gif
 
+    # one chain, before / mask-seed-reprop / box-seed-reprop, ALL THREE cropped to the
+    # union of both reprop trees' windows: use for comparing the two re-propagation
+    # seeding strategies against each other and against the pre-reprop state.
+    py -3 experiments/report_assets.py chain-gif-triple --before <before-tree> \
+        --mask-tree <mask-seed-reprop-tree> --box-tree <box-seed-reprop-tree> \
+        --neuron AIYL --chain 0 --out-before before_c0.gif --out-mask mask_c0.gif \
+        --out-box box_c0.gif
+
+    # whole-neuron merged render, before / mask-seed-reprop / box-seed-reprop, every
+    # reprop'd chain from the manifest overlaid in ONE crop, all three cropped to the
+    # union of both reprop trees' windows
+    py -3 experiments/report_assets.py neuron-gif-triple --before <before-tree> \\
+        --mask-tree <mask-seed-reprop-tree> --box-tree <box-seed-reprop-tree> \\
+        --manifest cluster/corrected_chains_AIA.csv --neuron AIYL \\
+        --out-before before.gif --out-mask mask.gif --out-box box.gif
+
     # whole-neuron before/after metrics table
     py -3 experiments/report_assets.py metrics --before <before-tree> --after <after-tree> --neuron AIYL
+
+    # before/mask-seed/box-seed metrics table, restricted to a manifest's reprop'd
+    # chains, one table per neuron in the manifest
+    py -3 experiments/report_assets.py metrics-reprop --before <before-tree> \\
+        --mask-tree <mask-seed-reprop-tree> --box-tree <box-seed-reprop-tree> \\
+        --manifest cluster/corrected_chains_AIA.csv
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import shutil
 import sys
 from pathlib import Path
@@ -241,6 +264,41 @@ def render_before_after(before_tree: Path, after_tree: Path, neuron: str,
     return before_path, after_path
 
 
+def render_reprop_triple(before_tree: Path, mask_tree: Path, box_tree: Path, neuron: str,
+                         chain_idxs: list[int], out_before: Path, out_mask: Path,
+                         out_box: Path, *, fmt: str = "gif", preview_scale: int = 1
+                         ) -> tuple[Path, Path, Path]:
+    """Render a before / mask-seed-reprop / box-seed-reprop triple to ONE shared crop
+    window, computed from the UNION of both reprop trees' masks (not just one, since
+    neither reprop variant is more "correct" a priori the way a human-revised AFTER
+    tree was in render_before_after, comparing them is the whole point). Both reprop
+    trees only cover the chains that actually got re-corrected and re-propagated (the
+    other chains never ran through propagate_from_corrected_seed.py at all), so
+    ``chain_idxs`` should already be limited to that set (e.g. from
+    find_corrected_chains), not a neuron's full chain list."""
+    mask_masks = _load_chains_masks(mask_tree, neuron, chain_idxs)
+    box_masks = _load_chains_masks(box_tree, neuron, chain_idxs)
+    all_z = {z for masks in mask_masks.values() for z in masks} | \
+            {z for masks in box_masks.values() for z in masks}
+    if not all_z:
+        raise SystemExit(f"[report] no reprop masks for {neuron} chains {chain_idxs} "
+                         f"in {mask_tree} or {box_tree}")
+    _em0, full_hw = pipeline.load_frame_sam(min(all_z), scale=SCALE)
+    # union the two trees' mask sets before computing one window over both, so a chain
+    # where box-seed and mask-seed diverge spatially still gets a window covering
+    # whichever one reaches further, never just one variant's own footprint.
+    combined = {ci: {**mask_masks.get(ci, {}), **box_masks.get(ci, {})} for ci in chain_idxs}
+    window = _compute_window(combined, full_hw)
+
+    before_path = render(before_tree, neuron, chain_idxs, out_before,
+                         fmt=fmt, preview_scale=preview_scale, window=window)
+    mask_path = render(mask_tree, neuron, chain_idxs, out_mask,
+                       fmt=fmt, preview_scale=preview_scale, window=window)
+    box_path = render(box_tree, neuron, chain_idxs, out_box,
+                      fmt=fmt, preview_scale=preview_scale, window=window)
+    return before_path, mask_path, box_path
+
+
 def metrics_before_after(before_tree: Path, after_tree: Path, neuron: str) -> None:
     from eval.merge_metric import format_summary, load_node_table, score_run
 
@@ -258,6 +316,52 @@ def metrics_before_after(before_tree: Path, after_tree: Path, neuron: str) -> No
             continue
         delta = f"{a - b:+.3f}" if isinstance(b, float) else f"{a - b:+d}"
         print(f"  {key:<22} {b} -> {a}  ({delta})")
+
+
+def metrics_reprop(before_tree: Path, mask_tree: Path, box_tree: Path, neuron: str,
+                   chain_idxs: list[int]) -> None:
+    """Merge-metric comparison across before / mask-seed-reprop / box-seed-reprop,
+    restricted to ``chain_idxs`` (the manifest's reprop'd chains for this neuron),
+    not the neuron's full chain list: the before tree still has every chain the
+    neuron ever had, but the two reprop trees only ever contain the chains that
+    actually went through propagate_from_corrected_seed.py, so scoring the before
+    tree unfiltered would average in dozens of untouched chains and make the
+    comparison meaningless. mask_tree/box_tree are filtered too, defensively, in
+    case that assumption about their contents ever stops holding."""
+    from eval.merge_metric import format_summary, load_node_table, score_run, summarize
+
+    annotate_df = load_node_table()
+    chain_set = set(chain_idxs)
+    summaries = {}
+    for label, tree in (("before", before_tree), ("mask-seed", mask_tree),
+                        ("box-seed", box_tree)):
+        # The reprop trees are written per-chain by propagate_from_corrected_seed.py,
+        # not a full batch.py run, so they never get a _run_meta.json for score_run
+        # to read the grid scale from; pass it explicitly (matches this module's own
+        # SCALE, which every reprop tree is built on).
+        # membrane_source="auto" (score_run's own default) runs the membrane pass,
+        # needed for mean_underfill_fraction: the Phase-0 foreign-node signal alone
+        # only sees OVERFILL (a mask reaching a neighbour's centreline), it has no
+        # notion of a mask falling short of its own cell's true extent.
+        per, _summ = score_run(tree, annotate_df=annotate_df, neurons=[neuron],
+                               membrane_source="auto", scale=SCALE)
+        per_sub = per[per["chain_idx"].isin(chain_set)] if len(per) else per
+        summ = summarize(per_sub)
+        summaries[label] = summ
+        print(format_summary(f"{neuron} ({label}, {tree.name})", summ))
+    print()
+    base = summaries["before"]
+    for label in ("mask-seed", "box-seed"):
+        s = summaries[label]
+        print(f"  {label} vs before:")
+        for key in ("foreign_frame_rate", "dropout_rate", "total_foreign_nodes",
+                   "mild_bleed_rate", "spanning_merge_rate", "mean_boundary_on_membrane",
+                   "mean_underfill_fraction"):
+            b, a = base.get(key), s.get(key)
+            if b is None or a is None:
+                continue
+            delta = f"{a - b:+.3f}" if isinstance(b, float) else f"{a - b:+d}"
+            print(f"    {key:<24} {b} -> {a}  ({delta})")
 
 
 def main(argv=None):
@@ -290,6 +394,38 @@ def main(argv=None):
     p_chain_pair.add_argument("--fmt", choices=["gif", "mp4"], default="gif")
     p_chain_pair.add_argument("--preview-scale", type=int, default=1)
 
+    p_chain_triple = sub.add_parser(
+        "chain-gif-triple",
+        help="before / mask-seed-reprop / box-seed-reprop single-chain render, "
+             "all three cropped to the union of both reprop trees' windows")
+    p_chain_triple.add_argument("--before", required=True)
+    p_chain_triple.add_argument("--mask-tree", required=True)
+    p_chain_triple.add_argument("--box-tree", required=True)
+    p_chain_triple.add_argument("--neuron", required=True)
+    p_chain_triple.add_argument("--chain", type=int, required=True)
+    p_chain_triple.add_argument("--out-before", required=True)
+    p_chain_triple.add_argument("--out-mask", required=True)
+    p_chain_triple.add_argument("--out-box", required=True)
+    p_chain_triple.add_argument("--fmt", choices=["gif", "mp4"], default="gif")
+    p_chain_triple.add_argument("--preview-scale", type=int, default=1)
+
+    p_neuron_triple = sub.add_parser(
+        "neuron-gif-triple",
+        help="before / mask-seed-reprop / box-seed-reprop whole-neuron merged render "
+             "(every reprop'd chain overlaid in one crop), all three cropped to the "
+             "union of both reprop trees' windows")
+    p_neuron_triple.add_argument("--before", required=True)
+    p_neuron_triple.add_argument("--mask-tree", required=True)
+    p_neuron_triple.add_argument("--box-tree", required=True)
+    p_neuron_triple.add_argument("--manifest", required=True,
+                                 help="neuron,chain_idx,anchor_z CSV, filtered to --neuron's rows")
+    p_neuron_triple.add_argument("--neuron", required=True)
+    p_neuron_triple.add_argument("--out-before", required=True)
+    p_neuron_triple.add_argument("--out-mask", required=True)
+    p_neuron_triple.add_argument("--out-box", required=True)
+    p_neuron_triple.add_argument("--fmt", choices=["gif", "mp4"], default="gif")
+    p_neuron_triple.add_argument("--preview-scale", type=int, default=2)
+
     p_neuron_pair = sub.add_parser(
         "neuron-gif-pair",
         help="before/after whole-neuron render, both sides cropped to the AFTER tree's window")
@@ -306,6 +442,16 @@ def main(argv=None):
     p_metrics.add_argument("--after", required=True)
     p_metrics.add_argument("--neuron", required=True)
 
+    p_metrics_reprop = sub.add_parser(
+        "metrics-reprop",
+        help="before/mask-seed/box-seed merge-metric comparison, restricted to a "
+             "manifest's reprop'd chains, one comparison per neuron in the manifest")
+    p_metrics_reprop.add_argument("--before", required=True)
+    p_metrics_reprop.add_argument("--mask-tree", required=True)
+    p_metrics_reprop.add_argument("--box-tree", required=True)
+    p_metrics_reprop.add_argument("--manifest", required=True,
+                                  help="neuron,chain_idx,anchor_z CSV")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "neuron-gif":
@@ -318,6 +464,22 @@ def main(argv=None):
         render_before_after(Path(args.before), Path(args.after), args.neuron, [args.chain],
                             Path(args.out_before), Path(args.out_after), fmt=args.fmt,
                             preview_scale=args.preview_scale)
+    elif args.cmd == "chain-gif-triple":
+        render_reprop_triple(Path(args.before), Path(args.mask_tree), Path(args.box_tree),
+                             args.neuron, [args.chain], Path(args.out_before),
+                             Path(args.out_mask), Path(args.out_box), fmt=args.fmt,
+                             preview_scale=args.preview_scale)
+    elif args.cmd == "neuron-gif-triple":
+        chain_idxs = []
+        with open(args.manifest, newline="") as f:
+            for row in csv.DictReader(f):
+                if row["neuron"] == args.neuron:
+                    chain_idxs.append(int(row["chain_idx"]))
+        chain_idxs.sort()
+        render_reprop_triple(Path(args.before), Path(args.mask_tree), Path(args.box_tree),
+                             args.neuron, chain_idxs, Path(args.out_before),
+                             Path(args.out_mask), Path(args.out_box), fmt=args.fmt,
+                             preview_scale=args.preview_scale)
     elif args.cmd == "neuron-gif-pair":
         after_tree = Path(args.after)
         chain_idxs = _neuron_chain_idxs(after_tree, args.neuron)
@@ -326,6 +488,15 @@ def main(argv=None):
                             preview_scale=args.preview_scale)
     elif args.cmd == "metrics":
         metrics_before_after(Path(args.before), Path(args.after), args.neuron)
+    elif args.cmd == "metrics-reprop":
+        by_neuron: dict[str, list[int]] = {}
+        with open(args.manifest, newline="") as f:
+            for row in csv.DictReader(f):
+                by_neuron.setdefault(row["neuron"], []).append(int(row["chain_idx"]))
+        for neuron, chain_idxs in by_neuron.items():
+            metrics_reprop(Path(args.before), Path(args.mask_tree), Path(args.box_tree),
+                           neuron, sorted(chain_idxs))
+            print()
 
 
 if __name__ == "__main__":
