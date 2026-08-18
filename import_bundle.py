@@ -15,6 +15,12 @@ and per-frame verdicts there, and four of the ten keys review mode exposes
 same ledgers holds rows for chains that were never in the bundle, so copying the
 file over would delete other people's work.
 
+This repo keeps parallel trees with identical layouts (reprop_maskseed next to
+reprop_boxseed, sam2 next to sam3), so the import also refuses a bundle that came
+from a DIFFERENT tree than the one being merged into. Without that check a
+reviewer's masks merge cleanly into the wrong tree and overwrite good data with
+no sign anything went wrong.
+
     py -3 import_bundle.py --bundle "D:\\returned\\AIA_from_lucinda" \\
         --output-root "F:\\ZhenLab\\Data\\output_masks\\reprop_maskseed"
     py -3 import_bundle.py --bundle ... --output-root ... --dry-run
@@ -79,6 +85,82 @@ def _manifest_keys(bundle_root: Path) -> Set[Tuple[str, int]]:
     """
     manifest = json.loads((bundle_root / bundle.BUNDLE_MANIFEST).read_text(encoding="utf-8"))
     return {(str(e["cell_name"]), int(e["chain_idx"])) for e in manifest.get("chains", [])}
+
+
+def target_tree_name(output_root: Path) -> str:
+    """The identity a target tree is matched against a bundle's ``source_tree`` by.
+
+    Parameters
+    ----------
+    output_root : Path
+        The master tree being merged into.
+
+    Returns
+    -------
+    str
+        Its directory name.
+
+    Notes
+    -----
+    The directory name is chosen because it is what ``export_bundle`` records by
+    default (``source_tree or output_root.name``), so the two sides already agree
+    without any new state having to be written into either tree.
+
+    Its limits are worth knowing. Renaming or copying a tree breaks the match even
+    though the data is the same. Two trees with the same basename under different
+    parents look identical to it. And an export given an explicit ``--source-tree``
+    label that does not match its directory will trip the check. All three are
+    false alarms rather than silent merges, and ``--allow-tree-mismatch`` is the
+    deliberate override for them. A content-derived tree id (a uuid stamped into
+    the tree at creation) would be stronger, but no tree carries one today and
+    backfilling one into the existing trees is a larger change than this guard.
+    """
+    return Path(output_root).name
+
+
+def check_source_tree(bundle_root: Path, output_root: Path, *,
+                      allow_mismatch: bool = False) -> str:
+    """Refuse a bundle that was not exported from ``output_root``.
+
+    Parameters
+    ----------
+    bundle_root, output_root : Path
+        The returned bundle and the master tree.
+    allow_mismatch : bool, optional
+        Report the mismatch and continue anyway.
+
+    Returns
+    -------
+    str
+        The bundle's recorded ``source_tree``.
+
+    Raises
+    ------
+    SystemExit
+        When the bundle records a different tree, or records none at all. The
+        parallel trees in this repo have identical layouts, so every other check
+        here passes on the wrong one and a reviewer's masks would land on top of
+        another run's good data.
+    """
+    manifest = json.loads((Path(bundle_root) / bundle.BUNDLE_MANIFEST)
+                          .read_text(encoding="utf-8"))
+    recorded = str(manifest.get("source_tree") or "")
+    target = target_tree_name(output_root)
+    if recorded == target:
+        return recorded
+
+    detail = (f"bundle {bundle_root} was exported from tree {recorded!r} but "
+              f"--output-root {output_root} is tree {target!r}")
+    if not recorded:
+        detail = (f"bundle {bundle_root} records no source_tree, so it cannot be "
+                  f"shown to belong to tree {target!r}")
+    if allow_mismatch:
+        print(f"[import] WARNING: {detail}; merging anyway (--allow-tree-mismatch)",
+              file=sys.stderr)
+        return recorded
+    raise SystemExit(f"{detail}. Refusing to import: these trees have identical "
+                     f"layouts, so a wrong-tree merge would silently overwrite "
+                     f"good masks. Pass --allow-tree-mismatch if you mean it.")
 
 
 def _read_ledger(path: Path, columns) -> pd.DataFrame:
@@ -264,7 +346,8 @@ def merge_labels_ledger(bundle_root: Path, output_root: Path,
     return counts
 
 
-def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False) -> List[dict]:
+def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False,
+                  allow_tree_mismatch: bool = False) -> List[dict]:
     """Merge reviewer-owned files from ``bundle_root`` into ``output_root``.
 
     Parameters
@@ -274,7 +357,11 @@ def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False
     output_root : Path
         The master tree to merge into.
     dry_run : bool, optional
-        Report what would change without writing.
+        Report what would change without writing. The tree check still runs: a
+        dry run that misses the one thing it would have caught is worse than
+        useless.
+    allow_tree_mismatch : bool, optional
+        Merge even when the bundle came from a different tree.
 
     Returns
     -------
@@ -284,9 +371,10 @@ def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False
     Raises
     ------
     SystemExit
-        If the bundle fails validation, or names a chain the master tree does not
-        have. Both mean the bundle and the tree do not belong together, and a
-        partial merge would be worse than no merge.
+        If the bundle fails validation, came from a different tree, or names a
+        chain the master tree does not have. All three mean the bundle and the
+        tree do not belong together, and a partial merge would be worse than no
+        merge.
 
     Notes
     -----
@@ -302,6 +390,8 @@ def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False
         for p in problems:
             print(f"  {p}", file=sys.stderr)
         raise SystemExit(f"{bundle_root} is not a valid bundle; refusing to import")
+
+    check_source_tree(bundle_root, output_root, allow_mismatch=allow_tree_mismatch)
 
     changed: List[dict] = []
     for rec in bundle.index_chains(bundle_root):
@@ -352,8 +442,11 @@ def main() -> None:
     ap.add_argument("--bundle", type=Path, required=True)
     ap.add_argument("--output-root", type=Path, required=True)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--allow-tree-mismatch", action="store_true",
+                    help="merge even though the bundle came from a differently named tree")
     args = ap.parse_args()
-    import_bundle(args.bundle, args.output_root, dry_run=args.dry_run)
+    import_bundle(args.bundle, args.output_root, dry_run=args.dry_run,
+                  allow_tree_mismatch=args.allow_tree_mismatch)
 
 
 if __name__ == "__main__":

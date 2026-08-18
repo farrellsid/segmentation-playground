@@ -288,3 +288,82 @@ def test_labels_merge_is_a_no_op_without_a_bundle_ledger(tmp_path):
     import_bundle.import_bundle(b, m)
 
     assert (m / "_labels.csv").read_text(encoding="utf-8") == before
+
+
+# ---------------------------------------------------------------------------
+# Cross-tree merges. This repo keeps parallel trees with identical layouts, so
+# every other check here passes on the wrong one.
+# ---------------------------------------------------------------------------
+
+def _parallel_trees(tmp_path):
+    """A maskseed bundle plus a boxseed tree it must NOT merge into.
+
+    The two trees have identical layouts, which is the whole problem: the bundle
+    validates, its meta.json agrees with its index, and the chain exists on both
+    sides, so nothing else in the import can tell them apart.
+    """
+    b, m = _pair(tmp_path)
+    maskseed = tmp_path / "reprop_maskseed"
+    m.rename(maskseed)
+
+    boxseed = tmp_path / "reprop_boxseed"
+    chain = boxseed / "AIAL" / "chain_00"
+    (chain / "masks").mkdir(parents=True)
+    (chain / "masks" / "mask_1402.png").write_bytes(b"boxseed-good")
+    (chain / "state.json").write_text(json.dumps(
+        {"neuron": "AIAL", "chain_idx": 0, "frames_dir": "x",
+         "crop_window": None, "save_downscale": 8}), encoding="utf-8")
+    (chain / "qc.csv").write_text("z,queue\n1402,0\n", encoding="utf-8")
+
+    man_path = b / bundle.BUNDLE_MANIFEST
+    man = json.loads(man_path.read_text(encoding="utf-8"))
+    man["source_tree"] = "reprop_maskseed"
+    man_path.write_text(json.dumps(man), encoding="utf-8")
+    return b, maskseed, boxseed
+
+
+def test_a_cross_tree_import_is_refused(tmp_path):
+    b, _maskseed, boxseed = _parallel_trees(tmp_path)
+    good = boxseed / "AIAL" / "chain_00" / "masks" / "mask_1402.png"
+
+    with pytest.raises(SystemExit) as excinfo:
+        import_bundle.import_bundle(b, boxseed)
+
+    message = str(excinfo.value)
+    assert "reprop_maskseed" in message and "reprop_boxseed" in message, (
+        "the refusal has to name both trees, or it cannot be acted on")
+    assert good.read_bytes() == b"boxseed-good", "nothing may be overwritten"
+
+
+def test_dry_run_also_refuses_a_cross_tree_import(tmp_path):
+    """A dry run that misses the one thing it would have caught is worse than useless."""
+    b, _maskseed, boxseed = _parallel_trees(tmp_path)
+    with pytest.raises(SystemExit):
+        import_bundle.import_bundle(b, boxseed, dry_run=True)
+
+
+def test_the_matching_tree_still_imports(tmp_path):
+    b, maskseed, _boxseed = _parallel_trees(tmp_path)
+    import_bundle.import_bundle(b, maskseed)
+    assert (maskseed / "AIAL" / "chain_00" / "masks" / "mask_1402.png").read_bytes() == b"new"
+
+
+def test_allow_tree_mismatch_overrides_deliberately(tmp_path):
+    b, _maskseed, boxseed = _parallel_trees(tmp_path)
+    import_bundle.import_bundle(b, boxseed, allow_tree_mismatch=True)
+    assert (boxseed / "AIAL" / "chain_00" / "masks" / "mask_1402.png").read_bytes() == b"new"
+
+
+def test_a_bundle_with_no_recorded_source_tree_is_refused(tmp_path):
+    b, m = _pair(tmp_path)
+    man_path = b / bundle.BUNDLE_MANIFEST
+    man = json.loads(man_path.read_text(encoding="utf-8"))
+    man.pop("source_tree")
+    man_path.write_text(json.dumps(man), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        import_bundle.import_bundle(b, m)
+
+
+def test_the_target_tree_is_identified_by_its_directory_name(tmp_path):
+    """Pins the choice: it is what export_bundle records by default."""
+    assert import_bundle.target_tree_name(tmp_path / "a" / "reprop_maskseed") == "reprop_maskseed"
