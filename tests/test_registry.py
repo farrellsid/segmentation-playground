@@ -64,6 +64,15 @@ def test_duplicate_id_is_rejected(tmp_path):
         registry.load_registry(path)
 
 
+def test_duplicate_name_is_rejected(tmp_path):
+    path = _write_registry(tmp_path, [
+        {"neuron_id": 1, "cell_name": "ADAL", "first_seen": "2026-08-18", "notes": ""},
+        {"neuron_id": 2, "cell_name": "ADAL", "first_seen": "2026-08-18", "notes": ""},
+    ])
+    with pytest.raises(ValueError):
+        registry.load_registry(path)
+
+
 def test_shipped_registry_is_loadable_and_stable():
     """The real registry must load, and these ids must never move."""
     reg = registry.load_registry()
