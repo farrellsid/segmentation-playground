@@ -100,7 +100,8 @@ Each chain directory gains a `meta.json` beside its `state.json`:
   "cell_name": "AIAL",
   "chain_idx": 0,
   "mask_space": "_pcrop",
-  "crop_window": {"origin_tif": [4096, 3712], "size_tif": [2048, 1792], "scale": 2},
+  "crop_window": {"origin_tif": [4096, 3712], "size_tif": [2048, 1792],
+                  "crop_scale": 2, "sam_scale": 8},
   "z_range": [1402, 1490],
   "mask_scale": 2,
   "provenance": {
