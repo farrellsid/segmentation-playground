@@ -398,8 +398,13 @@ def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False
         src_dir = bundle_root / rec["chain_dir"]
         dst_dir = output_root / rec["chain_dir"]
         if not dst_dir.is_dir():
-            raise SystemExit(f"{rec['chain_dir']} is in the bundle but not in {output_root}; "
-                             f"this bundle was not exported from this tree")
+            # Not a wrong-tree diagnosis: check_source_tree already established
+            # the bundle belongs here (or was waved through deliberately). What
+            # is left is a chain the master tree no longer has.
+            raise SystemExit(f"{rec['chain_dir']} is in the bundle but there is no such chain "
+                             f"under {output_root}; the master tree is missing the chain this "
+                             f"bundle expects to merge into (moved, renamed or deleted since "
+                             f"the export?)")
 
         meta = chain_meta.read_meta(src_dir)
         if meta["cell_name"] != rec["cell_name"]:

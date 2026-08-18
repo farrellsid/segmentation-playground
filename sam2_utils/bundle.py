@@ -235,6 +235,17 @@ def validate_bundle(bundle_root: Path) -> List[str]:
         if frames_dir and is_recorded_absolute(frames_dir):
             problems.append(f"{entry['chain_dir']}: frames_dir is absolute ({frames_dir}); "
                             f"a bundle must record it relative or it will not open elsewhere")
+
+    # The manifest is the bundle's declaration of what it holds, but import walks
+    # the DISK. A chain dir the manifest does not name used to validate clean and
+    # then die inside import with a misleading "not exported from this tree", so
+    # it is reported here, where the reason is visible.
+    declared = {entry["chain_dir"] for entry in manifest.get("chains", [])}
+    for rec in index_chains(bundle_root):
+        if rec["chain_dir"] not in declared:
+            problems.append(f"{rec['chain_dir']}: on disk but not listed in {BUNDLE_MANIFEST}; "
+                            f"the manifest is the bundle's index and an import walks the disk, "
+                            f"so the two must agree")
     return problems
 
 
@@ -252,18 +263,36 @@ def review_progress(output_root: Path) -> Dict[str, dict]:
         ``{cell_name: {"total": int, "reviewed": int}}``. A chain counts as reviewed
         when ``_review.csv`` gives it a ``review_status`` other than empty or
         ``"pending"``.
+
+    Notes
+    -----
+    Only rows whose ``(neuron, chain_idx)`` is actually a chain here are counted.
+    ``_review.csv`` outlives the chains it describes: a tree the ledger was copied
+    into, or a bundle exporting a subset of the neurons the ledger covers, leaves
+    rows for chains that are not on disk. Counting those produced totals like
+    ``{"total": 1, "reviewed": 3}``, which the launcher displayed as "3/1
+    reviewed". A row for a chain that is not here is also counted at most once,
+    since the key set makes repeats collapse.
     """
     output_root = Path(output_root)
     progress: Dict[str, dict] = {}
+    present = set()
     for rec in index_chains(output_root):
         progress.setdefault(rec["cell_name"], {"total": 0, "reviewed": 0})["total"] += 1
+        present.add((rec["cell_name"], rec["chain_idx"]))
 
     review_path = output_root / "_review.csv"
     if review_path.exists():
+        counted = set()
         with review_path.open("r", newline="", encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
                 status = (row.get("review_status") or "").strip()
                 name = row.get("neuron")
-                if name in progress and status and status != "pending":
+                try:
+                    key = (name, int(row.get("chain_idx")))
+                except (TypeError, ValueError):
+                    continue
+                if key in present and key not in counted and status and status != "pending":
+                    counted.add(key)
                     progress[name]["reviewed"] += 1
     return progress

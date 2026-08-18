@@ -139,3 +139,47 @@ def test_validate_accepts_a_bundle_once_the_data_slice_is_there(tmp_path):
     (tmp_path / bundle.BUNDLE_MANIFEST).write_text(json.dumps(man), encoding="utf-8")
     _data_slice(tmp_path)
     assert bundle.validate_bundle(tmp_path) == []
+
+
+def test_validate_reports_a_chain_dir_the_manifest_does_not_declare(tmp_path):
+    """Validate walks the manifest; import walks the disk. They have to agree.
+
+    An undeclared chain directory used to validate clean and then die inside
+    import with a misleading "this bundle was not exported from this tree".
+    """
+    d = _chain(tmp_path, "AIAL", 0, frames="frames")
+    (d / "frames").mkdir()
+    (d / "meta.json").write_text(json.dumps({
+        "schema_version": 1, "neuron_id": 42, "cell_name": "AIAL", "chain_idx": 0,
+        "mask_space": "_sam", "mask_scale": 8, "crop_window": None,
+        "z_range": [1402, 1402], "provenance": {}}), encoding="utf-8")
+    man = bundle.build_manifest(bundle.index_chains(tmp_path), source_tree="t")
+    (tmp_path / bundle.BUNDLE_MANIFEST).write_text(json.dumps(man), encoding="utf-8")
+    _data_slice(tmp_path)
+
+    # A second chain lands on disk after the manifest was written.
+    stray = _chain(tmp_path, "AIYL", 1, frames="frames")
+    (stray / "frames").mkdir()
+
+    problems = bundle.validate_bundle(tmp_path)
+    assert any("AIYL/chain_01" in p and "bundle.json" in p for p in problems)
+
+
+def test_review_progress_ignores_rows_for_chains_that_are_not_here(tmp_path):
+    """A stale ledger used to report "3/1 reviewed" in the launcher."""
+    _chain(tmp_path, "AIAL", 0)
+    (tmp_path / "_review.csv").write_text(
+        "neuron,chain_idx,review_status,reviewer,notes,updated_at\n"
+        "AIAL,0,approved,lucinda,,2026-08-18T00:00:00+00:00\n"
+        "AIAL,1,approved,lucinda,,2026-08-18T00:00:00+00:00\n"
+        "AIAL,2,corrected,lucinda,,2026-08-18T00:00:00+00:00\n", encoding="utf-8")
+    assert bundle.review_progress(tmp_path)["AIAL"] == {"total": 1, "reviewed": 1}
+
+
+def test_review_progress_counts_a_repeated_row_once(tmp_path):
+    _chain(tmp_path, "AIAL", 0)
+    (tmp_path / "_review.csv").write_text(
+        "neuron,chain_idx,review_status,reviewer,notes,updated_at\n"
+        "AIAL,0,approved,lucinda,,2026-08-18T00:00:00+00:00\n"
+        "AIAL,0,corrected,lucinda,,2026-08-19T00:00:00+00:00\n", encoding="utf-8")
+    assert bundle.review_progress(tmp_path)["AIAL"] == {"total": 1, "reviewed": 1}
