@@ -28,6 +28,10 @@ def test_none_returns_none(tmp_path):
 
 
 def test_posix_absolute_is_not_treated_as_relative(tmp_path):
-    """A Narval scratch path must stay absolute, not get joined onto the chain dir."""
+    """A Narval scratch path must stay absolute, not get joined onto the chain dir.
+
+    We assert equality (not inequality) to catch pathlib substitutions on Windows
+    where a naive join would produce an invented drive path instead of the original.
+    """
     out = gui.resolve_frames_dir("/localscratch/12345/frames/x", tmp_path)
-    assert out != tmp_path / "localscratch" / "12345" / "frames" / "x"
+    assert out == Path("/localscratch/12345/frames/x")
