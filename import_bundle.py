@@ -31,6 +31,13 @@ def _differs(src: Path, dst: Path) -> bool:
     resolution, or just two writes close enough together), which would make a
     genuinely changed reviewer mask read as unchanged and get silently skipped.
     ``shallow=False`` forces a byte-for-byte comparison of the common files.
+
+    Assumes a FLAT mask directory. ``dircmp`` does not recurse: only top-level
+    ``diff_files`` is inspected and ``common_dirs`` is never examined. Every mask
+    writer in this repo emits a flat directory of ``mask_<z>.png``, so that holds
+    today. If a nested mask layout is ever introduced, a change inside a
+    subdirectory would go undetected here and a reviewer's edit would be silently
+    dropped, so this comparison must be revisited alongside any such change.
     """
     if not dst.exists():
         return True

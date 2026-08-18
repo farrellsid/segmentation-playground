@@ -84,3 +84,28 @@ def test_invalid_bundle_is_refused(tmp_path):
     (b / bundle.BUNDLE_MANIFEST).unlink()
     with pytest.raises(SystemExit):
         import_bundle.import_bundle(b, m)
+
+
+def test_meta_identity_mismatch_is_refused(tmp_path):
+    """A bundle whose meta.json disagrees with its own index must not merge.
+
+    The refusal has to happen before anything is written. A refusal that already
+    copied a mask is not a refusal, it is a partial merge of a bundle we just
+    established does not belong to this tree.
+    """
+    b, m = _pair(tmp_path)
+    meta_path = b / "AIAL" / "chain_00" / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["cell_name"] = "AIAR"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    master_mask = m / "AIAL" / "chain_00" / "masks" / "mask_1402.png"
+    master_qc = m / "AIAL" / "chain_00" / "qc.csv"
+    before_mask = master_mask.read_bytes()
+    before_qc = master_qc.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        import_bundle.import_bundle(b, m)
+
+    assert master_mask.read_bytes() == before_mask
+    assert master_qc.read_text(encoding="utf-8") == before_qc
