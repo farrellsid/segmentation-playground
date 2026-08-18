@@ -1784,6 +1784,8 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
     strictly a "set it up if it is missing" convenience, not a "keep it in sync"
     one; the working copy diverges from `source` on purpose the moment you correct
     something in it."""
+    if ui_mode not in UI_MODES:
+        raise ValueError(f"unknown UI mode {ui_mode!r}; expected one of {UI_MODES}")
     import napari
     output_root = Path(output_root) if output_root else config.OUTPUT_ROOT
     if source is not None and neuron is not None:
