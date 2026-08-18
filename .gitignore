@@ -44,8 +44,10 @@ api_docs/
 docs/figures/presentation/
 
 # data/ contents are not committed (CATMAID-derived + large GT). Track only the
-# groundtruth scaffold README. (`data/*` not `data/` so git descends to find the negation.)
+# groundtruth scaffold README and the permanent neuron identity registry.
+# (`data/*` not `data/` so git descends to find the negations.)
 data/*
 !data/groundtruth/
 data/groundtruth/*
 !data/groundtruth/README.md
+!data/neuron_registry.csv
