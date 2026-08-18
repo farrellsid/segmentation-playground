@@ -231,7 +231,8 @@ class ReviewContext:
     """
 
     def __init__(self, output_root: Path, cfg: Optional[pipeline.PipelineConfig] = None,
-                 *, annotate_df: Optional[pd.DataFrame] = None, chains: Optional[list] = None):
+                 *, annotate_df: Optional[pd.DataFrame] = None, chains: Optional[list] = None,
+                 neurons: Optional[list] = None):
         self.output_root = Path(output_root)
         self.cfg = cfg or pipeline.PipelineConfig(
             model_size="large", scale=8, save_downscale=8,
@@ -240,6 +241,7 @@ class ReviewContext:
         self.cfg.output_root = self.output_root
         self._annotate_df = annotate_df
         self._chains = chains
+        self.neurons = list(neurons) if neurons else None
         self.image_predictor = None
         self.video_predictor = None
 
@@ -255,12 +257,25 @@ class ReviewContext:
             self._annotate_df = df
         return self._annotate_df
 
-    @property
-    def chains(self) -> list:
+    def _chains_from_disk(self) -> list:
+        """The full chain list, cached: chains.json loaded once and reused."""
         if self._chains is None:
             with open(config.CHAINS_PATH) as f:
                 self._chains = json.load(f)
         return self._chains
+
+    @property
+    def chains(self) -> list:
+        """The chains this context exposes, restricted to ``self.neurons`` when set.
+
+        The launcher scopes a session to the neurons a reviewer ticked, so she is
+        never navigating past chains that are not her assignment.
+        """
+        all_chains = self._chains_from_disk()
+        if not self.neurons:
+            return all_chains
+        wanted = set(self.neurons)
+        return [c for c in all_chains if c.get("cell_name") in wanted]
 
     def find_chain(self, neuron: str, chain_idx: int) -> Optional[dict]:
         """The chain dict for (neuron, chain_idx): the position within that
@@ -291,11 +306,52 @@ class ReviewContext:
 # Frame stack loading (EM JPEGs -> a sliceable (T, H, W, 3) array)
 # =============================================================================
 
+def resolve_frames_dir(recorded, chain_dir):
+    """Resolve a chain's recorded ``frames_dir`` to a usable local path.
+
+    A tree produced by this pipeline bakes an ABSOLUTE ``frames_dir`` into
+    ``state.json``. A review bundle rewrites it RELATIVE (to ``frames/`` inside the
+    chain directory) so the bundle opens on a machine that has none of the original
+    paths, and no raw EM store to regenerate frames from.
+
+    Parameters
+    ----------
+    recorded : str or None
+        The ``frames_dir`` value from ``state.json``.
+    chain_dir : Path
+        The chain directory the state was loaded from.
+
+    Returns
+    -------
+    Path or None
+        ``chain_dir / recorded`` when recorded is relative, the path unchanged when
+        it is absolute, and None when there is nothing recorded.
+
+    Notes
+    -----
+    A leading ``/`` (a Narval scratch path such as ``/localscratch/<jobid>/...``)
+    counts as absolute here even on Windows, where ``Path`` would otherwise read it
+    as "root of the current drive". Treating it as relative would silently join a
+    dead cluster path onto the chain directory instead of failing where it can be
+    recognised.
+    """
+    if recorded is None:
+        return None
+    text = str(recorded)
+    if text.startswith("/") or text.startswith("\\"):
+        return Path(text)
+    p = Path(text)
+    if p.is_absolute():
+        return p
+    return Path(chain_dir) / p
+
+
 def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
                          recorded_anchor_idx, *, chain: dict, cw,
                          cfg: "pipeline.PipelineConfig", annotate_df: pd.DataFrame,
                          anchor_catmaid_z: int, neuron: str, chain_idx: int,
-                         anchor_only: bool = False, context_frames: int = 0
+                         anchor_only: bool = False, context_frames: int = 0,
+                         chain_dir: Optional[Path] = None
                          ) -> tuple[str, dict, int]:
     """(frames_dir, frame_to_z, anchor_frame_idx) actually usable locally: the
     recorded ones if present and `anchor_only` is not set, else freshly (re)prepared.
@@ -335,9 +391,11 @@ def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
     whose z is not in the given `frame_to_z` (see sam2_utils/review.py), so a
     narrowed `frame_to_z` cascades cleanly into a single-frame session with no
     other change needed."""
-    have_recorded = (Path(recorded_frames_dir) / "00000.jpg").exists()
+    resolved = resolve_frames_dir(recorded_frames_dir, chain_dir) if chain_dir else \
+        Path(recorded_frames_dir)
+    have_recorded = (resolved / "00000.jpg").exists()
     if have_recorded and not anchor_only:
-        return recorded_frames_dir, recorded_frame_to_z, recorded_anchor_idx
+        return str(resolved), recorded_frame_to_z, recorded_anchor_idx
 
     context = max(0, int(context_frames))
     z_range = ((anchor_catmaid_z - context, anchor_catmaid_z + context)
@@ -536,7 +594,7 @@ class ReviewGUI:
                 chain=self.chain, cw=self._cw, cfg=self.ctx.cfg,
                 annotate_df=self.ctx.annotate_df, anchor_catmaid_z=self._state.anchor_catmaid_z,
                 neuron=neuron, chain_idx=chain_idx, anchor_only=self.anchor_only,
-                context_frames=self.context_frames)
+                context_frames=self.context_frames, chain_dir=chain_dir)
 
         # rebuild the overlay from disk (one definition of "how a mask is read").
         # anchor_idx MUST come from the same source as frame_to_z: a narrowed
