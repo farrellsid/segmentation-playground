@@ -51,8 +51,14 @@ A frame slider (top/bottom) scrubs through the chain by **frame index**. Layers
 | **mask** | The segmentation, as a paintable label layer. **Paint here** to correct a mask by hand. | **Yes**, napari brush/eraser; `Ctrl+Z` undoes. A viewer-level fallback routes `Ctrl+Z` here even when another layer (e.g. lasso) is active |
 | **EM** | The electron-microscopy image. | No |
 
-The dock panel on the right is grouped: **chains · frames (this chain) ·
-prompts · view · correct · label / disposition**.
+The dock panel on the right is grouped into four sections: **navigation** (reviewer, chains,
+frames this chain), **draw / view / save** (lasso, point size, auto-zoom, save masks), **model**
+(prompts, correct, recrop), and **disposition** (error type, approve, reject). Passing
+`--ui-mode review` (see [cli.md](../reference/cli.md)) hides the whole model section for a
+reviewer with no GPU; everything else is unchanged. This grouping changed when review mode was
+added: lasso used to sit in the prompts cluster and save used to sit in the correct cluster, and
+the model section used to come before view instead of after save. No control was added or
+removed, only the visual order in the dock moved.
 
 ---
 
