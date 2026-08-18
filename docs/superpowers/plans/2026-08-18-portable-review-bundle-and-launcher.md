@@ -1938,13 +1938,36 @@ chain_dir is stored POSIX-style so a manifest written on Windows reads on a Mac.
 
 **Interfaces:**
 - Consumes: `bundle` (Task 8), `chain_meta` (Task 3), `registry` (Task 1).
-- Produces: `export_bundle(output_root: Path, dest: Path, *, neurons: Optional[list] = None, source_tree: Optional[str] = None, copy_frames: bool = True) -> dict`
+- Produces: `export_bundle(output_root: Path, dest: Path, *, neurons: Optional[list] = None, source_tree: Optional[str] = None, backend: str = "sam2", reprop_variant: Optional[str] = None, frames_root: Optional[Path] = None, force: bool = False) -> dict`
+- Also produces: `regenerate_frames(state: dict, *, chain: dict, annotate_df, cfg, neuron: str, chain_idx: int, frames_root: Path) -> Path`
 
-Frames handling: a tier-2 `_pcrop` chain already propagated at `chain_crop_scale` (2), so its
-recorded frames are copied verbatim. A legacy `_sam` chain has only the scale-8 full frame, so its
-canvas is regenerated at scale 2 by `export_bundle.py`'s caller side. Regenerating needs the raw EM
-store and therefore torch-free but cv2-dependent code, so it lives behind `--upgrade-legacy` and is
-skipped when the recorded frames are already present and the chain is tier-2.
+**Frames must be REGENERATED, not copied. This is the load-bearing correction to this task.**
+A chain's `state.json` records an ABSOLUTE `frames_dir` baked in at generation time, and across every
+merged tree on `F:` that path is a Compute Canada Narval `/localscratch/<jobid>/...` scratch
+directory, deleted the moment the job ended. This is documented in `gui.py`'s own
+`_ensure_local_frames` docstring and was confirmed on a 50-chain sample across multiple trees. An
+export that only copies recorded frames would therefore produce bundles with masks and metadata but
+no canvas to draw on, which is an unusable bundle.
+
+So `export_bundle.py` regenerates each chain's frames from the raw EM store, exactly as `gui.py`'s
+fallback already does, and copies recorded frames only in the rare case they really are present:
+
+- tier-2 (`state["crop_window"]` set): rebuild an `alignment.CropWindow` from the recorded dict and
+  call `pipeline.prepare_chain_crop_frames(chain, annotate_df, cw, frames_root=..., anchor_catmaid_z=..., neuron=..., chain_idx=...)`.
+- legacy (`crop_window` is None): call
+  `pipeline.prepare_video_frames(chain, annotate_df, scale=cfg.scale, frames_root=..., anchor_catmaid_z=..., neuron=..., chain_idx=...)`.
+
+`export_bundle.py` is a DRIVER, so importing `pipeline` is allowed and correct here (the ban applies
+to `sam2_utils/`, and `sam2_utils/bundle.py` from Task 8 stays pipeline-free).
+
+Cost and resumability: regeneration is the slow part. A real tier-2 chain of 88 frames took about 45
+seconds, and tier-2 has no shared decode cache because every chain's window is unique. `F:` also
+drops out intermittently. So export must be resumable: skip any chain whose bundle already has
+`frames/00000.jpg` unless `--force-frames`. The per-frame reads already go through
+`pipeline/frames.py`'s retry logic, so do not add a second retry layer.
+
+`chain_idx` is a POSITION within that neuron's chain list, not an id. Match
+`gui.ReviewContext.find_chain`: filter `chains.json` by `cell_name`, then index.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2038,7 +2061,60 @@ def test_export_refuses_a_non_empty_dest_without_force(tmp_path):
     (dest / "stray.txt").write_text("x", encoding="utf-8")
     with pytest.raises(SystemExit):
         export_bundle.export_bundle(root, dest, source_tree="master")
+
+
+def _dead_scratch_tree(tmp_path):
+    """A tree whose frames_dir is a dead Narval scratch path, which is the real case."""
+    root = tmp_path / "master"
+    d = root / "AIAL" / "chain_00"
+    (d / "masks").mkdir(parents=True)
+    (d / "masks" / "mask_1402.png").write_bytes(b"px")
+    (d / "state.json").write_text(json.dumps(
+        {"neuron": "AIAL", "chain_idx": 0,
+         "frames_dir": "/localscratch/4812345/frames/AIAL_chain00_s8",
+         "anchor_catmaid_z": 1402, "crop_window": None, "save_downscale": 8}),
+        encoding="utf-8")
+    (d / "qc.csv").write_text("z,queue\n1402,0\n", encoding="utf-8")
+    return root
+
+
+def test_dead_scratch_path_triggers_regeneration(tmp_path, monkeypatch):
+    """The real case: every cluster-produced chain records a path that no longer exists."""
+    root = _dead_scratch_tree(tmp_path)
+    made = tmp_path / "regen"
+    made.mkdir()
+    (made / "00000.jpg").write_bytes(b"regen")
+    calls = []
+
+    def fake_regen(state, **kw):
+        calls.append(kw["neuron"])
+        return made
+
+    monkeypatch.setattr(export_bundle, "regenerate_frames", fake_regen)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, source_tree="master")
+    assert calls == ["AIAL"]
+    assert (dest / "AIAL" / "chain_00" / "frames" / "00000.jpg").read_bytes() == b"regen"
+
+
+def test_existing_bundle_frames_are_not_regenerated(tmp_path, monkeypatch):
+    """Export must be resumable: F: drops out and regeneration is the slow part."""
+    root = _dead_scratch_tree(tmp_path)
+    dest = tmp_path / "bundle"
+    (dest / "AIAL" / "chain_00" / "frames").mkdir(parents=True)
+    (dest / "AIAL" / "chain_00" / "frames" / "00000.jpg").write_bytes(b"already")
+    called = []
+    monkeypatch.setattr(export_bundle, "regenerate_frames",
+                        lambda *a, **k: called.append(1) or tmp_path)
+    export_bundle.export_bundle(root, dest, source_tree="master", force=True)
+    assert called == []
+    assert (dest / "AIAL" / "chain_00" / "frames" / "00000.jpg").read_bytes() == b"already"
 ```
+
+Stubbing `regenerate_frames` is what keeps these tests torch-free and CATMAID-free: the real function
+is the only thing that loads the node table or touches the raw EM store, so a stub means the test
+never reaches either. Do not stub `_catmaid_context` instead; that would leave the real
+`regenerate_frames` calling into `pipeline`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -2076,9 +2152,102 @@ from typing import List, Optional
 from sam2_utils import bundle, chain_meta, registry
 
 
+def _find_chain(chains_json: list, neuron: str, chain_idx: int) -> dict:
+    """The chain dict for (neuron, chain_idx).
+
+    ``chain_idx`` is a POSITION within that neuron's chain list, not an id, matching
+    ``gui.ReviewContext.find_chain`` and ``batch.enumerate_chains``.
+    """
+    chs = [c for c in chains_json if c.get("cell_name") == neuron]
+    if not 0 <= chain_idx < len(chs):
+        raise SystemExit(f"{neuron} chain_{chain_idx:02d} is not in chains.json "
+                         f"({len(chs)} chain(s) for that neuron)")
+    return chs[chain_idx]
+
+
+#: Cache for the CATMAID context, built at most once per process.
+_CATMAID_CONTEXT: dict = {}
+
+
+def _catmaid_context(output_root: Path, frames_root: Optional[Path]) -> tuple:
+    """Return ``(chains_json, annotate_df, cfg, frames_root)``, loading once.
+
+    Built lazily so an export whose frames all happen to exist locally never pays
+    for the CATMAID node table, and so a test that stubs :func:`regenerate_frames`
+    never touches it at all.
+    """
+    if not _CATMAID_CONTEXT:
+        import pandas as pd
+
+        import pipeline
+        from sam2_utils import alignment, config
+        df = pd.read_csv(config.CSV_PATH)
+        xy = alignment.catmaid_to_tif(df["x"].values, df["y"].values)
+        df["x_tif"], df["y_tif"] = xy[:, 0], xy[:, 1]
+        _CATMAID_CONTEXT["chains_json"] = json.loads(
+            Path(config.CHAINS_PATH).read_text(encoding="utf-8"))
+        _CATMAID_CONTEXT["annotate_df"] = df
+        _CATMAID_CONTEXT["cfg"] = pipeline.PipelineConfig(
+            model_size="large", scale=8, save_downscale=8,
+            output_root=output_root, frames_root=config.FRAMES_ROOT)
+        _CATMAID_CONTEXT["frames_root"] = (Path(frames_root) if frames_root
+                                           else Path(config.FRAMES_ROOT))
+    return (_CATMAID_CONTEXT["chains_json"], _CATMAID_CONTEXT["annotate_df"],
+            _CATMAID_CONTEXT["cfg"], _CATMAID_CONTEXT["frames_root"])
+
+
+def regenerate_frames(state: dict, *, neuron: str, chain_idx: int,
+                      output_root: Path, frames_root: Optional[Path] = None) -> Path:
+    """Rebuild a chain's frames from the raw EM store and return the directory.
+
+    A chain's recorded ``frames_dir`` is an absolute path baked in at generation
+    time, and for every chain produced on the cluster it is a Narval
+    ``/localscratch/<jobid>/...`` directory that stopped existing when the job
+    ended. Regenerating is therefore the normal path for an export, not a fallback,
+    and it is the reason export needs the raw EM store and ``F:`` mounted.
+
+    Parameters
+    ----------
+    state : dict
+        The chain's parsed state.json. ``crop_window`` decides which space is built.
+    neuron, chain_idx : str, int
+        Identify the chain and namespace the generated view directory. ``chain_idx``
+        is a POSITION within that neuron's chain list, not an id.
+    output_root : Path
+        The tree being exported, used only to build a ``PipelineConfig``.
+    frames_root : Path, optional
+        Scratch root the frames are written under. Defaults to ``config.FRAMES_ROOT``.
+
+    Returns
+    -------
+    Path
+        Directory holding the 0-indexed JPEG frames.
+    """
+    import pipeline
+    from sam2_utils import alignment
+
+    chains_json, annotate_df, cfg, froot = _catmaid_context(output_root, frames_root)
+    chain = _find_chain(chains_json, neuron, chain_idx)
+    anchor_z = int(state["anchor_catmaid_z"])
+    cw_dict = state.get("crop_window")
+    if cw_dict:
+        cw = alignment.CropWindow(
+            origin_tif=tuple(cw_dict["origin_tif"]), size_tif=tuple(cw_dict["size_tif"]),
+            crop_scale=int(cw_dict["crop_scale"]), sam_scale=int(cw_dict["sam_scale"]))
+        frames_dir, _f2z, _a, _n = pipeline.prepare_chain_crop_frames(
+            chain, annotate_df, cw, frames_root=froot, anchor_catmaid_z=anchor_z,
+            neuron=neuron, chain_idx=chain_idx)
+    else:
+        frames_dir, _f2z, _a, _n = pipeline.prepare_video_frames(
+            chain, annotate_df, scale=cfg.scale, frames_root=froot,
+            anchor_catmaid_z=anchor_z, neuron=neuron, chain_idx=chain_idx)
+    return Path(frames_dir)
+
+
 def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]] = None,
                   source_tree: Optional[str] = None, backend: str = "sam2",
-                  reprop_variant: Optional[str] = None, force: bool = False) -> dict:
+                  reprop_variant: Optional[str] = None, frames_root: Optional[Path] = None,
+                  force: bool = False, force_frames: bool = False) -> dict:
     """Write a review bundle for ``neurons`` from ``output_root`` into ``dest``.
 
     Parameters
@@ -2130,13 +2299,21 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
         if (src_dir / "qc.csv").exists():
             shutil.copy2(src_dir / "qc.csv", out_dir / "qc.csv")
 
-        recorded = rec["state"].get("frames_dir")
-        frames_src = Path(recorded) if recorded else None
-        if frames_src is not None and frames_src.is_dir():
-            shutil.copytree(frames_src, out_dir / "frames", dirs_exist_ok=True)
+        if (out_dir / "frames" / "00000.jpg").exists() and not force_frames:
+            print(f"[export] {rec['chain_dir']}: frames already present, skipping")
         else:
-            print(f"[export] WARNING {rec['chain_dir']}: recorded frames_dir is missing "
-                  f"({recorded}); the bundle will have no canvas for this chain")
+            recorded = rec["state"].get("frames_dir")
+            frames_src = Path(recorded) if recorded and not str(recorded).startswith("/") else None
+            if frames_src is not None and frames_src.is_dir():
+                shutil.copytree(frames_src, out_dir / "frames", dirs_exist_ok=True)
+            else:
+                # The recorded path is almost always a dead Narval /localscratch dir,
+                # so regenerating from the raw EM store is the normal path, not a fallback.
+                print(f"[export] {rec['chain_dir']}: regenerating frames from raw EM")
+                src = regenerate_frames(rec["state"], neuron=rec["cell_name"],
+                                        chain_idx=rec["chain_idx"], output_root=output_root,
+                                        frames_root=frames_root)
+                shutil.copytree(src, out_dir / "frames", dirs_exist_ok=True)
 
         state_out = bundle.rewrite_state_frames_dir(rec["state"])
         (out_dir / "state.json").write_text(json.dumps(state_out, indent=2), encoding="utf-8")
@@ -2175,12 +2352,17 @@ def main() -> None:
     ap.add_argument("--source-tree", default=None)
     ap.add_argument("--backend", default="sam2", choices=["sam2", "sam3"])
     ap.add_argument("--reprop-variant", default=None, choices=["mask_seed", "box_seed"])
+    ap.add_argument("--frames-root", type=Path, default=None,
+                    help="scratch root for regenerated frames; defaults to config.FRAMES_ROOT")
     ap.add_argument("--force", action="store_true",
                     help="write into a non-empty destination (check it is not a returned bundle)")
+    ap.add_argument("--force-frames", action="store_true",
+                    help="regenerate frames even for chains the bundle already has them for")
     args = ap.parse_args()
     export_bundle(args.output_root, args.dest, neurons=args.neurons,
                   source_tree=args.source_tree, backend=args.backend,
-                  reprop_variant=args.reprop_variant, force=args.force)
+                  reprop_variant=args.reprop_variant, frames_root=args.frames_root,
+                  force=args.force, force_frames=args.force_frames)
 
 
 if __name__ == "__main__":
@@ -3178,7 +3360,16 @@ which is what `build_launch_kwargs` produces in Step 3, and `ui_mode` in Task 6 
 **Known ordering constraint.** Task 11 Step 6 modifies `gui.launch`, which Task 6 Step 7 also
 modifies. Run the tasks in order; doing 11 before 6 would conflict.
 
-**Deferred deliberately.** The spec's legacy-chain scale-2 canvas upgrade is noted in Task 9's
-interface block but not implemented: it needs the raw EM store, which was unmounted during design, so
-its size and cost are unmeasured. Export currently copies whatever frames a chain recorded and warns
-when they are missing. Measure a real export first, then decide whether the upgrade is needed.
+**Pre-flight correction to Task 9 (applied 2026-08-18, before execution).** The first draft copied a
+chain's recorded frames and only warned when they were missing. That was built on a false assumption:
+every chain's `state.json` records an absolute `frames_dir`, and across every merged tree those are
+dead Narval `/localscratch` paths, which `gui.py`'s own `_ensure_local_frames` docstring already
+documents and a 50-chain sample across multiple trees confirmed. Copy-only export would have produced
+bundles with no canvas to draw on. Task 9 now regenerates from the raw EM store as the normal path,
+via `prepare_chain_crop_frames` (tier-2) or `prepare_video_frames` (legacy), and is resumable because
+regeneration is slow (about 45 seconds for one 88-frame tier-2 chain) and `F:` drops out.
+
+**Still open, to measure rather than guess.** Bundle size per chain, and whether legacy `_sam` chains
+need a scale-2 canvas rather than their native scale-8. Both need `F:` mounted and a real export.
+Task 9 regenerates each chain in its own native space; upgrading legacy chains to scale 2 is a
+follow-on decision once there are real numbers.
