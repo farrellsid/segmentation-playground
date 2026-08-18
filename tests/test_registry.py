@@ -120,3 +120,17 @@ def test_import_stays_light():
         f"from sam2_utils import registry pulled in heavy modules: {offenders}\n"
         f"stdout={proc.stdout}\nstderr={proc.stderr}"
     )
+
+
+def test_registry_ids_are_independent_of_subset_order():
+    """The bug this replaces: ids that shift when a different subset is rendered."""
+    reg = registry.load_registry()
+    names = sorted(reg)
+    subset_a = names[:5]
+    subset_b = names[3:8]
+    ids_a = {n: registry.neuron_id(n, registry=reg) for n in subset_a}
+    ids_b = {n: registry.neuron_id(n, registry=reg) for n in subset_b}
+    overlap = set(subset_a) & set(subset_b)
+    assert overlap, "subsets must overlap for this test to mean anything"
+    for name in overlap:
+        assert ids_a[name] == ids_b[name]

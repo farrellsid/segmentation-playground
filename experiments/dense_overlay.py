@@ -42,7 +42,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import pipeline
-from sam2_utils import alignment, qc
+from sam2_utils import alignment, qc, registry
 from sam2_utils.perframe import resolve_overlaps_argmax
 
 RE = Path(r"F:\ZhenLab\Data\output_masks\resolution_experiments")
@@ -88,7 +88,11 @@ def build_index(tree: Path, cache_path: Path, rebuild: bool = False) -> dict:
             for z in zs:
                 z_to_recs.setdefault(str(z), []).append(ri)
     neurons = sorted({r["neuron"] for r in records})
-    neuron_id = {n: i + 1 for i, n in enumerate(neurons)}   # 1..N, 0 = background
+    # Permanent ids from data/neuron_registry.csv, NOT enumerate order: a neuron's
+    # label must not change when a different subset is rendered, or an exported
+    # labelmap means nothing outside the run that produced it.
+    _reg = registry.load_registry()
+    neuron_id = {n: registry.neuron_id(n, registry=_reg) for n in neurons}
     idx = {"tree": str(tree), "records": records, "z_to_recs": z_to_recs,
            "neuron_id": neuron_id, "malformed": malformed,
            "scan_seconds": round(time.time() - t0, 1)}
