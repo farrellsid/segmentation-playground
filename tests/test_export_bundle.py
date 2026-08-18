@@ -349,3 +349,38 @@ def test_regenerate_frames_scale_falls_back_to_default_when_unrecorded(tmp_path,
                                     output_root=tmp_path, frames_root=tmp_path)
 
     assert calls["video"]["scale"] == 8
+
+
+def test_relative_frames_dir_resolves_against_the_chain_dir_not_the_cwd(tmp_path, monkeypatch):
+    """Re-exporting a bundle must not copy a decoy ``frames/`` out of the cwd.
+
+    A bundle records ``frames_dir`` as the relative ``"frames"``. Export used to
+    call a bare ``Path(recorded)`` for anything not starting with ``/``, which on
+    a relative value resolves against the CURRENT WORKING DIRECTORY. Running the
+    export from a directory that happens to hold a ``frames/`` shipped that
+    unrelated directory's contents as the reviewer's canvas.
+    """
+    root = tmp_path / "master"
+    d = root / "AIAL" / "chain_00"
+    (d / "masks").mkdir(parents=True)
+    (d / "masks" / "mask_1402.png").write_bytes(b"px")
+    (d / "frames").mkdir()
+    (d / "frames" / "00000.jpg").write_bytes(b"real")
+    (d / "state.json").write_text(json.dumps(
+        {"neuron": "AIAL", "chain_idx": 0, "frames_dir": "frames",
+         "anchor_catmaid_z": 1402, "crop_window": None, "save_downscale": 8}),
+        encoding="utf-8")
+    (d / "qc.csv").write_text("z,queue\n1402,0\n", encoding="utf-8")
+
+    decoy = tmp_path / "cwd"
+    (decoy / "frames").mkdir(parents=True)
+    (decoy / "frames" / "00000.jpg").write_bytes(b"decoy")
+    monkeypatch.chdir(decoy)
+
+    monkeypatch.setattr(export_bundle, "regenerate_frames", lambda *a, **k: pytest.fail(
+        "the chain's own relative frames dir exists; nothing should be regenerated"))
+
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, source_tree="master")
+    shipped = (dest / "AIAL" / "chain_00" / "frames" / "00000.jpg").read_bytes()
+    assert shipped == b"real", "must copy the chain's own frames, not the cwd's"

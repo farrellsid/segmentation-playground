@@ -131,6 +131,46 @@ def regenerate_frames(state: dict, *, neuron: str, chain_idx: int,
     return Path(frames_dir)
 
 
+def _frames_copy_source(recorded, chain_dir: Path) -> Optional[Path]:
+    """The local directory a chain's frames can be COPIED from, or None.
+
+    Parameters
+    ----------
+    recorded : str or None
+        The chain's recorded ``frames_dir`` out of its state.json.
+    chain_dir : Path
+        The chain's directory in the tree being exported, which a RELATIVE
+        recorded path resolves against.
+
+    Returns
+    -------
+    Path or None
+        A candidate copy source (still to be existence-checked by the caller), or
+        None when the recorded value cannot be one.
+
+    Notes
+    -----
+    Resolution goes through :func:`sam2_utils.bundle.resolve_frames_dir`, the one
+    implementation shared with ``gui.resolve_frames_dir`` and
+    ``bundle.validate_bundle``. This used to be a private copy that tested only a
+    leading ``/`` and then called a bare ``Path(recorded)``, so a RELATIVE
+    ``frames_dir``, which is exactly what a bundle records, resolved against the
+    CURRENT WORKING DIRECTORY: re-exporting from a bundle would pick up whatever
+    ``frames/`` happened to sit in the cwd and copy that into the new bundle.
+
+    A ``/``-rooted path is refused outright rather than resolved. Every
+    cluster-produced chain records a Narval ``/localscratch/<jobid>/...``
+    directory that stopped existing when the job ended, so such a path is never a
+    real copy source here; on a machine where one did resolve it would be the
+    wrong worm's scratch, not this chain's frames.
+    """
+    if not recorded:
+        return None
+    if str(recorded).startswith("/"):
+        return None
+    return bundle.resolve_frames_dir(recorded, chain_dir)
+
+
 def _frames_complete(frames_dir: Path, state: dict) -> bool:
     """Whether ``frames_dir`` already holds a COMPLETE set of this chain's frames.
 
@@ -255,7 +295,7 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
             print(f"[export] {rec['chain_dir']}: frames already present, skipping")
         else:
             recorded = rec["state"].get("frames_dir")
-            frames_src = Path(recorded) if recorded and not str(recorded).startswith("/") else None
+            frames_src = _frames_copy_source(recorded, src_dir)
             if frames_src is not None and frames_src.is_dir():
                 _replace_frames_dir(frames_src, frames_out)
             else:

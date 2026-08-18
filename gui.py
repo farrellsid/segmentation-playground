@@ -87,7 +87,8 @@ import pandas as pd
 warnings.filterwarnings(
     "ignore", message="The plugin infrastructure in", category=FutureWarning)
 
-from sam2_utils import config, alignment, review, review_queue, labels as labels_mod
+from sam2_utils import (config, alignment, bundle as bundle_mod, review, review_queue,
+                        labels as labels_mod)
 import pipeline
 
 
@@ -329,21 +330,13 @@ def resolve_frames_dir(recorded, chain_dir):
 
     Notes
     -----
-    A leading ``/`` (a Narval scratch path such as ``/localscratch/<jobid>/...``)
-    counts as absolute here even on Windows, where ``Path`` would otherwise read it
-    as "root of the current drive". Treating it as relative would silently join a
-    dead cluster path onto the chain directory instead of failing where it can be
-    recognised.
+    A thin delegate to :func:`sam2_utils.bundle.resolve_frames_dir`, which is the
+    single implementation of the rule. It is kept under this name because the GUI
+    is where the rule is read from, and because ``export_bundle`` and
+    ``bundle.validate_bundle`` share the same logic; three private copies is how
+    they drifted apart in the first place.
     """
-    if recorded is None:
-        return None
-    text = str(recorded)
-    if text.startswith("/") or text.startswith("\\"):
-        return Path(text)
-    p = Path(text)
-    if p.is_absolute():
-        return p
-    return Path(chain_dir) / p
+    return bundle_mod.resolve_frames_dir(recorded, chain_dir)
 
 
 def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,

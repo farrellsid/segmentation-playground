@@ -28,6 +28,65 @@ BUNDLE_MANIFEST = "bundle.json"
 REVIEWER_OWNED = ("masks", "qc.csv")
 
 
+def is_recorded_absolute(recorded) -> bool:
+    """Whether a recorded ``frames_dir`` should be treated as an absolute path.
+
+    Parameters
+    ----------
+    recorded : str or Path
+        The ``frames_dir`` value out of a ``state.json``.
+
+    Returns
+    -------
+    bool
+        True when the value is absolute.
+
+    Notes
+    -----
+    A leading ``/`` (a Narval scratch path such as ``/localscratch/<jobid>/...``)
+    or a leading backslash counts as absolute even on Windows, where ``Path`` would
+    otherwise read a leading slash as "root of the current drive" and ``is_absolute`` would
+    return False. Treating such a value as relative would silently join a dead
+    cluster path onto a chain directory instead of failing where it is
+    recognisable.
+    """
+    text = str(recorded)
+    return text.startswith(("/", "\\")) or Path(text).is_absolute()
+
+
+def resolve_frames_dir(recorded, chain_dir):
+    """Resolve a chain's recorded ``frames_dir`` to a usable path.
+
+    THE one implementation of this rule. ``gui.resolve_frames_dir`` delegates
+    here, :func:`validate_bundle` uses :func:`is_recorded_absolute`, and
+    ``export_bundle`` resolves its copy source through it, so the three callers
+    cannot drift apart again. They did: export used to test only a leading ``/``
+    and then call a bare ``Path(recorded)``, which resolved a RELATIVE
+    ``frames_dir`` (exactly what a bundle records) against the current working
+    directory, and a re-export from a bundle happily copied a decoy ``frames/``
+    out of the cwd.
+
+    Parameters
+    ----------
+    recorded : str, Path or None
+        The ``frames_dir`` value from a ``state.json``.
+    chain_dir : Path
+        The chain directory the state was loaded from.
+
+    Returns
+    -------
+    Path or None
+        ``chain_dir / recorded`` when recorded is relative, the path unchanged
+        when it is absolute, and None when nothing is recorded.
+    """
+    if recorded is None:
+        return None
+    text = str(recorded)
+    if is_recorded_absolute(text):
+        return Path(text)
+    return Path(chain_dir) / text
+
+
 def index_chains(output_root: Path, neurons: Optional[List[str]] = None) -> List[dict]:
     """Index every chain under ``output_root``.
 
@@ -143,7 +202,7 @@ def validate_bundle(bundle_root: Path) -> List[str]:
             problems.append(f"{entry['chain_dir']}: missing state.json")
             continue
         frames_dir = json.loads(state_path.read_text(encoding="utf-8")).get("frames_dir")
-        if frames_dir and (str(frames_dir).startswith(("/", "\\")) or Path(frames_dir).is_absolute()):
+        if frames_dir and is_recorded_absolute(frames_dir):
             problems.append(f"{entry['chain_dir']}: frames_dir is absolute ({frames_dir}); "
                             f"a bundle must record it relative or it will not open elsewhere")
     return problems
