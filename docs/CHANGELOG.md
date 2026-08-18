@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-18, portable review: neuron id registry, chain meta.json, review bundle, launcher, GUI modes](#r-2026-08-18-portable-review)
 - [2026-08-14, re-propagation comparison report: mask-seed vs box-seed, a real underfill fix found, transient F:/RAM read failures hardened](#r-2026-08-14-reprop-comparison)
 - [2026-08-12, review-session follow-ups: a shared before/after crop window, --anchor-only context frames](#r-2026-08-12-review-followups)
 - [2026-08-12, lasso-add mask tool: a freehand loop unions into the current frame's mask, undo-compatible with the paint brush](#r-2026-08-12-lasso-add)
@@ -51,6 +52,57 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-18-portable-review"></a>
+## 2026-08-18, portable review: neuron id registry, chain meta.json, review bundle, launcher, GUI modes
+
+A second reviewer (Lucinda) is joining on a Mac with no GPU. Everything in this entry exists to make
+that a `pip install` and a zipped folder instead of a day of setup.
+
+**Why identity had to stop being a render-time accident.** A mask's numeric id used to come from
+`experiments/dense_overlay.py`'s `{n: i + 1 for i, n in enumerate(neurons)}`, so a neuron's id was
+its position in whatever subset happened to be rendered that time. Fine for a throwaway figure, not
+fine for a VAST segment number or a Blender material, which need to mean the same thing every time.
+`data/neuron_registry.csv` fixes this: 247 neurons, ids 1 to 247, built once from `data/chains.json`
+sorted by name, append-only after that ([ADR 0018](adr/0018-frozen-neuron-id-registry.md)). Every
+chain also gained a `meta.json`: registry id, crop window, and the rest of its portable identity,
+readable without importing `pipeline`.
+
+**Three things made a chain impossible to open on a second machine, all removed.** Paths were
+hardcoded straight into tracked source (`sam2_utils/config.py`), so a second machine meant editing a
+file under version control. Every real chain's `state.json` carries an absolute `frames_dir`, and
+across every merged tree those turned out to be dead Compute Canada Narval `/localscratch` paths.
+And `gui.py`'s fallback for a missing `frames_dir` was to regenerate frames from the raw EM store,
+which a review laptop with no access to the lab's drives cannot do.
+
+**Two findings made the fix cheap instead of a rewrite.** `ensure_predictors`, the one place a
+SAM2/SAM3 predictor gets built, has exactly three callers, and all three are model actions (re-run
+image phase, resume propagation, recrop). Neither `gui.py`'s module-level imports nor `import
+pipeline` pull in torch. So a reviewer who is only redrawing masks never touches torch at all:
+`requirements-review.txt` lists numpy, pandas, opencv-python, napari, magicgui, and qtpy, and leaves
+torch and sam2 out on purpose (see [how-to/review-on-a-mac.md](how-to/review-on-a-mac.md)).
+
+**`gui.py` gained a `review`/`full` UI mode** (`--ui-mode`, or `launch(ui_mode=...)`). Of the 28
+controls `_build_widgets` creates, 10 need a predictor; of the 17 keys `_bind_keys` binds, 7 do.
+Review mode drops the whole model panel and withholds those 7 keys, so a stray keypress on a
+GPU-less machine cannot reach an action that would just raise. `launcher.py` (new, built on qtpy,
+which napari already pulls in) turns the same choice into a picker instead of a flag: point it at a
+bundle, it lists the neurons inside and how many chains of each are already reviewed, and it disables
+the reprop option outright when torch does not import. Settings persist in
+`~/.sam2review/profile.json`, outside the repo.
+
+**The review bundle** (`export_bundle.py`, `import_bundle.py`, `sam2_utils/bundle.py`) is a portable
+copy of part of an output tree: `meta.json`, `state.json`, `qc.csv`, and a set of frames, zipped and
+handed to a reviewer, later merged back with `import_bundle.py --dry-run` followed by a real run.
+Frames in a bundle are regenerated from the raw EM store rather than copied, because every real
+chain's recorded `frames_dir` is one of the dead Narval paths above; copying it forward would have
+produced a bundle with no canvas to draw on. Only `masks/` and `qc.csv` travel back on the return
+trip, since a bundle's `state.json` records a relative `frames_dir` that would break the master tree
+if copied over it.
+
+429 passed, 1 skipped; ruff clean; no dashes.
 
 ---
 

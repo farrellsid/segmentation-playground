@@ -17,6 +17,12 @@ as few files as possible.
 | How the headless batch runs, resumes, or builds the triage queue | `batch.py` | The headless driver. Builds predictors once, runs every chain, writes the manifest. `--backend {sam2,sam3}` (default `sam2`, unchanged) plus `--sam3-checkpoint PATH` route through `build_predictors(cfg)` to the SAM3 adapters instead of `setup.build_predictor`; see the sam3_backend.py row below and [../how-to/run-sam3-on-narval.md](../how-to/run-sam3-on-narval.md) for the cluster run. |
 | The review GUI (layers, keys, correction tools) | `gui.py` | The napari driver, per-CHAIN paradigm. Composes `review`, `review_queue`, `labels`, and `pipeline`. |
 | The neuron-level review GUI (whole neuron on one crop canvas) | `gui_neuron.py` | The second paradigm: opens a whole neuron, branches as labels in one Labels layer on a per-neuron `_ncrop` crop. Imports shared pieces from `gui.py`. See the 2026-06-23 spec/plan under `docs/superpowers/`. |
+| Neuron ids (the permanent cell_name to id mapping) | `sam2_utils/registry.py`, `data/neuron_registry.csv` | Ids are frozen, never reassigned. See [ADR 0018](../adr/0018-frozen-neuron-id-registry.md). |
+| A chain's portable identity + geometry record | `sam2_utils/chain_meta.py` | `meta.json`, readable without importing `pipeline` (no torch). |
+| Review bundle logic (index, manifest, validate) | `sam2_utils/bundle.py` | `bundle.json` schema, chain indexing, the round-trip validation both scripts below call. |
+| Building or merging a review bundle | `export_bundle.py`, `import_bundle.py` | See [../how-to/review-on-a-mac.md](../how-to/review-on-a-mac.md). |
+| The review launcher window and its profile | `launcher.py` | Picks the bundle, the neurons, and the mode; settings persist in `~/.sam2review/profile.json`. |
+| Which GUI controls a UI mode shows | `gui.py`, `panels_for_mode` / `keys_for_mode` | `review` mode hides the 10 of 28 controls (7 of 17 keys) that need a predictor. |
 | The work queue or review-status ledger the GUI reads and writes | `sam2_utils/review_queue.py` | Owns `_review.csv`, separate from the batch's `_manifest.csv`. |
 | The per-frame label store (the training data the GUI collects) | `sam2_utils/labels.py` | One flat row per labelled frame in `_labels.csv`. Pure pandas. |
 | A QC signal or its threshold | `sam2_utils/qc.py` + the `qc_*` knobs on `PipelineConfig` | Metrics live in `qc.py`; thresholds live on the config so a run tunes them in one place. |

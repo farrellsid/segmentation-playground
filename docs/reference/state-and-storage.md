@@ -31,6 +31,7 @@ output/
   <neuron>/
     chain_00/
       state.json              # the ChainState above
+      meta.json               # portable identity + geometry, readable without importing pipeline
       qc.csv                  # per-frame QC metrics, plus a `queue` column
       masks/mask_<z:04d>.png  # 0/255 uint8, canonical _sam space
     chain_01/ ...
@@ -54,6 +55,30 @@ frames_root/
 The decode cache means overlapping chains pay the large imread-and-resize once across the dataset,
 not once per chain. The per-chain views are links (hard-link on Windows, since the cache and views
 share a volume).
+
+## The review bundle
+
+A bundle is a portable copy of part of an output tree, for a reviewer on another machine:
+
+```
+<bundle>/
+  bundle.json                    schema version, chain index, source tree
+  neurons.csv                    the registry rows this bundle uses
+  <neuron>/chain_00/
+    meta.json
+    state.json                   frames_dir is RELATIVE here, unlike the master tree
+    qc.csv
+    masks/mask_<z:04d>.png
+    frames/00000.jpg ...
+```
+
+`export_bundle.py` writes one, `import_bundle.py` merges a returned one back. Only `masks/` and
+`qc.csv` travel on the return trip: a bundle's `state.json` records a relative `frames_dir` and
+would break the master tree if copied over it.
+
+The relative `frames_dir` is the point of the format. A master tree bakes an absolute path, which
+does not resolve elsewhere, and `gui.py` then falls back to regenerating frames from the raw EM
+store. `gui.resolve_frames_dir` joins a relative value against the chain directory instead.
 
 ## Resume behavior
 
