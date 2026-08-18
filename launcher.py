@@ -182,10 +182,15 @@ def run() -> None:
     mode_combo = QComboBox()
     mode_combo.addItem("Redraw only (no model)", "review")
     mode_combo.addItem("Enable SAM2/SAM3 reprop", "full")
-    if not torch_available():
+    has_torch = torch_available()
+    if not has_torch:
         mode_combo.model().item(1).setEnabled(False)
         mode_combo.setToolTip("Reprop needs torch, which is not installed on this machine.")
-    mode_combo.setCurrentIndex(0 if profile.get("ui_mode", "review") == "review" else 1)
+    # Fall back to review when the saved profile asks for full on a machine that
+    # cannot run it. Without the has_torch term the combo would show the disabled
+    # reprop item as the selected one, offering a choice this machine cannot honour.
+    want_full = profile.get("ui_mode", "review") == "full"
+    mode_combo.setCurrentIndex(1 if (want_full and has_torch) else 0)
     remember = QCheckBox("Remember these settings")
     remember.setChecked(True)
     opts.addWidget(QLabel("Reviewer:"))
