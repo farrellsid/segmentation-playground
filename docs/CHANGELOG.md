@@ -102,6 +102,8 @@ produced a bundle with no canvas to draw on. Only `masks/` and `qc.csv` travel b
 trip, since a bundle's `state.json` records a relative `frames_dir` that would break the master tree
 if copied over it.
 
+**Known gap, recorded rather than fixed.** The design says the pipeline writes `meta.json` for new chains. It does not: only `backfill_meta.py` and `export_bundle.py` write one, so a chain straight out of the batch has no sidecar until one of those runs over it. Wiring it into `batch.py` is out of scope for the fix pass and is not done.
+
 429 passed, 1 skipped; ruff clean; no dashes.
 
 ---

@@ -1,6 +1,8 @@
 # Portable review: a neuron identity registry, a self-contained bundle, and a launcher
 
-Status: design, approved 2026-08-18.
+Status: design, approved 2026-08-18. Built, with one deviation recorded below.
+
+Deviation from this design as built (2026-08-18): section 2 says "the pipeline writes it for new chains". It does not. `meta.json` is produced only by `backfill_meta.py` and by `export_bundle.py`, so a chain the batch produces has no sidecar until one of those two runs over it. Nothing downstream is broken by that today, because both consumers of the sidecar are exporters that write it themselves, but a future reader that expects every chain directory to carry one will not find it. Wiring it into the batch was left out of the follow-up fix pass deliberately, as out of scope for a bug fix.
 
 ## Why
 
