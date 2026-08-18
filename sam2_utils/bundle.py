@@ -27,6 +27,30 @@ BUNDLE_MANIFEST = "bundle.json"
 #: Everything else in a bundle is a copy of state the master tree already owns.
 REVIEWER_OWNED = ("masks", "qc.csv")
 
+#: Tree-root ledgers the review GUI appends to, merged back ROW-WISE (not copied)
+#: by import_bundle. Separate from REVIEWER_OWNED, which is the per-chain set: a
+#: master tree's copy of these holds rows for chains that were never in the
+#: bundle, and copying the file over would delete them.
+REVIEWER_LEDGERS = ("_review.csv", "_labels.csv")
+
+#: Directory inside a bundle holding the CATMAID slice the GUI reads.
+BUNDLE_DATA_DIR = "data"
+
+#: Bundle-local chain list: the subset of ``data/chains.json`` this bundle needs.
+BUNDLE_CHAINS_NAME = "chains.json"
+
+#: Bundle-local node table: the subset of ``data/aggregate_data_pv.csv`` this
+#: bundle needs. Named for its role rather than carrying the source filename
+#: forward, because it is a subset, not a copy of that file.
+BUNDLE_NODES_NAME = "nodes.csv"
+
+#: Both of the above, relative to the bundle root. A bundle without them cannot
+#: be opened: both source files are gitignored, so a reviewer who clones the repo
+#: has neither, and ``ReviewContext`` would raise ``FileNotFoundError`` on the
+#: first chain she opens.
+BUNDLE_DATA_FILES = (f"{BUNDLE_DATA_DIR}/{BUNDLE_CHAINS_NAME}",
+                     f"{BUNDLE_DATA_DIR}/{BUNDLE_NODES_NAME}")
+
 
 def is_recorded_absolute(recorded) -> bool:
     """Whether a recorded ``frames_dir`` should be treated as an absolute path.
@@ -190,6 +214,12 @@ def validate_bundle(bundle_root: Path) -> List[str]:
         problems.append(f"bundle schema_version {version} is newer than this code supports "
                         f"({BUNDLE_SCHEMA_VERSION}); update the repo before opening it")
         return problems
+
+    for rel in BUNDLE_DATA_FILES:
+        if not (bundle_root / rel).exists():
+            problems.append(f"missing {rel}; without it the reviewer's GUI falls back to the "
+                            f"config paths, which do not exist on her machine, and no chain "
+                            f"will open")
     for entry in manifest.get("chains", []):
         chain_dir = bundle_root / entry["chain_dir"]
         if not chain_dir.is_dir():

@@ -28,6 +28,13 @@ def _pair(tmp_path, *, bundle_mask=b"new", master_mask=b"old", neuron="AIAL", ni
         "mask_space": "_sam", "mask_scale": 8, "crop_window": None,
         "z_range": [1402, 1402], "provenance": {}}), encoding="utf-8")
 
+    data = tmp_path / "bundle" / bundle.BUNDLE_DATA_DIR
+    data.mkdir(parents=True, exist_ok=True)
+    (data / bundle.BUNDLE_CHAINS_NAME).write_text(
+        json.dumps([{"cell_name": neuron, "nodes": [1]}]), encoding="utf-8")
+    (data / bundle.BUNDLE_NODES_NAME).write_text(
+        f"node_id,x,y,z,cell_name\n1,10,20,1402,{neuron}\n", encoding="utf-8")
+
     man = bundle.build_manifest(bundle.index_chains(tmp_path / "bundle"), source_tree="master")
     (tmp_path / "bundle" / bundle.BUNDLE_MANIFEST).write_text(json.dumps(man), encoding="utf-8")
     return tmp_path / "bundle", tmp_path / "master"

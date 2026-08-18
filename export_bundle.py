@@ -2,8 +2,15 @@
 
 The bundle opens on a machine that has none of this project's data: no F:, no raw
 EM store, no CATMAID cache. It carries identity (meta.json + neurons.csv), the
-masks, per-chain QC, the frames to draw on, and a manifest, with every
-``state.json`` rewritten to point at a RELATIVE frames directory.
+masks, per-chain QC, the frames to draw on, a manifest, and the slice of the
+CATMAID tables the GUI needs (``data/chains.json`` + ``data/nodes.csv``), with
+every ``state.json`` rewritten to point at a RELATIVE frames directory.
+
+The ``data/`` slice is not optional. ``data/chains.json`` and
+``data/aggregate_data_pv.csv`` are both gitignored, so a reviewer who clones the
+repo has neither, and without them ``ReviewContext.find_chain`` and
+``ReviewContext.annotate_df`` raise ``FileNotFoundError`` the moment she opens a
+chain.
 
     py -3 export_bundle.py --output-root "F:\\ZhenLab\\Data\\output_masks\\reprop_maskseed" \\
         --dest "F:\\ZhenLab\\Data\\bundles\\AIA_for_lucinda" --neurons AIAL AIAR
@@ -229,6 +236,82 @@ def _replace_frames_dir(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst)
 
 
+#: Columns the pipeline DERIVES from the raw table via alignment.catmaid_to_tif.
+#: They are stripped before writing so the affine stays in code: baking x_tif /
+#: y_tif into a bundle would freeze one version of the alignment into shipped
+#: data, and a later correction to the affine could never reach it.
+_DERIVED_NODE_COLUMNS = ("x_tif", "y_tif")
+
+
+def _check_source_data_present() -> None:
+    """Fail loudly when the CATMAID tables a bundle must carry are missing.
+
+    Raises
+    ------
+    SystemExit
+        When ``config.CSV_PATH`` or ``config.CHAINS_PATH`` is absent. Writing the
+        bundle anyway would produce something that passes a casual look and then
+        raises ``FileNotFoundError`` on the reviewer's machine, at the point where
+        she can do the least about it.
+    """
+    from sam2_utils import config
+    missing = [str(p) for p in (config.CHAINS_PATH, config.CSV_PATH) if not Path(p).exists()]
+    if missing:
+        raise SystemExit(
+            "cannot build a bundle without the CATMAID tables it must carry; missing: "
+            + ", ".join(missing)
+            + ". A bundle without data/chains.json and data/nodes.csv cannot be opened "
+              "on a machine that has neither (both are gitignored).")
+
+
+def write_bundle_data(dest: Path, neurons: List[str], *, output_root: Path,
+                      frames_root: Optional[Path] = None) -> Path:
+    """Write the CATMAID slice a bundle needs into ``<dest>/data``.
+
+    Parameters
+    ----------
+    dest : Path
+        The bundle root.
+    neurons : list of str
+        Cell names in this export. Both files are filtered to these NEURONS.
+    output_root, frames_root : Path, Path optional
+        Passed through to :func:`_catmaid_context`, whose already-loaded tables
+        this reuses rather than re-reading them.
+
+    Returns
+    -------
+    Path
+        The ``data`` directory written.
+
+    Notes
+    -----
+    Filtering is by NEURON, never by chain. ``chain_idx`` is a POSITION within a
+    neuron's chain list, so dropping any of an exported neuron's chains would
+    shift every later index for that neuron and the GUI would open the wrong
+    chain. Each exported neuron therefore keeps its chains complete and in the
+    source file's order, and only whole unexported neurons are dropped.
+
+    The node table ships its RAW columns. ``x_tif`` / ``y_tif`` are recomputed by
+    ``alignment.catmaid_to_tif`` on read, so the coordinate affine stays in code
+    instead of being baked into shipped data.
+    """
+    chains_json, annotate_df, _cfg, _froot = _catmaid_context(output_root, frames_root)
+    wanted = set(neurons)
+
+    data_dir = Path(dest) / bundle.BUNDLE_DATA_DIR
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    subset = [c for c in chains_json if c.get("cell_name") in wanted]
+    (data_dir / bundle.BUNDLE_CHAINS_NAME).write_text(json.dumps(subset, indent=2), encoding="utf-8")
+
+    rows = annotate_df[annotate_df["cell_name"].isin(wanted)]
+    drop = [c for c in _DERIVED_NODE_COLUMNS if c in rows.columns]
+    rows.drop(columns=drop).to_csv(data_dir / bundle.BUNDLE_NODES_NAME, index=False)
+
+    print(f"[export] data slice: {len(subset)} chain record(s), {len(rows)} node row(s)")
+    return data_dir
+
+
 def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]] = None,
                   source_tree: Optional[str] = None, backend: str = "sam2",
                   reprop_variant: Optional[str] = None, frames_root: Optional[Path] = None,
@@ -279,6 +362,7 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
     chains = bundle.index_chains(output_root, neurons=neurons)
     if not chains:
         raise SystemExit(f"no chains found under {output_root} for neurons={neurons}")
+    _check_source_data_present()
 
     dest.mkdir(parents=True, exist_ok=True)
     for rec in chains:
@@ -320,6 +404,7 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
     (dest / bundle.BUNDLE_MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     names = sorted({c["cell_name"] for c in chains})
+    write_bundle_data(dest, names, output_root=output_root, frames_root=frames_root)
     with (dest / "neurons.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["neuron_id", "cell_name"])

@@ -33,6 +33,45 @@ def _fake_registry(monkeypatch):
                         lambda *a, **k: {"AIAL": 42, "AIYL": 7})
 
 
+#: A stand-in for data/chains.json: three neurons, and AIAL deliberately has TWO
+#: chains so a filtered export can be checked for dropping one of them.
+_SOURCE_CHAINS = [
+    {"cell_name": "AIAL", "nodes": [1, 2], "is_root": True},
+    {"cell_name": "AIYL", "nodes": [3], "is_root": True},
+    {"cell_name": "AIAL", "nodes": [4, 5], "is_root": False},
+    {"cell_name": "AVAL", "nodes": [6], "is_root": True},
+]
+
+
+def _source_nodes():
+    import pandas as pd
+    df = pd.DataFrame({
+        "node_id": [1, 2, 3, 4, 5, 6],
+        "x": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+        "y": [20.0, 21.0, 22.0, 23.0, 24.0, 25.0],
+        "z": [1402, 1403, 1402, 1404, 1405, 1402],
+        "cell_name": ["AIAL", "AIAL", "AIYL", "AIAL", "AIAL", "AVAL"],
+    })
+    # _catmaid_context adds these before anyone downstream sees the frame; the
+    # bundle must ship the RAW columns, so the writer has to strip them again.
+    df["x_tif"], df["y_tif"] = df["x"] * 2, df["y"] * 2
+    return df
+
+
+@pytest.fixture(autouse=True)
+def _fake_source_data(monkeypatch, tmp_path):
+    """Stand in for the CATMAID tables the export reads its data/ slice from.
+
+    The real ones live on paths this machine may not have. Stubbing the context
+    (rather than skipping the slice) means every export test still exercises the
+    data/ write, which is what makes a bundle openable on a reviewer's machine.
+    """
+    monkeypatch.setattr(export_bundle, "_check_source_data_present", lambda: None)
+    monkeypatch.setattr(
+        export_bundle, "_catmaid_context",
+        lambda output_root, frames_root: (_SOURCE_CHAINS, _source_nodes(), "cfg", tmp_path))
+
+
 def test_export_writes_a_valid_bundle(tmp_path):
     root = _tree(tmp_path)
     dest = tmp_path / "bundle"
@@ -384,3 +423,62 @@ def test_relative_frames_dir_resolves_against_the_chain_dir_not_the_cwd(tmp_path
     export_bundle.export_bundle(root, dest, source_tree="master")
     shipped = (dest / "AIAL" / "chain_00" / "frames" / "00000.jpg").read_bytes()
     assert shipped == b"real", "must copy the chain's own frames, not the cwd's"
+
+
+# ---------------------------------------------------------------------------
+# The data/ slice: what makes a bundle openable on a machine with no data dir.
+# ---------------------------------------------------------------------------
+
+def test_export_writes_the_catmaid_slice(tmp_path):
+    root = _tree(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, source_tree="master")
+    assert (dest / "data" / "chains.json").exists()
+    assert (dest / "data" / "nodes.csv").exists()
+
+
+def test_data_slice_keeps_every_chain_of_an_exported_neuron(tmp_path):
+    """Filter by NEURON, never by chain.
+
+    ``chain_idx`` is a POSITION in a neuron's chain list. Dropping AIAL's second
+    chain because it was not the one exported would renumber it, and the GUI
+    would open the wrong chain for every index after the gap.
+    """
+    root = _tree(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, neurons=["AIAL"], source_tree="master")
+    shipped = json.loads((dest / "data" / "chains.json").read_text(encoding="utf-8"))
+    assert [c["cell_name"] for c in shipped] == ["AIAL", "AIAL"]
+    assert [c["nodes"] for c in shipped] == [[1, 2], [4, 5]], "order must be the source order"
+
+
+def test_data_slice_drops_unexported_neurons(tmp_path):
+    root = _tree(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, neurons=["AIAL"], source_tree="master")
+    shipped = json.loads((dest / "data" / "chains.json").read_text(encoding="utf-8"))
+    assert all(c["cell_name"] == "AIAL" for c in shipped)
+    nodes = (dest / "data" / "nodes.csv").read_text(encoding="utf-8")
+    assert "AVAL" not in nodes and "AIYL" not in nodes
+
+
+def test_nodes_csv_ships_raw_columns_only(tmp_path):
+    """No precomputed x_tif/y_tif: the affine stays in code, not in shipped data."""
+    root = _tree(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, source_tree="master")
+    header = (dest / "data" / "nodes.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert "x_tif" not in header and "y_tif" not in header
+    assert header.split(",")[:2] == ["node_id", "x"]
+
+
+def test_export_fails_loudly_when_the_source_tables_are_missing(tmp_path, monkeypatch):
+    """A bundle with no data/ cannot be opened, so it must not be written at all."""
+    root = _tree(tmp_path)
+
+    def boom():
+        raise SystemExit("missing data/chains.json")
+
+    monkeypatch.setattr(export_bundle, "_check_source_data_present", boom)
+    with pytest.raises(SystemExit):
+        export_bundle.export_bundle(root, tmp_path / "bundle", source_tree="master")

@@ -64,6 +64,8 @@ A bundle is a portable copy of part of an output tree, for a reviewer on another
 <bundle>/
   bundle.json                    schema version, chain index, source tree
   neurons.csv                    the registry rows this bundle uses
+  data/chains.json               the exported neurons' chain records, complete and in source order
+  data/nodes.csv                 the exported neurons' CATMAID node rows, raw columns
   <neuron>/chain_00/
     meta.json
     state.json                   frames_dir is RELATIVE here, unlike the master tree
@@ -78,7 +80,20 @@ would break the master tree if copied over it.
 
 The relative `frames_dir` is the point of the format. A master tree bakes an absolute path, which
 does not resolve elsewhere, and `gui.py` then falls back to regenerating frames from the raw EM
-store. `gui.resolve_frames_dir` joins a relative value against the chain directory instead.
+store. `gui.resolve_frames_dir` joins a relative value against the chain directory instead. That
+function, `bundle.validate_bundle` and `export_bundle`'s copy-source check all go through the one
+implementation in `sam2_utils/bundle.py`, because three private copies of the rule is how they
+drifted apart before.
+
+`data/` is what makes a bundle openable at all. `data/chains.json` and `data/aggregate_data_pv.csv`
+are gitignored, so a reviewer who clones the repo has neither, and `ReviewContext` needs both to
+resolve a chain and to build `annotate_df`. The bundle therefore carries its own slice, filtered by
+NEURON: every exported neuron keeps all of its chains, in the source file's order, because
+`chain_idx` is a position in that list and dropping one chain would shift every later index.
+`nodes.csv` ships the raw columns, with no precomputed `x_tif`/`y_tif`, so the coordinate affine
+stays in code and a later correction to it still reaches an already-shipped bundle.
+`ReviewContext` prefers these files when they exist and falls back to the `config` paths when they
+do not, so a normal master-tree session is unchanged.
 
 ## Resume behavior
 

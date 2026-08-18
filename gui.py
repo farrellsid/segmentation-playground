@@ -247,21 +247,58 @@ class ReviewContext:
         self.video_predictor = None
 
     # -- light -----------------------------------------------------------------
+    def _bundle_data(self, name: str) -> Optional[Path]:
+        """``<output_root>/data/<name>`` when a bundle ships it, else None.
+
+        A review bundle carries its own slice of the CATMAID tables, because both
+        source files (``data/chains.json`` and ``data/aggregate_data_pv.csv``) are
+        gitignored: a reviewer who clones the repo has neither, and the config
+        paths she would otherwise fall back to point at drives she cannot see.
+        Inside a bundle ``output_root`` IS the bundle root, so this is where that
+        slice lands.
+
+        Parameters
+        ----------
+        name : str
+            File name inside the bundle's ``data`` directory.
+
+        Returns
+        -------
+        Path or None
+            The bundle-local path when it exists, else None so the caller keeps
+            its existing config-path behaviour unchanged.
+        """
+        path = self.output_root / bundle_mod.BUNDLE_DATA_DIR / name
+        return path if path.exists() else None
+
     @property
     def annotate_df(self) -> pd.DataFrame:
         """Cached CATMAID node table with the stack→tif affine applied (x_tif/y_tif).
-        Same construction as batch._build_session, minus the predictors."""
+
+        Same construction as batch._build_session, minus the predictors, and read
+        from the bundle's own ``data/nodes.csv`` when the tree being reviewed is a
+        bundle. The bundle ships the RAW columns, so the affine is applied here
+        either way and stays in code rather than baked into shipped data.
+        """
         if self._annotate_df is None:
-            df = pd.read_csv(config.CSV_PATH)
+            src = self._bundle_data(bundle_mod.BUNDLE_NODES_NAME) or config.CSV_PATH
+            df = pd.read_csv(src)
             xy = alignment.catmaid_to_tif(df["x"].values, df["y"].values)
             df["x_tif"], df["y_tif"] = xy[:, 0], xy[:, 1]
             self._annotate_df = df
         return self._annotate_df
 
     def _chains_from_disk(self) -> list:
-        """The full chain list, cached: chains.json loaded once and reused."""
+        """The full chain list, cached: chains.json loaded once and reused.
+
+        Prefers the bundle's own ``data/chains.json`` when there is one. That file
+        holds every chain of every EXPORTED neuron, in the source file's order, so
+        ``chain_idx`` (a position within a neuron's chain list) still resolves to
+        the same chain it did on the master machine.
+        """
         if self._chains is None:
-            with open(config.CHAINS_PATH) as f:
+            src = self._bundle_data(bundle_mod.BUNDLE_CHAINS_NAME) or config.CHAINS_PATH
+            with open(src) as f:
                 self._chains = json.load(f)
         return self._chains
 

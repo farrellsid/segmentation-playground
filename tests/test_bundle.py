@@ -15,6 +15,18 @@ def _chain(root, neuron, idx, *, frames="F:\\x\\frames"):
     return d
 
 
+def _data_slice(root, neurons=("AIAL",)):
+    """The CATMAID slice every bundle must carry, which validate now requires."""
+    d = root / bundle.BUNDLE_DATA_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    (d / bundle.BUNDLE_CHAINS_NAME).write_text(json.dumps(
+        [{"cell_name": n, "nodes": [1, 2]} for n in neurons]), encoding="utf-8")
+    rows = ["node_id,x,y,z,cell_name"]
+    rows += [f"{i + 1},10,20,1402,{n}" for i, n in enumerate(neurons)]
+    (d / bundle.BUNDLE_NODES_NAME).write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return d
+
+
 def test_index_finds_every_chain(tmp_path):
     _chain(tmp_path, "AIAL", 0)
     _chain(tmp_path, "AIYL", 1)
@@ -54,6 +66,7 @@ def test_validate_accepts_a_well_formed_bundle(tmp_path):
         "z_range": [1402, 1402], "provenance": {}}), encoding="utf-8")
     man = bundle.build_manifest(bundle.index_chains(tmp_path), source_tree="t")
     (tmp_path / bundle.BUNDLE_MANIFEST).write_text(json.dumps(man), encoding="utf-8")
+    _data_slice(tmp_path)
     assert bundle.validate_bundle(tmp_path) == []
 
 
@@ -92,3 +105,37 @@ def test_review_progress_counts_reviewed_chains(tmp_path):
 
 def test_reviewer_owned_is_the_documented_set():
     assert bundle.REVIEWER_OWNED == ("masks", "qc.csv")
+
+
+def test_validate_reports_a_missing_data_slice(tmp_path):
+    """A bundle with no data/ cannot be opened, so validation has to say so.
+
+    Both source tables are gitignored. Without the bundle's own copies the GUI
+    falls back to config.CHAINS_PATH / config.CSV_PATH, which do not exist on a
+    reviewer's machine, and every chain she opens raises FileNotFoundError.
+    """
+    d = _chain(tmp_path, "AIAL", 0, frames="frames")
+    (d / "frames").mkdir()
+    (d / "meta.json").write_text(json.dumps({
+        "schema_version": 1, "neuron_id": 42, "cell_name": "AIAL", "chain_idx": 0,
+        "mask_space": "_sam", "mask_scale": 8, "crop_window": None,
+        "z_range": [1402, 1402], "provenance": {}}), encoding="utf-8")
+    man = bundle.build_manifest(bundle.index_chains(tmp_path), source_tree="t")
+    (tmp_path / bundle.BUNDLE_MANIFEST).write_text(json.dumps(man), encoding="utf-8")
+
+    problems = bundle.validate_bundle(tmp_path)
+    assert any("data/chains.json" in p for p in problems)
+    assert any("data/nodes.csv" in p for p in problems)
+
+
+def test_validate_accepts_a_bundle_once_the_data_slice_is_there(tmp_path):
+    d = _chain(tmp_path, "AIAL", 0, frames="frames")
+    (d / "frames").mkdir()
+    (d / "meta.json").write_text(json.dumps({
+        "schema_version": 1, "neuron_id": 42, "cell_name": "AIAL", "chain_idx": 0,
+        "mask_space": "_sam", "mask_scale": 8, "crop_window": None,
+        "z_range": [1402, 1402], "provenance": {}}), encoding="utf-8")
+    man = bundle.build_manifest(bundle.index_chains(tmp_path), source_tree="t")
+    (tmp_path / bundle.BUNDLE_MANIFEST).write_text(json.dumps(man), encoding="utf-8")
+    _data_slice(tmp_path)
+    assert bundle.validate_bundle(tmp_path) == []

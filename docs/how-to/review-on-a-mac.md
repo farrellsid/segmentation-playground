@@ -3,6 +3,10 @@
 For a reviewer whose job is checking and redrawing masks, on a machine with no GPU. Nothing here
 needs torch, SAM2, the raw EM store, or access to the lab's drives.
 
+The bundle you are sent is self-contained. It carries its own copy of the neuron and node tables it
+needs, in `data/chains.json` and `data/nodes.csv`, so you never need the lab's `data/` folder, which
+is not in the repo you clone.
+
 ## Once, to set up
 
 ```bash
