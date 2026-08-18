@@ -198,23 +198,44 @@ minutes into a session.
 
 ## 5. Changes to gui.py
 
-Lucinda reviews and redraws rather than developing against this class, so this spec does not split
-the 1300-line `ReviewGUI`. It is documented thoroughly in place and it works, and a large refactor
-would put the tool she depends on at risk without serving anyone's stated need. If she later starts
-writing features against it, that is the point to revisit, with her actual needs known instead of
+The GUI Lucinda opens should show her the tools she can actually use and nothing else. Counting the
+controls `_build_widgets` creates today, 10 of 28 are model or compute machinery: the prompt-label
+combo, box draw, reset prompts, re-run image phase, resume propagation, and the five-control recrop
+cluster (grow spin, recrop, pick region, confirm, cancel). Seven of the 16 keybindings are the same
+story (`p`, `n`, `b`, `r`, `g`, `c`, `f`). On a Mac with no GPU every one of those is dead weight,
+and worse than dead weight, because a reviewer cannot tell which controls are meant for her.
+
+So the GUI gains a review mode, and the refactor needed to support it gets scoped by that
+requirement rather than done speculatively.
+
+`_build_widgets` is one linear block of about 110 lines today, which cannot express two widget sets.
+It splits into four panel builders, navigation, drawing, model, and verdict, assembled by a single
+method that consults the mode. `_bind_keys` splits the same way, so the model keys are simply not
+registered in review mode instead of being registered and then refusing. Two modes ship:
+`review` (navigation, drawing, verdict) and `full` (everything, the current behaviour and the
+default, so nothing changes for existing use).
+
+That is the whole structural change. This spec still does not split `ReviewGUI` as a class. The
+panel split is driven by a feature that needs it; a wholesale decomposition is not, and it would put
+a working tool at risk to serve a need nobody has articulated yet. If Lucinda later starts writing
+features against the class, that is the point to revisit, with her real needs known instead of
 guessed.
 
-Four targeted changes instead:
+Alongside the mode, four smaller changes:
 
 1. Resolve a relative `frames_dir` against the chain directory (section 3).
 2. Add a neuron subset filter, so the launcher can open a session scoped to chosen neurons.
-3. Disable model actions gracefully when torch is absent: the buttons and their keybindings report
-   that the model is unavailable instead of raising.
+3. In `full` mode, model actions still degrade gracefully when torch is absent, reporting that the
+   model is unavailable instead of raising. Review mode never reaches this path, but `full` mode on
+   a machine without torch still needs to fail politely.
 4. Extract only what the launcher and bundle need into importable functions, namely chain indexing,
    review progress, and path resolution. These have to be testable without opening a napari window,
    which is the reason to move them.
 
 A torch-free `requirements-review.txt` and a short macOS setup document ship alongside.
+
+The launcher's mode selector (section 4) sets this directly: redraw only maps to `review`, reprop
+enabled maps to `full`.
 
 ## Testing
 
@@ -227,6 +248,13 @@ All tests torch-free and runnable in CI, matching the existing suite:
 - `test_meta_schema.py`: `meta.json` validates, and is readable without importing `pipeline`.
 - `test_launcher_config.py`: the launcher assembles a correct `ReviewContext` from a profile without
   constructing a window.
+- `test_gui_modes.py`: the panel builders return the expected control sets per mode, `review` omits
+  all 10 model controls, `full` matches the current surface exactly, and no model keybinding is
+  registered in `review`. Written against the builder functions rather than a live viewer, so it
+  runs without napari, in the same spirit as the existing `test_gui_box.py`.
+
+The `full`-mode control set is worth pinning rather than eyeballing: it is what guarantees this
+change is invisible to existing use.
 
 The existing `test_import_direction.py` boundary still applies: `sam2_utils/registry.py` and
 `sam2_utils/bundle.py` are library code and must not import `eval`.
