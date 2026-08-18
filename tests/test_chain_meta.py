@@ -112,3 +112,43 @@ def test_meta_is_plain_json(tmp_path):
     chain_meta.write_meta(tmp_path, meta)
     raw = json.loads((tmp_path / chain_meta.META_FILENAME).read_text(encoding="utf-8"))
     assert raw["cell_name"] == "AIYL"
+
+
+def _realistic_state(save_downscale=4, crop_window=None):
+    """A state.json shaped the way ``pipeline.state_to_dict`` actually writes one.
+
+    The whole PipelineConfig lands under a ``"config"`` key, so ``save_downscale``
+    is nested. A reader that looks at the top level finds nothing and silently
+    falls back to its default.
+    """
+    return {
+        "neuron": "AIAL", "chain_idx": 0, "status": "done",
+        "frames_dir": "/localscratch/4812345/frames/AIAL_chain00_s4",
+        "crop_window": crop_window, "n_frames": 12,
+        "config": {"model_size": "large", "scale": save_downscale,
+                   "save_downscale": save_downscale, "output_root": "F:\out",
+                   "frames_root": "F:\frames"},
+    }
+
+
+def test_save_downscale_is_read_from_the_nested_config_block():
+    """The nesting bug: state["config"]["save_downscale"], not state["save_downscale"].
+
+    With a non-default 4 recorded the way a real state.json records it, a reader
+    that checks only the top level returns the default 8 and every mask of this
+    chain gets placed at half the size it actually is.
+    """
+    assert chain_meta.save_downscale_of(_realistic_state(save_downscale=4)) == 4
+
+
+def test_legacy_chain_meta_uses_the_nested_save_downscale():
+    meta = chain_meta.build_meta(_realistic_state(save_downscale=4),
+                                 neuron_id=42, source_tree="t")
+    assert meta["mask_space"] == "_sam"
+    assert meta["mask_scale"] == 4, "mask_scale must come from the chain's own config block"
+
+
+def test_save_downscale_falls_back_to_the_top_level_then_the_default():
+    assert chain_meta.save_downscale_of({"save_downscale": 2}) == 2
+    assert chain_meta.save_downscale_of({}) == 8
+    assert chain_meta.save_downscale_of({"config": {}}) == 8

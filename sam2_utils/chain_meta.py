@@ -45,6 +45,42 @@ def _z_range_from_masks(chain_dir: Optional[Path]):
     return [min(zs), max(zs)] if zs else None
 
 
+#: Pipeline default when a state.json records no save_downscale anywhere.
+_DEFAULT_SAVE_DOWNSCALE = 8
+
+
+def save_downscale_of(state: dict, default: int = _DEFAULT_SAVE_DOWNSCALE) -> int:
+    """Read a chain's mask downscale out of its parsed ``state.json``.
+
+    ``pipeline.state_to_dict`` serialises the whole ``PipelineConfig`` under a
+    ``"config"`` key, so the real path is ``state["config"]["save_downscale"]``,
+    NOT ``state["save_downscale"]``. Reading the top level of a real state.json
+    always misses and silently yields the default, which is invisible while 8 is
+    canonical and wrong the moment a chain is propagated at another scale.
+
+    Parameters
+    ----------
+    state : dict
+        A parsed ``state.json``.
+    default : int, optional
+        Returned when neither location records a value.
+
+    Returns
+    -------
+    int
+        The chain's own ``save_downscale``.
+
+    Notes
+    -----
+    The top level is still consulted as a fallback, because hand-built and
+    synthetic state dicts (the test fixtures, and any state.json written before
+    the config block existed) record it there.
+    """
+    cfg = state.get("config") or {}
+    value = cfg.get("save_downscale", state.get("save_downscale"))
+    return int(default if value is None else value)
+
+
 def build_meta(state: dict, *, neuron_id: int, source_tree: str, backend: str = "sam2",
                reprop_variant: Optional[str] = None, exported: Optional[str] = None,
                chain_dir: Optional[Path] = None) -> dict:
@@ -81,10 +117,10 @@ def build_meta(state: dict, *, neuron_id: int, source_tree: str, backend: str = 
     cw = state.get("crop_window")
     if cw:
         mask_space = "_pcrop"
-        mask_scale = int(cw.get("crop_scale", state.get("save_downscale", 8)))
+        mask_scale = int(cw.get("crop_scale") or save_downscale_of(state))
     else:
         mask_space = "_sam"
-        mask_scale = int(state.get("save_downscale", 8))
+        mask_scale = save_downscale_of(state)
     return {
         "schema_version": META_SCHEMA_VERSION,
         "neuron_id": int(neuron_id),
