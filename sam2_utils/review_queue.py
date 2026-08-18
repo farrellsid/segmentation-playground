@@ -69,6 +69,10 @@ DONE_STATUSES = {APPROVED, REJECTED, CORRECTED}
 
 REVIEW_COLUMNS = ["neuron", "chain_idx", "review_status", "reviewer", "notes", "updated_at"]
 
+#: The ledger's primary key: one row per chain. ``set_status`` upserts on it, and
+#: ``import_bundle`` merges a returned bundle's rows into a master ledger on it.
+KEY_COLUMNS = ("neuron", "chain_idx")
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

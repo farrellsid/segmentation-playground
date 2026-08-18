@@ -1,10 +1,11 @@
 """Import merges only reviewer-owned files, and refuses a mismatched bundle."""
 import json
 
+import pandas as pd
 import pytest
 
 import import_bundle
-from sam2_utils import bundle
+from sam2_utils import bundle, labels
 
 
 def _pair(tmp_path, *, bundle_mask=b"new", master_mask=b"old", neuron="AIAL", nid=42):
@@ -116,3 +117,174 @@ def test_meta_identity_mismatch_is_refused(tmp_path):
 
     assert master_mask.read_bytes() == before_mask
     assert master_qc.read_text(encoding="utf-8") == before_qc
+
+
+# ---------------------------------------------------------------------------
+# The root ledgers: where four of review mode's ten keys write, and the only
+# place a reviewer's verdicts exist.
+# ---------------------------------------------------------------------------
+
+REVIEW_HEADER = "neuron,chain_idx,review_status,reviewer,notes,updated_at"
+
+
+def _write_review(root, rows):
+    lines = [REVIEW_HEADER] + list(rows)
+    (root / "_review.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _read_review(root):
+    return pd.read_csv(root / "_review.csv")
+
+
+def test_a_reviewers_chain_verdict_reaches_the_master(tmp_path):
+    """The round trip: `a` in review mode writes only here, so only this brings it home."""
+    b, m = _pair(tmp_path)
+    _write_review(b, ["AIAL,0,approved,lucinda,looks right,2026-08-19T10:00:00+00:00"])
+
+    import_bundle.import_bundle(b, m)
+
+    got = _read_review(m)
+    row = got[(got["neuron"] == "AIAL") & (got["chain_idx"] == 0)].iloc[0]
+    assert row["review_status"] == "approved"
+    assert row["reviewer"] == "lucinda"
+
+
+def test_a_master_row_for_a_chain_not_in_the_bundle_survives(tmp_path):
+    """A row merge, not a file copy: the master holds chains the bundle never had."""
+    b, m = _pair(tmp_path)
+    _write_review(m, [
+        "AIAL,0,unreviewed,sf,,2026-08-01T00:00:00+00:00",
+        "AVAL,3,corrected,sf,fixed the seed,2026-08-02T00:00:00+00:00",
+    ])
+    _write_review(b, ["AIAL,0,approved,lucinda,,2026-08-19T10:00:00+00:00"])
+
+    import_bundle.import_bundle(b, m)
+
+    got = _read_review(m)
+    assert len(got) == 2
+    survivor = got[(got["neuron"] == "AVAL") & (got["chain_idx"] == 3)].iloc[0]
+    assert survivor["review_status"] == "corrected"
+    assert survivor["reviewer"] == "sf"
+    assert survivor["notes"] == "fixed the seed"
+    updated = got[(got["neuron"] == "AIAL") & (got["chain_idx"] == 0)].iloc[0]
+    assert updated["review_status"] == "approved", "the bundle's chain must be replaced"
+
+
+def test_review_merge_is_a_no_op_without_a_bundle_ledger(tmp_path):
+    """A reviewer who recorded no dispositions must not disturb the master."""
+    b, m = _pair(tmp_path)
+    _write_review(m, ["AVAL,3,corrected,sf,,2026-08-02T00:00:00+00:00"])
+    before = (m / "_review.csv").read_text(encoding="utf-8")
+
+    import_bundle.import_bundle(b, m)
+
+    assert (m / "_review.csv").read_text(encoding="utf-8") == before
+
+
+def test_review_merge_ignores_rows_for_chains_outside_the_bundle(tmp_path):
+    """A stale ledger inside a bundle must not import chains the bundle does not hold."""
+    b, m = _pair(tmp_path)
+    _write_review(b, [
+        "AIAL,0,approved,lucinda,,2026-08-19T10:00:00+00:00",
+        "AVAR,9,rejected,lucinda,,2026-08-19T10:00:00+00:00",
+    ])
+
+    import_bundle.import_bundle(b, m)
+
+    got = _read_review(m)
+    assert set(got["neuron"]) == {"AIAL"}
+
+
+def test_dry_run_reports_ledger_rows_without_writing(tmp_path):
+    b, m = _pair(tmp_path)
+    _write_review(b, ["AIAL,0,approved,lucinda,,2026-08-19T10:00:00+00:00"])
+
+    import_bundle.import_bundle(b, m, dry_run=True)
+
+    assert not (m / "_review.csv").exists()
+    counts = import_bundle.merge_review_ledger(
+        b, m, {("AIAL", 0)}, dry_run=True)
+    assert counts == {"updated": 0, "appended": 1}
+
+
+LABEL_HEADER = ",".join(labels.LABEL_COLS)
+
+
+def _label_row(neuron, chain_idx, z, *, verdict, ts, reviewer="lucinda"):
+    row = {c: "" for c in labels.LABEL_COLS}
+    row.update(neuron=neuron, chain_idx=chain_idx, z=z, role="flagged",
+               verdict=verdict, source="approve", reviewer=reviewer, ts=ts)
+    return ",".join(str(row[c]) for c in labels.LABEL_COLS)
+
+
+def _write_labels(root, rows):
+    (root / "_labels.csv").write_text(
+        "\n".join([LABEL_HEADER] + list(rows)) + "\n", encoding="utf-8")
+
+
+def test_a_reviewers_frame_verdicts_reach_the_master(tmp_path):
+    b, m = _pair(tmp_path)
+    _write_labels(b, [
+        _label_row("AIAL", 0, 1402, verdict="wrong", ts="2026-08-19T10:00:00+00:00"),
+        _label_row("AIAL", 0, 1403, verdict="ok", ts="2026-08-19T10:01:00+00:00"),
+    ])
+
+    import_bundle.import_bundle(b, m)
+
+    got = pd.read_csv(m / "_labels.csv")
+    assert sorted(got["z"]) == [1402, 1403]
+    assert got.set_index("z").loc[1402, "verdict"] == "wrong"
+
+
+def test_labels_merge_keeps_master_rows_for_other_chains(tmp_path):
+    b, m = _pair(tmp_path)
+    _write_labels(m, [_label_row("AVAL", 3, 900, verdict="ok",
+                                 ts="2026-08-01T00:00:00+00:00", reviewer="sf")])
+    _write_labels(b, [_label_row("AIAL", 0, 1402, verdict="wrong",
+                                 ts="2026-08-19T10:00:00+00:00")])
+
+    import_bundle.import_bundle(b, m)
+
+    got = pd.read_csv(m / "_labels.csv")
+    assert len(got) == 2
+    assert set(zip(got["neuron"], got["z"])) == {("AVAL", 900), ("AIAL", 1402)}
+
+
+def test_labels_merge_dedupes_on_neuron_chain_z(tmp_path):
+    """The store's own primary key. A later ts on the same frame wins."""
+    b, m = _pair(tmp_path)
+    _write_labels(m, [_label_row("AIAL", 0, 1402, verdict="ok",
+                                 ts="2026-08-01T00:00:00+00:00", reviewer="sf")])
+    _write_labels(b, [_label_row("AIAL", 0, 1402, verdict="wrong",
+                                 ts="2026-08-19T10:00:00+00:00")])
+
+    counts = import_bundle.merge_labels_ledger(b, m, {("AIAL", 0)})
+
+    assert counts == {"updated": 1, "appended": 0}
+    got = pd.read_csv(m / "_labels.csv")
+    assert len(got) == 1, "one row per (neuron, chain_idx, z), as the store maintains"
+    assert got.iloc[0]["verdict"] == "wrong"
+
+
+def test_labels_merge_keeps_the_master_row_when_it_is_the_later_one(tmp_path):
+    b, m = _pair(tmp_path)
+    _write_labels(m, [_label_row("AIAL", 0, 1402, verdict="ok",
+                                 ts="2026-08-20T00:00:00+00:00", reviewer="sf")])
+    _write_labels(b, [_label_row("AIAL", 0, 1402, verdict="wrong",
+                                 ts="2026-08-19T10:00:00+00:00")])
+
+    counts = import_bundle.merge_labels_ledger(b, m, {("AIAL", 0)})
+
+    assert counts == {"updated": 0, "appended": 0}
+    assert pd.read_csv(m / "_labels.csv").iloc[0]["verdict"] == "ok"
+
+
+def test_labels_merge_is_a_no_op_without_a_bundle_ledger(tmp_path):
+    b, m = _pair(tmp_path)
+    _write_labels(m, [_label_row("AVAL", 3, 900, verdict="ok",
+                                 ts="2026-08-01T00:00:00+00:00", reviewer="sf")])
+    before = (m / "_labels.csv").read_text(encoding="utf-8")
+
+    import_bundle.import_bundle(b, m)
+
+    assert (m / "_labels.csv").read_text(encoding="utf-8") == before

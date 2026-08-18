@@ -101,8 +101,11 @@ _QC_FEATURE_COLS = [
     "area_ratio", "temporal_iou", "pred_iou", "logit_conf",
 ]
 
-# The (neuron, chain_idx, z) primary key: one row per labelled frame.
-_KEY = ["neuron", "chain_idx", "z"]
+# The (neuron, chain_idx, z) primary key: one row per labelled frame. ``_append``
+# upserts on it, and ``import_bundle`` de-duplicates a returned bundle's rows
+# against a master ledger on it.
+KEY_COLUMNS = ("neuron", "chain_idx", "z")
+_KEY = list(KEY_COLUMNS)
 
 
 def _now() -> str:

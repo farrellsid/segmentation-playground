@@ -74,9 +74,18 @@ A bundle is a portable copy of part of an output tree, for a reviewer on another
     frames/00000.jpg ...
 ```
 
-`export_bundle.py` writes one, `import_bundle.py` merges a returned one back. Only `masks/` and
-`qc.csv` travel on the return trip: a bundle's `state.json` records a relative `frames_dir` and
-would break the master tree if copied over it.
+`export_bundle.py` writes one, `import_bundle.py` merges a returned one back. Per chain, only
+`masks/` and `qc.csv` travel on the return trip (`bundle.REVIEWER_OWNED`): a bundle's `state.json`
+records a relative `frames_dir` and would break the master tree if copied over it.
+
+Two tree-root ledgers come back as well (`bundle.REVIEWER_LEDGERS`), merged ROW-WISE rather than
+copied. Inside a bundle `output_root` IS the bundle, so the GUI writes a reviewer's chain
+dispositions to `<bundle>/_review.csv` and her per-frame verdicts to `<bundle>/_labels.csv`, and
+four of the ten keys review mode exposes write to nothing else. `_review.csv` holds one row per
+`(neuron, chain_idx)`, so a bundle chain's row replaces the master's and every other row is left
+alone. `_labels.csv` de-duplicates on `(neuron, chain_idx, z)`, the key `LabelStore` itself upserts
+on, and a collision on that key is resolved by the later `ts`. Copying either file wholesale would
+delete the master's rows for chains that were never in the bundle.
 
 The relative `frames_dir` is the point of the format. A master tree bakes an absolute path, which
 does not resolve elsewhere, and `gui.py` then falls back to regenerating frames from the raw EM
