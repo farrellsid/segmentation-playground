@@ -37,18 +37,28 @@ def _find_chain(chains_json: list, neuron: str, chain_idx: int) -> dict:
     return chs[chain_idx]
 
 
-#: Cache for the CATMAID context, built at most once per process.
+#: Legacy image-phase scale used when a chain's own state.json has none recorded.
+_DEFAULT_SCALE = 8
+
+#: Cache for the CATMAID context, keyed on the arguments it was built from so a
+#: caller that loops over more than one tree (a library use, not just the CLI's
+#: one-export-per-process) never gets back another tree's cfg or frames_root.
 _CATMAID_CONTEXT: dict = {}
 
 
 def _catmaid_context(output_root: Path, frames_root: Optional[Path]) -> tuple:
-    """Return ``(chains_json, annotate_df, cfg, frames_root)``, loading once.
+    """Return ``(chains_json, annotate_df, cfg, frames_root)``, loading once per key.
 
     Built lazily so an export whose frames all happen to exist locally never pays
     for the CATMAID node table, and so a test that stubs :func:`regenerate_frames`
-    never touches it at all.
+    never touches it at all. Cached per ``(output_root, frames_root)`` pair rather
+    than once per process: the CLI only ever calls this with one pair, so the
+    cache still pays for itself there, but a notebook or a loop over several
+    output trees now gets a ``cfg`` and ``frames_root`` that actually match the
+    arguments it passed, instead of silently reusing whatever the first call saw.
     """
-    if not _CATMAID_CONTEXT:
+    key = (Path(output_root), Path(frames_root) if frames_root else None)
+    if key not in _CATMAID_CONTEXT:
         import pandas as pd
 
         import pipeline
@@ -56,16 +66,16 @@ def _catmaid_context(output_root: Path, frames_root: Optional[Path]) -> tuple:
         df = pd.read_csv(config.CSV_PATH)
         xy = alignment.catmaid_to_tif(df["x"].values, df["y"].values)
         df["x_tif"], df["y_tif"] = xy[:, 0], xy[:, 1]
-        _CATMAID_CONTEXT["chains_json"] = json.loads(
-            Path(config.CHAINS_PATH).read_text(encoding="utf-8"))
-        _CATMAID_CONTEXT["annotate_df"] = df
-        _CATMAID_CONTEXT["cfg"] = pipeline.PipelineConfig(
-            model_size="large", scale=8, save_downscale=8,
-            output_root=output_root, frames_root=config.FRAMES_ROOT)
-        _CATMAID_CONTEXT["frames_root"] = (Path(frames_root) if frames_root
-                                           else Path(config.FRAMES_ROOT))
-    return (_CATMAID_CONTEXT["chains_json"], _CATMAID_CONTEXT["annotate_df"],
-            _CATMAID_CONTEXT["cfg"], _CATMAID_CONTEXT["frames_root"])
+        _CATMAID_CONTEXT[key] = {
+            "chains_json": json.loads(Path(config.CHAINS_PATH).read_text(encoding="utf-8")),
+            "annotate_df": df,
+            "cfg": pipeline.PipelineConfig(
+                model_size="large", scale=_DEFAULT_SCALE, save_downscale=_DEFAULT_SCALE,
+                output_root=output_root, frames_root=config.FRAMES_ROOT),
+            "frames_root": Path(frames_root) if frames_root else Path(config.FRAMES_ROOT),
+        }
+    ctx = _CATMAID_CONTEXT[key]
+    return ctx["chains_json"], ctx["annotate_df"], ctx["cfg"], ctx["frames_root"]
 
 
 def regenerate_frames(state: dict, *, neuron: str, chain_idx: int,
@@ -98,7 +108,7 @@ def regenerate_frames(state: dict, *, neuron: str, chain_idx: int,
     import pipeline
     from sam2_utils import alignment
 
-    chains_json, annotate_df, cfg, froot = _catmaid_context(output_root, frames_root)
+    chains_json, annotate_df, _cfg, froot = _catmaid_context(output_root, frames_root)
     chain = _find_chain(chains_json, neuron, chain_idx)
     anchor_z = int(state["anchor_catmaid_z"])
     cw_dict = state.get("crop_window")
@@ -110,10 +120,73 @@ def regenerate_frames(state: dict, *, neuron: str, chain_idx: int,
             chain, annotate_df, cw, frames_root=froot, anchor_catmaid_z=anchor_z,
             neuron=neuron, chain_idx=chain_idx)
     else:
+        # The chain's OWN recorded scale, not the freshly-fabricated cfg's: a chain
+        # propagated at a non-default scale must regenerate at that same scale, or
+        # the reviewer's canvas would not match the masks drawn on it.
+        chain_cfg = state.get("config") or {}
+        scale = int(chain_cfg.get("scale") or _DEFAULT_SCALE)
         frames_dir, _f2z, _a, _n = pipeline.prepare_video_frames(
-            chain, annotate_df, scale=cfg.scale, frames_root=froot,
+            chain, annotate_df, scale=scale, frames_root=froot,
             anchor_catmaid_z=anchor_z, neuron=neuron, chain_idx=chain_idx)
     return Path(frames_dir)
+
+
+def _frames_complete(frames_dir: Path, state: dict) -> bool:
+    """Whether ``frames_dir`` already holds a COMPLETE set of this chain's frames.
+
+    Presence of ``00000.jpg`` alone is not proof of completeness: an export killed
+    mid ``copytree`` (the exact ``F:`` drop-out this resumability exists for) can
+    leave frame 0 on disk with everything after it missing, and the next run must
+    not mistake that for done. ``state["n_frames"]`` is stamped by
+    ``prepare_video_frames`` / ``prepare_chain_crop_frames`` when a chain is
+    produced, so it is present for every real chain and is exactly the number of
+    frames that should be on disk; comparing against it turns the resume check
+    into a real completeness check instead of a presence check.
+
+    Parameters
+    ----------
+    frames_dir : Path
+        Candidate ``.../chain_XX/frames`` directory on the bundle side.
+    state : dict
+        The chain's parsed state.json.
+
+    Returns
+    -------
+    bool
+        True only when frame 0 exists and the on-disk JPEG count meets the
+        recorded ``n_frames``. Falls back to presence-only when ``n_frames`` is
+        not recorded (an older or hand-built state.json), since there is then
+        nothing to verify a count against.
+    """
+    if not (frames_dir / "00000.jpg").exists():
+        return False
+    expected = state.get("n_frames")
+    if not expected:
+        return True
+    return len(list(frames_dir.glob("*.jpg"))) >= int(expected)
+
+
+def _replace_frames_dir(src: Path, dst: Path) -> None:
+    """Copy ``src`` to ``dst``, clearing ``dst`` first so stale files cannot survive.
+
+    ``shutil.copytree(..., dirs_exist_ok=True)`` MERGES into an existing
+    directory rather than replacing it. If ``dst`` already holds frames from a
+    previous, incomplete or now-superseded write, and the new source has FEWER
+    frames (a partial copy being resumed, or a re-regeneration under
+    ``--force-frames``), leftover trailing files from the old write would stay on
+    disk and silently inflate the frame count past what the new source actually
+    has. Clearing first means ``dst`` always ends up matching ``src`` exactly.
+
+    Parameters
+    ----------
+    src : Path
+        Directory to copy frames from.
+    dst : Path
+        Destination directory, replaced wholesale.
+    """
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
 
 
 def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]] = None,
@@ -136,8 +209,14 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
         ``"sam2"`` or ``"sam3"``, recorded in each meta.json.
     reprop_variant : str, optional
         ``"mask_seed"`` or ``"box_seed"`` when exporting a re-propagation tree.
+    frames_root : Path, optional
+        Scratch root regenerated frames are written under. Defaults to
+        ``config.FRAMES_ROOT``. Only read for chains that need regeneration.
     force : bool, optional
         Allow writing into a non-empty destination.
+    force_frames : bool, optional
+        Regenerate (or re-copy) frames even for chains the bundle already has a
+        complete frame set for.
 
     Returns
     -------
@@ -171,13 +250,14 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
         if (src_dir / "qc.csv").exists():
             shutil.copy2(src_dir / "qc.csv", out_dir / "qc.csv")
 
-        if (out_dir / "frames" / "00000.jpg").exists() and not force_frames:
+        frames_out = out_dir / "frames"
+        if _frames_complete(frames_out, rec["state"]) and not force_frames:
             print(f"[export] {rec['chain_dir']}: frames already present, skipping")
         else:
             recorded = rec["state"].get("frames_dir")
             frames_src = Path(recorded) if recorded and not str(recorded).startswith("/") else None
             if frames_src is not None and frames_src.is_dir():
-                shutil.copytree(frames_src, out_dir / "frames", dirs_exist_ok=True)
+                _replace_frames_dir(frames_src, frames_out)
             else:
                 # The recorded path is almost always a dead Narval /localscratch dir,
                 # so regenerating from the raw EM store is the normal path, not a fallback.
@@ -185,7 +265,7 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
                 src = regenerate_frames(rec["state"], neuron=rec["cell_name"],
                                         chain_idx=rec["chain_idx"], output_root=output_root,
                                         frames_root=frames_root)
-                shutil.copytree(src, out_dir / "frames", dirs_exist_ok=True)
+                _replace_frames_dir(src, frames_out)
 
         state_out = bundle.rewrite_state_frames_dir(rec["state"])
         (out_dir / "state.json").write_text(json.dumps(state_out, indent=2), encoding="utf-8")
