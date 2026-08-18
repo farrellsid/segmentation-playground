@@ -1,6 +1,6 @@
 # Command-line reference
 
-The four entry points and their common flags. All run from the repo root.
+Every entry point and its common flags. All run from the repo root.
 
 ## run_aval.py
 
@@ -229,6 +229,76 @@ py -3 -m eval.retro_eval --membrane --glob "/scratch/$USER/*_merged" --out <dir>
 `--membrane` runs the Phase-2 membrane pass; `--min-scale N` (default 4) skips the merge-metric for
 trees coarser than that (a full-res scale-1 tree needs a lot of RAM), while still reporting its
 compute and QC columns. Membrane numbers only compare within one `_sam` scale.
+
+## export_bundle.py
+
+Builds a portable review bundle from an output tree: a directory that opens on a machine with none
+of this project's data. Zip the result and send it. Needs the raw EM store on this machine, since
+every cluster-produced chain records a dead Narval `frames_dir` and its frames are regenerated.
+
+```bash
+py -3 export_bundle.py --output-root "F:\ZhenLab\Data\output_masks\reprop_maskseed" \
+    --dest "F:\ZhenLab\Data\bundles\AIA_for_lucinda" --neurons AIAL AIAR
+```
+
+| Flag | Effect |
+|------|--------|
+| `--output-root <dir>` | The master tree to export from. Only ever read. Required. |
+| `--dest <dir>` | Bundle directory to create. Must be absent or empty unless `--force`. Required. |
+| `--neurons A B ...` | Export only these cell names. Omitted exports every neuron in the tree. |
+| `--source-tree <name>` | Provenance label recorded in the manifest and in every `meta.json`. Defaults to the output tree's directory name, which is also what `import_bundle.py` matches against, so overriding it means the import needs `--allow-tree-mismatch`. |
+| `--backend <sam2\|sam3>` | Recorded in each `meta.json`. Defaults to `sam2`. |
+| `--reprop-variant <mask_seed\|box_seed>` | Recorded in each `meta.json` when exporting a re-propagation tree. |
+| `--frames-root <dir>` | Scratch root regenerated frames are written under. Defaults to `config.FRAMES_ROOT`. |
+| `--force` | Write into a non-empty destination. Check first that it is not a returned bundle with corrections in it. |
+| `--force-frames` | Regenerate frames even for chains the bundle already has a complete set for. |
+
+The bundle also carries `data/chains.json` and `data/nodes.csv`, the slice of the CATMAID tables the
+reviewer's GUI needs, filtered to the exported neurons. Both source files are gitignored, so without
+them no chain opens on her machine. Export fails rather than writing a bundle that cannot be opened.
+See [../how-to/review-on-a-mac.md](../how-to/review-on-a-mac.md) and
+[state-and-storage.md](state-and-storage.md).
+
+## import_bundle.py
+
+Merges a returned bundle back into the master tree. Per chain it moves `masks/` and `qc.csv`; at the
+tree root it merges the reviewer's rows in `_review.csv` and `_labels.csv` row-wise, leaving the
+master's rows for chains that were never in the bundle untouched.
+
+```bash
+py -3 import_bundle.py --bundle <returned-folder> --output-root <master-tree> --dry-run
+py -3 import_bundle.py --bundle <returned-folder> --output-root <master-tree>
+```
+
+| Flag | Effect |
+|------|--------|
+| `--bundle <dir>` | The returned bundle. Validated before anything is written. Required. |
+| `--output-root <dir>` | The master tree to merge into. Required. |
+| `--dry-run` | Report what would change without writing. Runs every refusal check, including the tree check. |
+| `--allow-tree-mismatch` | Merge even though the bundle's `source_tree` does not match the target tree's directory name. Only for a tree that was renamed or copied since the export. |
+
+Run `--dry-run` first and read the list of chains it reports. Without `--allow-tree-mismatch` the
+import refuses a bundle exported from a different tree, which matters because this repo keeps
+parallel trees with identical layouts (`reprop_maskseed` next to `reprop_boxseed`, sam2 next to
+sam3) and a wrong-tree merge would silently overwrite good masks.
+
+## backfill_meta.py
+
+Writes `meta.json` into an output tree that predates it, one record per chain, from each chain's own
+`state.json`. The corrected AIA/AIY trees need this. Note that the batch pipeline does not write
+`meta.json` itself, so this and `export_bundle.py` are the only two producers.
+
+```bash
+py -3 backfill_meta.py --output-root "F:\ZhenLab\Data\output_masks\my_tree"
+```
+
+| Flag | Effect |
+|------|--------|
+| `--output-root <dir>` | The tree to backfill. Required. |
+| `--source-tree <name>` | Provenance label. Defaults to the tree's directory name. |
+| `--backend <sam2\|sam3>` | Recorded in each `meta.json`. Defaults to `sam2`. |
+| `--reprop-variant <mask_seed\|box_seed>` | Recorded in each `meta.json` for a re-propagation tree. |
+| `--overwrite` | Rewrite a `meta.json` that is already there. Without it, existing sidecars are left alone. |
 
 ## launcher.py
 
