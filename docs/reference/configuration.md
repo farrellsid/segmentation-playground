@@ -13,7 +13,10 @@ Paths and constants that change per machine or per dataset, not per run:
   [../how-to/run-on-narval.md](../how-to/run-on-narval.md).
 - `DATA_DIR`, `CSV_PATH`, `CHAINS_PATH`, `ROOTS_PATH`: the CATMAID-derived inputs (resolved from the
   repo location).
-- `OUTPUT_ROOT`, `FRAMES_ROOT`: the mask-output and JPEG-scratch roots.
+- `OUTPUT_ROOT`, `FRAMES_ROOT`: the mask-output and JPEG-scratch roots. Overridable with
+  `SAM2_OUTPUT_ROOT` and `SAM2_FRAMES_ROOT` env vars, matching how `SAM2_WORM_PATH` overrides
+  `config.WORM_PATH`. Set these instead of editing `sam2_utils/config.py`, which is tracked and will
+  conflict on every pull.
 - The SAM2 checkpoint registry (tiny, small, base_plus, large).
 - CATMAID URL and project id, `STACK_RESOLUTION_NM`, `FILE_Z_OFFSET`.
 - The fitted affine `M_AFFINE` and `T_AFFINE` (see [coordinate-spaces.md](coordinate-spaces.md)).

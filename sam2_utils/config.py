@@ -35,10 +35,14 @@ CSV_PATH    = DATA_DIR / "aggregate_data_pv.csv"   #: cached CATMAID node table
 CHAINS_PATH = DATA_DIR / "chains.json"             #: per-neuron MLC chains
 ROOTS_PATH  = DATA_DIR / "roots.json"              #: chain roots
 
-#: Where per-chain mask outputs + the manifest/triage CSVs are written.
-OUTPUT_ROOT = Path(r"F:\ZhenLab\Data\output_masks\test2_single")
-#: Parent dir for the SAM2 JPEG frame cache + per-chain link views.
-FRAMES_ROOT = Path(r"F:\ZhenLab\Data")
+#: Where per-chain mask outputs + the manifest/triage CSVs are written. Override with
+#: the SAM2_OUTPUT_ROOT env var, the same pattern WORM_PATH uses above, so a second
+#: machine never edits this tracked file (and never picks up a merge conflict for it).
+OUTPUT_ROOT = Path(os.environ.get(
+    "SAM2_OUTPUT_ROOT", r"F:\ZhenLab\Data\output_masks\test2_single"))
+#: Parent dir for the SAM2 JPEG frame cache + per-chain link views. Override with
+#: the SAM2_FRAMES_ROOT env var.
+FRAMES_ROOT = Path(os.environ.get("SAM2_FRAMES_ROOT", r"F:\ZhenLab\Data"))
 
 # -----------------------------------------------------------------------------
 # Cross-worm ground truth (eval/)  (see eval/README.md)
