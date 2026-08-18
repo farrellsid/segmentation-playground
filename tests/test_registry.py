@@ -1,5 +1,8 @@
 """Registry ids are permanent. These tests are the guard on that promise."""
 import csv
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -67,3 +70,44 @@ def test_shipped_registry_is_loadable_and_stable():
     assert len(reg) > 100
     assert len(set(reg.values())) == len(reg)
     assert min(reg.values()) == 1
+
+
+def test_import_stays_light():
+    """``from sam2_utils import registry`` must not drag in heavy deps.
+
+    The module's own docstring promises no torch, no cv2, no pandas, no
+    network, so it can be imported from an exporter that has none of those
+    installed. That promise depends on ``sam2_utils/__init__.py`` importing
+    nothing eagerly; if a future edit adds an eager ``from . import ...`` line
+    back to ``__init__.py``, this test catches it.
+
+    Runs in a fresh subprocess: an in-process check is worthless once the test
+    session has already imported everything itself.
+    """
+    heavy = ["pandas", "numpy", "matplotlib", "cv2", "torch", "requests"]
+    code = (
+        "import sys\n"
+        "from sam2_utils import registry\n"
+        "offenders = [m for m in %r if m in sys.modules]\n"
+        "print('OFFENDERS:' + ','.join(offenders))\n"
+    ) % heavy
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, (
+        f"subprocess import of sam2_utils.registry failed:\n"
+        f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    offender_line = next(
+        (line for line in proc.stdout.splitlines() if line.startswith("OFFENDERS:")),
+        "OFFENDERS:<missing>",
+    )
+    offenders = [m for m in offender_line[len("OFFENDERS:"):].split(",") if m]
+    assert offenders == [], (
+        f"from sam2_utils import registry pulled in heavy modules: {offenders}\n"
+        f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    )

@@ -1,6 +1,12 @@
 """sam2_utils: shared helpers for SAM2 experiments on Zhen Lab EM data.
 
-Eagerly imported (available as ``sam2_utils.<name>`` after ``import sam2_utils``):
+Every submodule is imported on demand, not by this file. ``sam2_utils/__init__.py``
+imports nothing itself, so ``from sam2_utils import X`` only pulls in whatever X
+itself needs, not the union of every submodule's dependencies. That is what lets
+a light consumer, such as an exporter that does ``from sam2_utils import registry``,
+stay free of torch/cv2/pandas/numpy/matplotlib even though other submodules in
+this package need those heavy deps.
+
     config        - paths, checkpoint registry, affine constants, data/output paths
     setup         - device setup, checkpoint download, predictor build
     viz           - show_mask / show_points / show_box / show_masks / pick_point
@@ -8,10 +14,6 @@ Eagerly imported (available as ``sam2_utils.<name>`` after ``import sam2_utils``
     catmaid       - CATMAID API client + annotation fetch
     alignment     - THE coordinate-transform home: affine, tif<->sam, z maps,
                     nm->stack-px, CropWindow, affine fit + grid sampling
-
-Import-on-demand (heavier deps: skimage/scipy/matplotlib/napari; do
-``from sam2_utils import qc`` etc. so they're not pulled into light imports, and
-so pipeline.py can stay torch/qc-free at import time):
     qc            - post-hoc QC metrics + flag rule over a saved mask stack
     review        - read-only proofreading viewer for a finished chain on disk
     video_viz     - overlay/animate/grid an in-RAM video_segments dict
@@ -20,12 +22,6 @@ so pipeline.py can stay torch/qc-free at import time):
                     (the napari GUI itself is top-level ``gui.py``, not in this
                     package, to keep napari out of the import path entirely)
     membrane      - membrane-ness map (Sato ridge filter) + boundary detectors
+    registry      - permanent cell_name to neuron_id mapping; csv + pathlib only,
+                    no torch/cv2/pandas/network, so a bare exporter can import it
 """
-
-# Only the light/core modules are imported eagerly. The heavy viewers (qc,
-# review, video_viz) are intentionally left out so `import sam2_utils` and
-# pipeline.py's `from sam2_utils import config, alignment` don't drag in
-# skimage/scipy/matplotlib; import them explicitly when needed.
-from . import config, setup, viz, diagnostics, catmaid, alignment
-
-__all__ = ["config", "setup", "viz", "diagnostics", "catmaid", "alignment"]
