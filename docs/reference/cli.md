@@ -50,6 +50,7 @@ The napari review and correction GUI.
 | `--anchor-only` | Only prepare/load the anchor frame of each chain opened this session, not the whole chain. For an "only fix the seed" review pass (see the design doc at `docs/superpowers/specs/2026-08-12-lasso-add-mask-tool-design.md` for the workflow this exists for); frame-stepping and resume-propagation are disabled since there is nothing to step or propagate through. Not a general default, only worth it when you specifically mean to review/correct just the seed. |
 | `--context-frames <n>` | With `--anchor-only`, load `n` frames of context on each side of the anchor (e.g. `2` = 5 frames total) instead of just the anchor frame alone, so `,`/`.` can scrub a little context around the correction. Ignored without `--anchor-only`. Default 0 (the original single-frame behaviour). |
 | `--source <dir>` | Original tree to auto-provision `--neuron` from into `--output-root` the first time that neuron is opened (skips a separate `experiments/make_review_tree.py` call). Never touches an already-provisioned neuron. |
+| `--ui-mode <review\|full>` | `review` shows only navigation, drawing and verdict controls, hiding the 10 controls and 7 keybindings that need a SAM2/SAM3 predictor. For a reviewer on a machine with no GPU. `full` (the default) is every control. |
 
 See [../how-to/review-flagged-chains.md](../how-to/review-flagged-chains.md).
 

@@ -103,6 +103,62 @@ _MODE_FLAGGED = "flagged only"
 _MODE_EVERYTHING = "everything"
 _MODE_CHOICES = [_MODE_FLAGGED, _MODE_EVERYTHING]
 
+# UI modes. Distinct from _MODE_CHOICES above, which filters WHICH CHAINS the picker
+# lists; these decide WHICH CONTROLS exist at all. A reviewer with no GPU cannot use
+# the model controls, and leaving them on screen only invites a wasted click.
+UI_MODE_REVIEW = "review"
+UI_MODE_FULL = "full"
+UI_MODES = (UI_MODE_REVIEW, UI_MODE_FULL)
+
+#: Widget groups, in dock order.
+PANELS = ("navigation", "drawing", "model", "verdict")
+
+#: Keys bound to actions that need a SAM2/SAM3 predictor.
+MODEL_KEYS = frozenset({"p", "n", "b", "r", "g", "c", "f"})
+
+#: Every key the GUI binds in full mode.
+ALL_KEYS = frozenset({".", ",", "p", "n", "b", "l", "r", "g", "s", "c", "f",
+                      "z", "w", "o", "a", "x", "Control-Z"})
+
+
+def panels_for_mode(mode: str) -> tuple:
+    """Return the widget groups a mode shows, in dock order.
+
+    Parameters
+    ----------
+    mode : str
+        One of :data:`UI_MODES`.
+
+    Returns
+    -------
+    tuple of str
+        Panel names from :data:`PANELS`.
+    """
+    if mode not in UI_MODES:
+        raise ValueError(f"unknown UI mode {mode!r}; expected one of {UI_MODES}")
+    if mode == UI_MODE_FULL:
+        return PANELS
+    return tuple(p for p in PANELS if p != "model")
+
+
+def keys_for_mode(mode: str) -> frozenset:
+    """Return the keys a mode binds.
+
+    Parameters
+    ----------
+    mode : str
+        One of :data:`UI_MODES`.
+
+    Returns
+    -------
+    frozenset of str
+        Review mode binds no key in :data:`MODEL_KEYS`, so a model action cannot
+        be triggered by a stray keypress on a machine that cannot run it.
+    """
+    if mode not in UI_MODES:
+        raise ValueError(f"unknown UI mode {mode!r}; expected one of {UI_MODES}")
+    return ALL_KEYS if mode == UI_MODE_FULL else ALL_KEYS - MODEL_KEYS
+
 # Box-prompt geometry: convert between an xyxy box (the pipeline.Prompts.box_sam
 # format) and a napari Shapes rectangle's (N, 3) vertices in (t, y, x). Pure and
 # torch/napari-free so they unit-test without a GPU or a viewer.
@@ -358,7 +414,8 @@ class ReviewGUI:
     def __init__(self, ctx: ReviewContext, *, reviewer: str = "", viewer=None,
                  point_size: float = 4.0, auto_zoom: bool = True, zoom_pad: float = 3.0,
                  hires_em: bool = False, em_scale: Optional[int] = None,
-                 anchor_only: bool = False, context_frames: int = 0):
+                 anchor_only: bool = False, context_frames: int = 0,
+                 ui_mode: str = UI_MODE_FULL):
         """
         point_size : default diameter of prompt/skeleton points, in _sam px (was 10;
                      4 is unobtrusive at scale-8). Tune live via the dock spinbox.
@@ -390,8 +447,15 @@ class ReviewGUI:
                      way to see how the mask should look. Ignored when anchor_only is
                      False (the whole chain is already loaded). 0 (default) reproduces
                      plain anchor_only's original single-frame behaviour.
+        ui_mode    : 'full' (default, every control, unchanged behaviour) or 'review'
+                     (navigation, drawing and verdict only). Review mode omits the 10
+                     controls and 7 keys that need a SAM2/SAM3 predictor, for a
+                     reviewer on a machine that cannot run one.
         """
         import napari
+        if ui_mode not in UI_MODES:
+            raise ValueError(f"unknown UI mode {ui_mode!r}; expected one of {UI_MODES}")
+        self.ui_mode = ui_mode
         self.ctx = ctx
         self.reviewer = reviewer
         self.point_size = float(point_size)
@@ -1335,11 +1399,13 @@ class ReviewGUI:
     # =====================================================================
     # Widgets / keybindings / info panel
     # =====================================================================
-    def _build_widgets(self) -> None:
-        from magicgui.widgets import (Container, PushButton, ComboBox, Label, LineEdit,
-                                      FloatSpinBox, SpinBox, CheckBox)
+    def _build_navigation_panel(self) -> list:
+        """Reviewer name, chain picker, and within-chain frame nav. Both modes."""
+        from magicgui.widgets import PushButton, ComboBox, Label, LineEdit
 
-        self._info = Label(value="(no chain open)")
+        self._reviewer_edit = LineEdit(label="reviewer", value=self.reviewer)
+        self._reviewer_edit.changed.connect(
+            lambda *_: setattr(self, "reviewer", self._reviewer_edit.value))
 
         # chain picker: a mode toggle + two cascading selectors (neuron, then chain).
         # 'flagged only' lists the review queue (today's behaviour); 'everything' lists
@@ -1367,15 +1433,17 @@ class ReviewGUI:
         nextf = PushButton(text="next flagged FRAME ( . ) ▶")      # same chain, next queued frame
         nextf.changed.connect(self.next_flagged)
 
-        # prompt label toggle (positive / negative) + box draw + reset to saved seed
-        self._prompt_mode = ComboBox(label="new point", choices=_PROMPT_LABELS, value="positive")
-        self._prompt_mode.changed.connect(self._set_prompt_label)
-        box_btn = PushButton(text="▭ draw box (B)")
-        box_btn.changed.connect(self.activate_box_draw)
+        return [self._reviewer_edit,
+                Label(value=", chains, "), self._mode_combo, self._neuron_combo,
+                self._chain_combo, open_btn, prev_q, next_q, refresh,
+                Label(value=", frames (this chain), "), prevf, nextf]
+
+    def _build_drawing_panel(self) -> list:
+        """Lasso, view controls, and save. Both modes: this is the redraw toolkit."""
+        from magicgui.widgets import PushButton, Label, FloatSpinBox, CheckBox
+
         lasso_btn = PushButton(text="◯ draw lasso (L)")
         lasso_btn.changed.connect(self.activate_lasso_draw)
-        reset_btn = PushButton(text="⟲ reset prompts to original")
-        reset_btn.changed.connect(self.reset_prompts)
 
         # view controls (point size / auto-zoom)
         self._size_spin = FloatSpinBox(label="point size", value=self.point_size,
@@ -1387,14 +1455,35 @@ class ReviewGUI:
         zoom_btn = PushButton(text="zoom to mask (Z)")
         zoom_btn.changed.connect(lambda *_: self._zoom_to_mask(self._current_frame(),
                                                                pad=self.zoom_pad))
+        save_btn = PushButton(text="💾 save masks (S)")
+        save_btn.changed.connect(self.save_masks_now)
+
+        return [Label(value=", draw, "), lasso_btn,
+                Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
+                Label(value=", save, "), save_btn]
+
+    def _build_model_panel(self) -> list:
+        """Prompts, re-segmentation, and recrop. Full mode only, all need a predictor.
+
+        Always called so `self._prompt_mode` and friends exist for the methods that
+        read them; review mode simply leaves the returned widgets out of the dock.
+        """
+        from magicgui.widgets import PushButton, ComboBox, Label, SpinBox
+
+        # prompt label toggle (positive / negative) + box draw + reset to saved seed
+        self._prompt_mode = ComboBox(label="new point", choices=_PROMPT_LABELS, value="positive")
+        self._prompt_mode.changed.connect(self._set_prompt_label)
+        box_btn = PushButton(text="▭ draw box (B)")
+        box_btn.changed.connect(self.activate_box_draw)
+        reset_btn = PushButton(text="⟲ reset prompts to original")
+        reset_btn.changed.connect(self.reset_prompts)
 
         # correction actions
         rerun = PushButton(text="re-run image phase (R)")
         rerun.changed.connect(self.rerun_image_phase)
         resume = PushButton(text="resume propagation (G)")
         resume.changed.connect(self.resume_propagation)
-        save_btn = PushButton(text="💾 save masks (S)")
-        save_btn.changed.connect(self.save_masks_now)
+
         # tier-2 recrop: grow this chain's crop window by N _tif px/side and re-run it
         # (for a window that auto-sized too small). Only meaningful on a tier-2 chain.
         self._grow_spin = SpinBox(label="grow crop (tif px)", value=512, min=0, max=8192, step=64)
@@ -1408,6 +1497,15 @@ class ReviewGUI:
         cancel_recrop = PushButton(text="✗ cancel recrop")
         cancel_recrop.changed.connect(self.cancel_recrop)
 
+        return [Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
+                Label(value=", correct, "), rerun, resume,
+                Label(value=", recrop, "), self._grow_spin, recrop,
+                pick_region, confirm_recrop, cancel_recrop]
+
+    def _build_verdict_panel(self) -> list:
+        """Error type and chain disposition. Both modes: this is the review verdict."""
+        from magicgui.widgets import PushButton, ComboBox, Label
+
         # the error type used by 'mark wrong' (W key) and 'reject'. The per-frame
         # mark ok/wrong buttons were dropped to declutter the dock; the W/O keys remain.
         self._err_mode = ComboBox(label="error type", choices=list(labels_mod.ERROR_TYPES),
@@ -1418,24 +1516,26 @@ class ReviewGUI:
         approve.changed.connect(self.approve_chain)
         reject = PushButton(text="✗ reject CHAIN (X)")
         reject.changed.connect(self.reject_chain)
+        return [Label(value=", disposition, "), self._err_mode, approve, reject]
 
-        self._reviewer_edit = LineEdit(label="reviewer", value=self.reviewer)
-        self._reviewer_edit.changed.connect(
-            lambda *_: setattr(self, "reviewer", self._reviewer_edit.value))
+    def _build_widgets(self) -> None:
+        """Assemble the dock from the panels this UI mode shows."""
+        from magicgui.widgets import Container, Label
 
-        panel = Container(widgets=[
-            self._reviewer_edit,
-            Label(value=", chains, "), self._mode_combo, self._neuron_combo, self._chain_combo,
-            open_btn, prev_q, next_q, refresh,
-            Label(value=", frames (this chain), "), prevf, nextf,
-            Label(value=", prompts, "), self._prompt_mode, box_btn, lasso_btn, reset_btn,
-            Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
-            Label(value=", correct, "), rerun, resume, save_btn,
-            Label(value=", recrop, "), self._grow_spin, recrop,
-            pick_region, confirm_recrop, cancel_recrop,
-            Label(value=", disposition, "), self._err_mode, approve, reject,
-            self._info,
-        ], labels=True)
+        self._info = Label(value="(no chain open)")
+
+        built = {
+            "navigation": self._build_navigation_panel(),
+            "drawing": self._build_drawing_panel(),
+            "model": self._build_model_panel(),
+            "verdict": self._build_verdict_panel(),
+        }
+        widgets = []
+        for name in panels_for_mode(self.ui_mode):
+            widgets.extend(built[name])
+        widgets.append(self._info)
+
+        panel = Container(widgets=widgets, labels=True)
         # Wrap in a scroll area so a tall panel never buries buttons below the fold
         # (napari's dock does not scroll on its own); see the no-dock-scroll note in docs.
         from qtpy.QtWidgets import QScrollArea
@@ -1446,29 +1546,38 @@ class ReviewGUI:
 
     def _bind_keys(self) -> None:
         v = self.viewer
+        allowed = keys_for_mode(self.ui_mode)
 
-        @v.bind_key(".", overwrite=True)
+        def _bind(key):
+            """Register a key only if this UI mode allows it."""
+            def deco(fn):
+                if key in allowed:
+                    v.bind_key(key, overwrite=True)(fn)
+                return fn
+            return deco
+
+        @_bind(".")
         def _nf(_v): self.next_flagged()
 
-        @v.bind_key(",", overwrite=True)
+        @_bind(",")
         def _pf(_v): self.prev_flagged()
 
-        @v.bind_key("p", overwrite=True)
+        @_bind("p")
         def _pos(_v): self._set_prompt_label("positive")
 
-        @v.bind_key("n", overwrite=True)
+        @_bind("n")
         def _neg(_v): self._set_prompt_label("negative")
 
-        @v.bind_key("b", overwrite=True)
+        @_bind("b")
         def _box(_v): self.activate_box_draw()
 
-        @v.bind_key("l", overwrite=True)
+        @_bind("l")
         def _lasso_key(_v): self.activate_lasso_draw()
 
-        @v.bind_key("r", overwrite=True)
+        @_bind("r")
         def _rerun(_v): self.rerun_image_phase()
 
-        @v.bind_key("g", overwrite=True)
+        @_bind("g")
         def _resume(_v): self.resume_propagation()
 
         # viewer-level Ctrl+Z fallback: Labels.undo is a LAYER keybinding, so it only
@@ -1476,33 +1585,33 @@ class ReviewGUI:
         # leaves the Shapes layer active across strokes, which would otherwise make
         # Ctrl+Z a no-op there. Layer bindings win over viewer bindings, so when the
         # mask layer IS active napari's own native undo still handles it, unchanged.
-        @v.bind_key("Control-Z", overwrite=True)
+        @_bind("Control-Z")
         def _undo_mask(_v):
             if self._mask is not None:
                 self._mask.undo()
 
-        @v.bind_key("s", overwrite=True)
+        @_bind("s")
         def _save(_v): self.save_masks_now()
 
-        @v.bind_key("c", overwrite=True)
+        @_bind("c")
         def _recrop(_v): self.recrop_chain()
 
-        @v.bind_key("f", overwrite=True)
+        @_bind("f")
         def _pickregion(_v): self.enter_recrop_picker()
 
-        @v.bind_key("z", overwrite=True)
+        @_bind("z")
         def _zoom(_v): self._zoom_to_mask(self._current_frame(), pad=self.zoom_pad)
 
-        @v.bind_key("w", overwrite=True)
+        @_bind("w")
         def _markw(_v): self.mark_frame_wrong()
 
-        @v.bind_key("o", overwrite=True)
+        @_bind("o")
         def _marko(_v): self.mark_frame_ok()
 
-        @v.bind_key("a", overwrite=True)
+        @_bind("a")
         def _approve(_v): self.approve_chain()
 
-        @v.bind_key("x", overwrite=True)
+        @_bind("x")
         def _reject(_v): self.reject_chain()
 
     def _set_prompt_label(self, value=None) -> None:
@@ -1652,7 +1761,8 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
            cfg: Optional[pipeline.PipelineConfig] = None, block: bool = True,
            point_size: float = 4.0, auto_zoom: bool = True, hires_em: bool = False,
            em_scale: Optional[int] = None, anchor_only: bool = False,
-           context_frames: int = 0, source: Optional[Path] = None) -> ReviewGUI:
+           context_frames: int = 0, source: Optional[Path] = None,
+           ui_mode: str = UI_MODE_FULL) -> ReviewGUI:
     """Open the review GUI. With ``neuron``/``chain_idx`` it opens straight onto a
     chain; otherwise it opens on the first pending chain (or an empty viewer if the
     queue is empty). ``block=True`` runs napari's event loop (call from a script);
@@ -1687,7 +1797,8 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
     ctx = ReviewContext(Path(output_root), cfg)
     gui = ReviewGUI(ctx, reviewer=reviewer, point_size=point_size,
                     auto_zoom=auto_zoom, hires_em=hires_em, em_scale=em_scale,
-                    anchor_only=anchor_only, context_frames=context_frames)
+                    anchor_only=anchor_only, context_frames=context_frames,
+                    ui_mode=ui_mode)
     if neuron is not None and chain_idx is not None:
         gui.open_chain(neuron, int(chain_idx))
     else:
@@ -1748,13 +1859,17 @@ def main() -> None:
                     help="original tree to auto-provision --neuron from into --output-root "
                          "if it is not there yet (skips experiments/make_review_tree.py as a "
                          "separate manual step; never touches an already-provisioned neuron)")
+    ap.add_argument("--ui-mode", choices=list(UI_MODES), default=UI_MODE_FULL,
+                    help="'review' hides the model controls (prompts, re-run, resume, recrop) "
+                         "for a redraw-only session; 'full' is every control (default)")
     args = ap.parse_args()
     launch(Path(args.output_root) if args.output_root else None,
            neuron=args.neuron, chain_idx=args.chain, reviewer=args.reviewer,
            point_size=args.point_size, auto_zoom=not args.no_auto_zoom, hires_em=args.hires_em,
            em_scale=args.em_scale, anchor_only=args.anchor_only,
            context_frames=args.context_frames,
-           source=Path(args.source) if args.source else None)
+           source=Path(args.source) if args.source else None,
+           ui_mode=args.ui_mode)
 
 
 if __name__ == "__main__":
