@@ -1820,7 +1820,7 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
            point_size: float = 4.0, auto_zoom: bool = True, hires_em: bool = False,
            em_scale: Optional[int] = None, anchor_only: bool = False,
            context_frames: int = 0, source: Optional[Path] = None,
-           ui_mode: str = UI_MODE_FULL) -> ReviewGUI:
+           ui_mode: str = UI_MODE_FULL, neurons: Optional[list] = None) -> ReviewGUI:
     """Open the review GUI. With ``neuron``/``chain_idx`` it opens straight onto a
     chain; otherwise it opens on the first pending chain (or an empty viewer if the
     queue is empty). ``block=True`` runs napari's event loop (call from a script);
@@ -1829,7 +1829,8 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
     ``point_size`` / ``auto_zoom`` / ``hires_em`` / ``anchor_only`` / ``context_frames``
     forward to ReviewGUI (smaller prompt points, zoom-to-mask on open, full-res EM
     background, only-load-the-anchor-frame, +/- N frames of context around it; see
-    ReviewGUI).
+    ReviewGUI). ``neurons`` restricts the review queue to those neurons; ``None``
+    (the default) means every neuron under ``output_root``.
 
     ``source``, when given together with ``neuron``, auto-provisions ``output_root``
     from ``source`` via experiments.make_review_tree the FIRST time that neuron is
@@ -1854,7 +1855,7 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
             print(f"[gui] {neuron} not found at {output_root}, provisioning from {source} ...")
             from experiments.make_review_tree import make_review_tree
             make_review_tree(Path(source), [neuron], Path(output_root))
-    ctx = ReviewContext(Path(output_root), cfg)
+    ctx = ReviewContext(Path(output_root), cfg, neurons=neurons)
     gui = ReviewGUI(ctx, reviewer=reviewer, point_size=point_size,
                     auto_zoom=auto_zoom, hires_em=hires_em, em_scale=em_scale,
                     anchor_only=anchor_only, context_frames=context_frames,

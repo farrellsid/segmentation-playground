@@ -229,3 +229,15 @@ py -3 -m eval.retro_eval --membrane --glob "/scratch/$USER/*_merged" --out <dir>
 `--membrane` runs the Phase-2 membrane pass; `--min-scale N` (default 4) skips the merge-metric for
 trees coarser than that (a full-res scale-1 tree needs a lot of RAM), while still reporting its
 compute and QC columns. Membrane numbers only compare within one `_sam` scale.
+
+## launcher.py
+
+A window for picking a bundle or output tree, the neurons to review, and the mode. Settings persist
+to `~/.sam2review/profile.json`, outside the repo. It sets `SAM2_OUTPUT_ROOT` and
+`SAM2_FRAMES_ROOT` from the profile, so no config file needs editing.
+
+```bash
+py -3 launcher.py
+```
+
+There are no flags: everything it configures is in the window.
