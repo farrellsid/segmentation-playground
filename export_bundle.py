@@ -138,46 +138,6 @@ def regenerate_frames(state: dict, *, neuron: str, chain_idx: int,
     return Path(frames_dir)
 
 
-def _frames_copy_source(recorded, chain_dir: Path) -> Optional[Path]:
-    """The local directory a chain's frames can be COPIED from, or None.
-
-    Parameters
-    ----------
-    recorded : str or None
-        The chain's recorded ``frames_dir`` out of its state.json.
-    chain_dir : Path
-        The chain's directory in the tree being exported, which a RELATIVE
-        recorded path resolves against.
-
-    Returns
-    -------
-    Path or None
-        A candidate copy source (still to be existence-checked by the caller), or
-        None when the recorded value cannot be one.
-
-    Notes
-    -----
-    Resolution goes through :func:`sam2_utils.bundle.resolve_frames_dir`, the one
-    implementation shared with ``gui.resolve_frames_dir`` and
-    ``bundle.validate_bundle``. This used to be a private copy that tested only a
-    leading ``/`` and then called a bare ``Path(recorded)``, so a RELATIVE
-    ``frames_dir``, which is exactly what a bundle records, resolved against the
-    CURRENT WORKING DIRECTORY: re-exporting from a bundle would pick up whatever
-    ``frames/`` happened to sit in the cwd and copy that into the new bundle.
-
-    A ``/``-rooted path is refused outright rather than resolved. Every
-    cluster-produced chain records a Narval ``/localscratch/<jobid>/...``
-    directory that stopped existing when the job ended, so such a path is never a
-    real copy source here; on a machine where one did resolve it would be the
-    wrong worm's scratch, not this chain's frames.
-    """
-    if not recorded:
-        return None
-    if str(recorded).startswith("/"):
-        return None
-    return bundle.resolve_frames_dir(recorded, chain_dir)
-
-
 def _frames_complete(frames_dir: Path, state: dict) -> bool:
     """Whether ``frames_dir`` already holds a COMPLETE set of this chain's frames.
 
@@ -378,18 +338,25 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
         if _frames_complete(frames_out, rec["state"]) and not force_frames:
             print(f"[export] {rec['chain_dir']}: frames already present, skipping")
         else:
-            recorded = rec["state"].get("frames_dir")
-            frames_src = _frames_copy_source(recorded, src_dir)
-            if frames_src is not None and frames_src.is_dir():
-                _replace_frames_dir(frames_src, frames_out)
-            else:
-                # The recorded path is almost always a dead Narval /localscratch dir,
-                # so regenerating from the raw EM store is the normal path, not a fallback.
-                print(f"[export] {rec['chain_dir']}: regenerating frames from raw EM")
-                src = regenerate_frames(rec["state"], neuron=rec["cell_name"],
-                                        chain_idx=rec["chain_idx"], output_root=output_root,
-                                        frames_root=frames_root)
-                _replace_frames_dir(src, frames_out)
+            # Frames are ALWAYS regenerated, never copied from the recorded
+            # frames_dir. That directory cannot be trusted, for two independent
+            # reasons found on real data. It is usually a dead Compute Canada
+            # Narval /localscratch path, deleted when the job ended. And when it
+            # does still exist, a `gui.py --anchor-only --context-frames N` review
+            # session will have rewritten it to hold only the anchor plus or minus
+            # N: the first real export found every one of 18 AIYL chains left with
+            # exactly 5 frames, for chains needing anywhere from 1 to 43.
+            #
+            # A bare directory of numbered jpgs carries nothing that proves which
+            # z each frame is, so a count cannot tell a complete set from a
+            # narrowed one that happens to be the same size. Regenerating is the
+            # only option correct by construction, and a reviewer checking masks
+            # against the wrong EM slices is worse than one waiting a bit longer.
+            print(f"[export] {rec['chain_dir']}: regenerating frames from raw EM")
+            src = regenerate_frames(rec["state"], neuron=rec["cell_name"],
+                                    chain_idx=rec["chain_idx"], output_root=output_root,
+                                    frames_root=frames_root)
+            _replace_frames_dir(src, frames_out)
 
         state_out = bundle.rewrite_state_frames_dir(rec["state"])
         (out_dir / "state.json").write_text(json.dumps(state_out, indent=2), encoding="utf-8")

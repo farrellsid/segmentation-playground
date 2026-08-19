@@ -9,6 +9,10 @@ import pytest
 import export_bundle
 from sam2_utils import bundle
 
+#: Captured before the autouse stub replaces the module attribute, so the tests
+#: that exercise regeneration itself still reach the real implementation.
+_REAL_REGENERATE_FRAMES = export_bundle.regenerate_frames
+
 
 def _tree(tmp_path):
     root = tmp_path / "master"
@@ -20,6 +24,7 @@ def _tree(tmp_path):
         (d / "frames" / "00000.jpg").write_bytes(b"jpg")
         (d / "state.json").write_text(json.dumps(
             {"neuron": neuron, "chain_idx": idx, "frames_dir": str(d / "frames"),
+             "anchor_catmaid_z": 1402, "n_frames": 1,
              "crop_window": {"origin_tif": [0.0, 0.0], "size_tif": [512, 512],
                              "crop_scale": 2, "sam_scale": 8},
              "save_downscale": 8}), encoding="utf-8")
@@ -31,6 +36,22 @@ def _tree(tmp_path):
 def _fake_registry(monkeypatch):
     monkeypatch.setattr(export_bundle.registry, "load_registry",
                         lambda *a, **k: {"AIAL": 42, "AIYL": 7})
+
+
+@pytest.fixture(autouse=True)
+def _stub_regenerate(monkeypatch, tmp_path):
+    """Stand in for frame regeneration, which every export now performs.
+
+    Export never copies a recorded frames_dir, so the real
+    ``regenerate_frames`` is on the path of every test here. It reaches
+    ``pipeline`` and the raw EM store, so stubbing it is what keeps this suite
+    torch-free and runnable with no data. A test that cares about regeneration
+    overrides this with its own stub.
+    """
+    made = tmp_path / "_stub_frames"
+    made.mkdir(exist_ok=True)
+    (made / "00000.jpg").write_bytes(b"jpg")
+    monkeypatch.setattr(export_bundle, "regenerate_frames", lambda state, **kw: made)
 
 
 #: A stand-in for data/chains.json: three neurons, and AIAL deliberately has TWO
@@ -339,7 +360,7 @@ def test_regenerate_frames_crop_window_passes_correct_crop_window_fields(tmp_pat
         "crop_scale": 2, "sam_scale": 8,
     })
 
-    out = export_bundle.regenerate_frames(state, neuron="AIAL", chain_idx=0,
+    out = _REAL_REGENERATE_FRAMES(state, neuron="AIAL", chain_idx=0,
                                           output_root=tmp_path, frames_root=tmp_path)
 
     assert out == Path("crop/made")
@@ -365,7 +386,7 @@ def test_regenerate_frames_no_crop_window_uses_video_path_with_chain_scale(tmp_p
 
     state = _make_state(crop_window=None, config={"scale": 4})
 
-    out = export_bundle.regenerate_frames(state, neuron="AIAL", chain_idx=0,
+    out = _REAL_REGENERATE_FRAMES(state, neuron="AIAL", chain_idx=0,
                                           output_root=tmp_path, frames_root=tmp_path)
 
     assert out == Path("video/made")
@@ -384,30 +405,35 @@ def test_regenerate_frames_scale_falls_back_to_default_when_unrecorded(tmp_path,
 
     state = _make_state(crop_window=None, config={})
 
-    export_bundle.regenerate_frames(state, neuron="AIAL", chain_idx=0,
+    _REAL_REGENERATE_FRAMES(state, neuron="AIAL", chain_idx=0,
                                     output_root=tmp_path, frames_root=tmp_path)
 
     assert calls["video"]["scale"] == 8
 
 
-def test_relative_frames_dir_resolves_against_the_chain_dir_not_the_cwd(tmp_path, monkeypatch):
-    """Re-exporting a bundle must not copy a decoy ``frames/`` out of the cwd.
+def test_no_local_frames_dir_is_ever_copied_however_plausible(tmp_path, monkeypatch):
+    """Export regenerates unconditionally, so no on-disk frames dir is trusted.
 
-    A bundle records ``frames_dir`` as the relative ``"frames"``. Export used to
-    call a bare ``Path(recorded)`` for anything not starting with ``/``, which on
-    a relative value resolves against the CURRENT WORKING DIRECTORY. Running the
-    export from a directory that happens to hold a ``frames/`` shipped that
-    unrelated directory's contents as the reviewer's canvas.
+    Two independent real failures made copying untenable. The recorded path is
+    usually a dead Narval scratch dir. And when it does exist, a
+    `gui.py --anchor-only --context-frames N` review session will have rewritten
+    it to hold only the anchor plus or minus N: the first real export found all
+    18 AIYL chains left with exactly 5 frames, for chains needing 1 to 43.
+
+    This test sets up the most plausible-looking copy source there is, the
+    chain's own frames dir, present and non-empty, with a decoy of the same name
+    in the cwd for good measure, and asserts neither is shipped.
     """
     root = tmp_path / "master"
     d = root / "AIAL" / "chain_00"
     (d / "masks").mkdir(parents=True)
     (d / "masks" / "mask_1402.png").write_bytes(b"px")
     (d / "frames").mkdir()
-    (d / "frames" / "00000.jpg").write_bytes(b"real")
+    (d / "frames" / "00000.jpg").write_bytes(b"stale-local")
     (d / "state.json").write_text(json.dumps(
         {"neuron": "AIAL", "chain_idx": 0, "frames_dir": "frames",
-         "anchor_catmaid_z": 1402, "crop_window": None, "save_downscale": 8}),
+         "anchor_catmaid_z": 1402, "n_frames": 1,
+         "crop_window": None, "save_downscale": 8}),
         encoding="utf-8")
     (d / "qc.csv").write_text("z,queue\n1402,0\n", encoding="utf-8")
 
@@ -416,13 +442,15 @@ def test_relative_frames_dir_resolves_against_the_chain_dir_not_the_cwd(tmp_path
     (decoy / "frames" / "00000.jpg").write_bytes(b"decoy")
     monkeypatch.chdir(decoy)
 
-    monkeypatch.setattr(export_bundle, "regenerate_frames", lambda *a, **k: pytest.fail(
-        "the chain's own relative frames dir exists; nothing should be regenerated"))
+    regenerated = tmp_path / "regen"
+    regenerated.mkdir()
+    (regenerated / "00000.jpg").write_bytes(b"regenerated")
+    monkeypatch.setattr(export_bundle, "regenerate_frames", lambda *a, **k: regenerated)
 
     dest = tmp_path / "bundle"
     export_bundle.export_bundle(root, dest, source_tree="master")
     shipped = (dest / "AIAL" / "chain_00" / "frames" / "00000.jpg").read_bytes()
-    assert shipped == b"real", "must copy the chain's own frames, not the cwd's"
+    assert shipped == b"regenerated", f"copied something instead of regenerating: {shipped!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -482,3 +510,48 @@ def test_export_fails_loudly_when_the_source_tables_are_missing(tmp_path, monkey
     monkeypatch.setattr(export_bundle, "_check_source_data_present", boom)
     with pytest.raises(SystemExit):
         export_bundle.export_bundle(root, tmp_path / "bundle", source_tree="master")
+
+
+def test_an_incomplete_recorded_frames_dir_is_regenerated_not_copied(tmp_path, monkeypatch):
+    """A recorded frames_dir that EXISTS but is short must not be trusted.
+
+    Found on the first real export. A `gui.py --anchor-only --context-frames 2`
+    review session regenerates a chain's frames directory holding just the anchor
+    plus or minus two, so every reviewed chain's recorded directory was left with
+    exactly 5 frames regardless of how many the chain actually has (1 to 43 across
+    the real AIYL tree). Copying it because it merely exists ships a bundle whose
+    chains have a fraction of their EM, which a reviewer cannot work from.
+    """
+    root = tmp_path / "master"
+    d = root / "AIAL" / "chain_00"
+    (d / "masks").mkdir(parents=True)
+    for z in range(1402, 1412):
+        (d / "masks" / f"mask_{z:04d}.png").write_bytes(b"px")
+    stale = tmp_path / "stale_frames"
+    stale.mkdir()
+    for i in range(5):                      # 5 frames on disk, 10 the chain needs
+        (stale / f"{i:05d}.jpg").write_bytes(b"anchor-only leftover")
+    (d / "state.json").write_text(json.dumps(
+        {"neuron": "AIAL", "chain_idx": 0, "frames_dir": str(stale),
+         "anchor_catmaid_z": 1402, "n_frames": 10,
+         "crop_window": None, "save_downscale": 8}), encoding="utf-8")
+    (d / "qc.csv").write_text("z,queue\n1402,0\n", encoding="utf-8")
+
+    regenerated = tmp_path / "regen"
+    regenerated.mkdir()
+    for i in range(10):
+        (regenerated / f"{i:05d}.jpg").write_bytes(b"regenerated")
+    calls = []
+
+    def fake_regen(state, **kw):
+        calls.append(kw["neuron"])
+        return regenerated
+
+    monkeypatch.setattr(export_bundle, "regenerate_frames", fake_regen)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, source_tree="master")
+
+    assert calls == ["AIAL"], "an incomplete source must trigger regeneration"
+    out = dest / "AIAL" / "chain_00" / "frames"
+    assert len(list(out.glob("*.jpg"))) == 10
+    assert (out / "00000.jpg").read_bytes() == b"regenerated"
