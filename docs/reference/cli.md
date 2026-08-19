@@ -311,3 +311,17 @@ py -3 launcher.py
 ```
 
 There are no flags: everything it configures is in the window.
+
+## place_frames.py
+
+Copies a bundle's EM frames from a drive into a git clone that has none. See
+[../how-to/review-over-git.md](../how-to/review-over-git.md).
+
+| Flag | Effect |
+|------|--------|
+| `--clone <dir>` | The cloned bundle, which has masks but no frames. |
+| `--from <dir>` | The matching bundle on the drive, which has the frames. |
+| `--dry-run` | Report what would be copied without writing. |
+
+Safe to re-run: chains that already have their frames are skipped, so an interrupted copy
+resumes where it stopped. Exits non-zero and names the chains if the source lacks any.
