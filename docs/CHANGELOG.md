@@ -61,6 +61,28 @@ so existing cross-references from code comments, the README, and other notes sti
 A second reviewer (Lucinda) is joining on a Mac with no GPU. Everything in this entry exists to make
 that a `pip install` and a zipped folder instead of a day of setup.
 
+**The first real export found a bug nothing else could.** Twelve task reviews and a whole-plan review
+all passed, and the export still shipped unusable bundles. A pilot run over AIYL finished in 29
+seconds when it should have taken minutes, and every one of its 18 chains carried exactly 5 frames,
+for chains needing anywhere from 1 to 43. Sixteen of the eighteen were short and nothing warned.
+
+The cause was an asymmetry. Export copied a recorded `frames_dir` whenever the directory existed,
+testing existence only, while the completeness check guarded the destination on the resume path. Each
+chain's recorded directory had been rewritten to hold just the anchor plus or minus two by a
+`gui.py --anchor-only --context-frames 2` session during the correction pass, which is where every
+one of those 5-frame directories came from.
+
+Counting cannot repair this. A directory of numbered jpgs records nothing about which z each frame
+is, so a narrowed set that happens to be the right size cannot be told from a complete one, and two
+AIYL chains genuinely need exactly 5. Export now regenerates unconditionally and never copies, which
+also retired the working-directory resolution bug the copy path had been patched for. Measured cost
+on real data: 9.6 seconds per chain, not the 45 estimated from an unusually long one. The re-run gave
+42 AIY chains at 456 frames and 733 MB, every chain's frame count matching its mask count, and a
+chain opened with the repo's CATMAID tables pointed at paths that do not exist.
+
+The lesson is worth keeping: a green suite over synthetic fixtures is not evidence that an exporter
+works.
+
 **Why identity had to stop being a render-time accident.** A mask's numeric id used to come from
 `experiments/dense_overlay.py`'s `{n: i + 1 for i, n in enumerate(neurons)}`, so a neuron's id was
 its position in whatever subset happened to be rendered that time. Fine for a throwaway figure, not
