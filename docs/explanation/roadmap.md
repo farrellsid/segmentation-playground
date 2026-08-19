@@ -1278,6 +1278,30 @@ that already exists, and 18-19 are researched-and-deprioritized rather than queu
     running now. Sharpens the existing Phase 4 paradigm-gate entry (FFN / affinity + LSD + mutex
     watershed) for when Phase 4 is actually scoped, but premature while the cheaper SAM2-side
     levers in items 14-17 are untried.
+20. **A review bundle should fall out of the pipeline, not a hand-written command line**
+    (tooling, raised 2026-08-18 after the first real handoff). Producing the bundles for a second
+    reviewer took two `export_bundle.py` invocations, each naming a base tree, an overlay tree, a
+    neuron list and a variant. All four are things a person has to know, and getting the overlay
+    wrong is silent: the first attempt shipped 87 of 150 chains because it was pointed at the
+    re-propagation tree alone, which by design holds only the chains whose seed was corrected.
+
+    The blocker is concrete and small. A derived tree does not record what it derives from.
+    `batch.py` writes a `_run_meta.json` (preset, commit, argv), so a tree it produced can explain
+    itself, but `experiments/propagate_from_corrected_seed.py` writes nothing, so nothing on disk
+    connects `reprop_maskseed_AIY` back to the `manual_verify_AIYL_AIYR` it was seeded from. That
+    link exists only in a person's memory, which is why the overlay has to be named by hand.
+
+    Three steps, cheapest first, each useful alone:
+    (a) have the re-propagation driver write a `_run_meta.json` recording its base tree, matching
+    what `batch.py` already does;
+    (b) have `export_bundle.py` read that and resolve the overlay itself, so pointing it at a
+    re-propagation tree bundles the whole neuron rather than the corrected fraction;
+    (c) have a completed run emit a bundle as an ordinary output, so handing work to a reviewer is
+    copying a folder rather than composing a command.
+
+    Step (a) is the one that matters: without provenance on disk, (b) and (c) are guesswork. Note
+    the frame regeneration cost is real but bounded (measured 9.6s per chain), so emitting a bundle
+    per run is affordable; it is the missing provenance, not the compute, that blocks this.
 
 ---
 
