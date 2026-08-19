@@ -555,3 +555,84 @@ def test_an_incomplete_recorded_frames_dir_is_regenerated_not_copied(tmp_path, m
     out = dest / "AIAL" / "chain_00" / "frames"
     assert len(list(out.glob("*.jpg"))) == 10
     assert (out / "00000.jpg").read_bytes() == b"regenerated"
+
+
+def _overlay_pair(tmp_path):
+    """A base tree with 3 chains, and an overlay holding a newer version of one."""
+    base = tmp_path / "base"
+    for idx, mask in ((0, b"base0"), (1, b"base1"), (2, b"base2")):
+        d = base / "AIAL" / f"chain_{idx:02d}"
+        (d / "masks").mkdir(parents=True)
+        (d / "masks" / "mask_1402.png").write_bytes(mask)
+        (d / "state.json").write_text(json.dumps(
+            {"neuron": "AIAL", "chain_idx": idx, "frames_dir": "/dead/scratch",
+             "anchor_catmaid_z": 1402, "n_frames": 1,
+             "crop_window": None, "save_downscale": 8}), encoding="utf-8")
+        (d / "qc.csv").write_text(f"z,queue\n1402,{idx}\n", encoding="utf-8")
+
+    over = tmp_path / "reprop"
+    d = over / "AIAL" / "chain_01"
+    (d / "masks").mkdir(parents=True)
+    (d / "masks" / "mask_1402.png").write_bytes(b"REPROPPED")
+    (d / "state.json").write_text(json.dumps(
+        {"neuron": "AIAL", "chain_idx": 1, "frames_dir": "/dead/scratch",
+         "anchor_catmaid_z": 1402, "n_frames": 1,
+         "crop_window": None, "save_downscale": 8}), encoding="utf-8")
+    (d / "qc.csv").write_text("z,queue\n1402,9\n", encoding="utf-8")
+    return base, over
+
+
+def test_overlay_ships_every_base_chain(tmp_path):
+    """A reviewer needs the whole neuron, not only the chains that were re-propagated."""
+    base, over = _overlay_pair(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(base, dest, overlay_roots=[over], source_tree="base")
+    got = sorted(p.name for p in (dest / "AIAL").glob("chain_*"))
+    assert got == ["chain_00", "chain_01", "chain_02"]
+
+
+def test_overlay_wins_where_it_has_the_chain(tmp_path):
+    base, over = _overlay_pair(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(base, dest, overlay_roots=[over], source_tree="base")
+    masks = dest / "AIAL"
+    assert (masks / "chain_01" / "masks" / "mask_1402.png").read_bytes() == b"REPROPPED"
+    assert (masks / "chain_00" / "masks" / "mask_1402.png").read_bytes() == b"base0"
+    assert (masks / "chain_02" / "masks" / "mask_1402.png").read_bytes() == b"base2"
+
+
+def test_overlay_brings_the_overlays_qc_too(tmp_path):
+    """qc.csv must travel with the masks it describes, not be left at the base version."""
+    base, over = _overlay_pair(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(base, dest, overlay_roots=[over], source_tree="base")
+    assert "1402,9" in (dest / "AIAL" / "chain_01" / "qc.csv").read_text(encoding="utf-8")
+    assert "1402,0" in (dest / "AIAL" / "chain_00" / "qc.csv").read_text(encoding="utf-8")
+
+
+def test_meta_records_the_tree_each_chain_actually_came_from(tmp_path):
+    """The audit trail: which tree produced these masks, per chain."""
+    base, over = _overlay_pair(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(base, dest, overlay_roots=[over], source_tree="base")
+    m0 = json.loads((dest / "AIAL" / "chain_00" / "meta.json").read_text(encoding="utf-8"))
+    m1 = json.loads((dest / "AIAL" / "chain_01" / "meta.json").read_text(encoding="utf-8"))
+    assert m0["provenance"]["source_tree"] == "base"
+    assert m1["provenance"]["source_tree"] == "reprop"
+
+
+def test_manifest_source_tree_stays_the_base_so_import_targets_it(tmp_path):
+    """Corrections merge back into the base tree, which is the one holding every chain."""
+    base, over = _overlay_pair(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(base, dest, overlay_roots=[over], source_tree="base")
+    man = json.loads((dest / "bundle.json").read_text(encoding="utf-8"))
+    assert man["source_tree"] == "base"
+    assert len(man["chains"]) == 3
+
+
+def test_no_overlay_behaves_exactly_as_before(tmp_path):
+    base, _ = _overlay_pair(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(base, dest, source_tree="base")
+    assert (dest / "AIAL" / "chain_01" / "masks" / "mask_1402.png").read_bytes() == b"base1"

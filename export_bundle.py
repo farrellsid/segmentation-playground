@@ -272,9 +272,40 @@ def write_bundle_data(dest: Path, neurons: List[str], *, output_root: Path,
     return data_dir
 
 
+def _apply_overlays(chains: List[dict], overlay_roots: List[Path]) -> None:
+    """Point each chain at the last overlay tree that has it, in place.
+
+    A re-propagation run writes only the chains whose seed was corrected, so its
+    tree holds a fraction of each neuron. A reviewer needs the WHOLE neuron, which
+    means the complete chain list from the base tree with the re-propagated
+    versions substituted in where they exist.
+
+    Each record gains ``src_root`` (the tree its masks and qc.csv come from) and
+    ``src_tree`` (that tree's name, recorded per chain in meta.json so the audit
+    trail survives the merge). Later overlays win over earlier ones.
+
+    Parameters
+    ----------
+    chains : list of dict
+        Records from :func:`sam2_utils.bundle.index_chains` over the base tree.
+        Mutated in place.
+    overlay_roots : list of Path
+        Trees whose version of a chain, where present, replaces the base's.
+    """
+    for rec in chains:
+        for over in overlay_roots:
+            candidate = Path(over) / rec["chain_dir"]
+            if (candidate / "state.json").exists():
+                rec["src_root"] = candidate
+                rec["src_tree"] = Path(over).name
+                rec["state"] = json.loads(
+                    (candidate / "state.json").read_text(encoding="utf-8"))
+
+
 def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]] = None,
                   source_tree: Optional[str] = None, backend: str = "sam2",
                   reprop_variant: Optional[str] = None, frames_root: Optional[Path] = None,
+                  overlay_roots: Optional[List[Path]] = None,
                   force: bool = False, force_frames: bool = False) -> dict:
     """Write a review bundle for ``neurons`` from ``output_root`` into ``dest``.
 
@@ -322,11 +353,18 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
     chains = bundle.index_chains(output_root, neurons=neurons)
     if not chains:
         raise SystemExit(f"no chains found under {output_root} for neurons={neurons}")
+    for rec in chains:
+        rec["src_root"] = output_root / rec["chain_dir"]
+        rec["src_tree"] = source_tree
+    if overlay_roots:
+        _apply_overlays(chains, [Path(o) for o in overlay_roots])
+        n_over = sum(1 for r in chains if r["src_tree"] != source_tree)
+        print(f"[export] {n_over} of {len(chains)} chain(s) taken from an overlay tree")
     _check_source_data_present()
 
     dest.mkdir(parents=True, exist_ok=True)
     for rec in chains:
-        src_dir = output_root / rec["chain_dir"]
+        src_dir = rec["src_root"]
         out_dir = dest / rec["chain_dir"]
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -362,7 +400,10 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
         (out_dir / "state.json").write_text(json.dumps(state_out, indent=2), encoding="utf-8")
 
         nid = registry.neuron_id(rec["cell_name"], registry=reg)
-        meta = chain_meta.build_meta(rec["state"], neuron_id=nid, source_tree=source_tree,
+        # Per-chain provenance, not the bundle-wide source_tree: with an overlay
+        # the masks in one bundle come from more than one tree, and which tree
+        # produced a given chain is exactly what a later reader needs to know.
+        meta = chain_meta.build_meta(rec["state"], neuron_id=nid, source_tree=rec["src_tree"],
                                      backend=backend, reprop_variant=reprop_variant,
                                      chain_dir=out_dir)
         chain_meta.write_meta(out_dir, meta)
@@ -398,6 +439,11 @@ def main() -> None:
     ap.add_argument("--reprop-variant", default=None, choices=["mask_seed", "box_seed"])
     ap.add_argument("--frames-root", type=Path, default=None,
                     help="scratch root for regenerated frames; defaults to config.FRAMES_ROOT")
+    ap.add_argument("--overlay", type=Path, nargs="*", default=None, dest="overlay_roots",
+                    help="tree(s) whose version of a chain replaces the base tree's where it "
+                         "exists. A re-propagation run writes only the chains whose seed was "
+                         "corrected, so pass its tree here and --output-root the tree holding "
+                         "every chain, to bundle the whole neuron. Later overlays win.")
     ap.add_argument("--force", action="store_true",
                     help="write into a non-empty destination (check it is not a returned bundle)")
     ap.add_argument("--force-frames", action="store_true",
@@ -406,6 +452,7 @@ def main() -> None:
     export_bundle(args.output_root, args.dest, neurons=args.neurons,
                   source_tree=args.source_tree, backend=args.backend,
                   reprop_variant=args.reprop_variant, frames_root=args.frames_root,
+                  overlay_roots=args.overlay_roots,
                   force=args.force, force_frames=args.force_frames)
 
 
