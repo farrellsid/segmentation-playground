@@ -188,13 +188,23 @@ def rewrite_state_frames_dir(state: dict, relative: str = "frames") -> dict:
     return out
 
 
-def validate_bundle(bundle_root: Path) -> List[str]:
+def validate_bundle(bundle_root: Path, *, require_frames: bool = True) -> List[str]:
     """Check a bundle and return a list of problems, empty when it is well formed.
 
     Parameters
     ----------
     bundle_root : Path
         Directory holding ``bundle.json``.
+    require_frames : bool, optional
+        Whether every chain must have its frames on disk. True for a bundle being
+        delivered: without frames there is nothing to draw on, and the reviewer
+        finds out only when a chain fails to open.
+
+        Pass False where their absence is expected and harmless. Two callers do.
+        A git clone of a bundle carries masks and metadata only, because frames are
+        static, roughly 200 times the size of everything else, and arrive once by
+        drive instead. And ``import_bundle`` moves only masks and qc.csv, so it has
+        no business demanding frames it will never read.
 
     Returns
     -------
@@ -231,10 +241,21 @@ def validate_bundle(bundle_root: Path) -> List[str]:
         if not state_path.exists():
             problems.append(f"{entry['chain_dir']}: missing state.json")
             continue
-        frames_dir = json.loads(state_path.read_text(encoding="utf-8")).get("frames_dir")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        frames_dir = state.get("frames_dir")
         if frames_dir and is_recorded_absolute(frames_dir):
             problems.append(f"{entry['chain_dir']}: frames_dir is absolute ({frames_dir}); "
                             f"a bundle must record it relative or it will not open elsewhere")
+        if require_frames:
+            # An existing but empty directory counts as missing: that is the
+            # half-finished copy, which looks fine until a chain will not open.
+            here = chain_dir / (frames_dir or "frames")
+            n_here = len(list(here.glob("*.jpg"))) if here.is_dir() else 0
+            if not n_here:
+                problems.append(f"{entry['chain_dir']}: no frames on disk; there is nothing to "
+                                f"draw on. If this is a git clone, the frames arrive separately "
+                                f"from the drive, so place them or validate with "
+                                f"require_frames=False")
 
     # The manifest is the bundle's declaration of what it holds, but import walks
     # the DISK. A chain dir the manifest does not name used to validate clean and

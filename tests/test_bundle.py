@@ -131,6 +131,7 @@ def test_validate_reports_a_missing_data_slice(tmp_path):
 def test_validate_accepts_a_bundle_once_the_data_slice_is_there(tmp_path):
     d = _chain(tmp_path, "AIAL", 0, frames="frames")
     (d / "frames").mkdir()
+    (d / "frames" / "00000.jpg").write_bytes(b"jpg")   # a real bundle has a canvas
     (d / "meta.json").write_text(json.dumps({
         "schema_version": 1, "neuron_id": 42, "cell_name": "AIAL", "chain_idx": 0,
         "mask_space": "_sam", "mask_scale": 8, "crop_window": None,
@@ -183,3 +184,56 @@ def test_review_progress_counts_a_repeated_row_once(tmp_path):
         "AIAL,0,approved,lucinda,,2026-08-18T00:00:00+00:00\n"
         "AIAL,0,corrected,lucinda,,2026-08-19T00:00:00+00:00\n", encoding="utf-8")
     assert bundle.review_progress(tmp_path)["AIAL"] == {"total": 1, "reviewed": 1}
+
+
+def _bundle_with_frames(tmp_path, *, frames=True):
+    """A minimal valid bundle, optionally without its frames (a fresh git clone)."""
+    d = tmp_path / "AIAL" / "chain_00"
+    (d / "masks").mkdir(parents=True)
+    (d / "masks" / "mask_1402.png").write_bytes(b"px")
+    if frames:
+        (d / "frames").mkdir()
+        (d / "frames" / "00000.jpg").write_bytes(b"jpg")
+    (d / "state.json").write_text(json.dumps(
+        {"neuron": "AIAL", "chain_idx": 0, "frames_dir": "frames",
+         "n_frames": 1, "crop_window": None, "save_downscale": 8}), encoding="utf-8")
+    (d / "qc.csv").write_text("z,queue\n1402,0\n", encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps({
+        "schema_version": 1, "neuron_id": 42, "cell_name": "AIAL", "chain_idx": 0,
+        "mask_space": "_sam", "mask_scale": 8, "crop_window": None,
+        "z_range": [1402, 1402], "provenance": {}}), encoding="utf-8")
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "data" / "chains.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "data" / "nodes.csv").write_text("node_id\n1\n", encoding="utf-8")
+    man = bundle.build_manifest(bundle.index_chains(tmp_path), source_tree="t")
+    (tmp_path / bundle.BUNDLE_MANIFEST).write_text(json.dumps(man), encoding="utf-8")
+    return tmp_path
+
+
+def test_missing_frames_are_reported_by_default(tmp_path):
+    """A delivered bundle with no frames is broken: there is nothing to draw on."""
+    b = _bundle_with_frames(tmp_path, frames=False)
+    problems = bundle.validate_bundle(b)
+    assert any("frame" in p.lower() for p in problems), problems
+
+
+def test_frames_present_validates_clean(tmp_path):
+    b = _bundle_with_frames(tmp_path, frames=True)
+    assert bundle.validate_bundle(b) == []
+
+
+def test_require_frames_false_accepts_a_frameless_clone(tmp_path):
+    """A git clone carries masks and metadata; frames arrive separately from a drive.
+
+    import_bundle also uses this, since it only ever moves masks and qc.csv and so
+    has no business demanding frames it will not read.
+    """
+    b = _bundle_with_frames(tmp_path, frames=False)
+    assert bundle.validate_bundle(b, require_frames=False) == []
+
+
+def test_an_empty_frames_dir_counts_as_missing(tmp_path):
+    """A directory that exists but holds nothing is the half-copied case."""
+    b = _bundle_with_frames(tmp_path, frames=False)
+    (b / "AIAL" / "chain_00" / "frames").mkdir()
+    assert any("frame" in p.lower() for p in bundle.validate_bundle(b))

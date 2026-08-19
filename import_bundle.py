@@ -385,7 +385,10 @@ def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False
     """
     bundle_root, output_root = Path(bundle_root), Path(output_root)
 
-    problems = bundle.validate_bundle(bundle_root)
+    # require_frames=False: this moves masks and qc.csv and never reads a frame, so
+    # demanding them would refuse a perfectly mergeable git clone, where the frames
+    # deliberately live on a drive instead.
+    problems = bundle.validate_bundle(bundle_root, require_frames=False)
     if problems:
         for p in problems:
             print(f"  {p}", file=sys.stderr)
