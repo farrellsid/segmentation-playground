@@ -50,8 +50,10 @@ Three things have to meet: the repository, the review code, and the frames.
 git clone --depth 1 --branch repo-reorg     https://github.com/farrellsid/segmentation-playground.git ~/segmentation-playground
 git clone https://github.com/farrellsid/mask-review.git ~/mask-review
 
-cd ~/segmentation-playground
-python3 -m pip install --user -r requirements-review.txt
+python3 -m venv ~/review-env
+source ~/review-env/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -r ~/segmentation-playground/requirements-review.txt
 
 python3 place_frames.py --clone ~/mask-review/AIY_for_lucinda \
     --from /Volumes/Expansion/Lucinda_Review/bundles/AIY_for_lucinda
@@ -61,6 +63,12 @@ python3 place_frames.py --clone ~/mask-review/AIY_for_lucinda \
 drive turns out not to have, rather than leaving a hole to be discovered mid-review. It
 skips chains that already have frames, so an interrupted copy resumes. It prints
 `clone validates clean and is ready to review` when the bundle is whole.
+
+Install into a virtual environment rather than with `pip install --user`. Recent macOS
+Pythons refuse a user install outright with `externally-managed-environment` (PEP 668),
+and an environment that can be deleted and rebuilt in one step is worth more than the one
+line it costs. Every later command needs `source ~/review-env/bin/activate` first, or
+`python3` will not find napari.
 
 She then reviews out of the clone, not out of the drive. That is what makes her work
 committable.
