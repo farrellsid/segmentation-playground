@@ -1173,6 +1173,14 @@ class ReviewGUI:
             state, image_predictor=self.ctx.image_predictor,
             video_predictor=self.ctx.video_predictor, annotate_df=self.ctx.annotate_df,
             chain=self.chain, override_crop_window=cw_new)
+        # run_chain does NOT persist state; every caller does its own save (batch.py
+        # does it immediately after its own run_chain). Skipping it here left the new
+        # masks on disk in cw_new's space while state.json still described the OLD
+        # window, so the GUI redrew them against the wrong geometry and, worse, the
+        # re-propagation driver rebuilds its CropWindow from state.json and would have
+        # re-run the chain in a window its masks were never in.
+        chain_dir = self.ctx.output_root / self.neuron / f"chain_{self.chain_idx:02d}"
+        pipeline.save_state(state, chain_dir / "state.json")
         self.queue.set_status(self.neuron, self.chain_idx, review_queue.CORRECTED,
                               reviewer=self.reviewer)
         print("[gui] recrop complete; reopening the chain in the new window")
