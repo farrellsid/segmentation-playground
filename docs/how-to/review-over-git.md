@@ -47,9 +47,10 @@ refuses to operate there without an explicit `safe.directory` exception.
 Three things have to meet: the repository, the review code, and the frames.
 
 ```bash
-git clone <repo-url> ~/mask-review
+git clone --depth 1 --branch repo-reorg     https://github.com/farrellsid/segmentation-playground.git ~/segmentation-playground
+git clone https://github.com/farrellsid/mask-review.git ~/mask-review
 
-cd /Volumes/Expansion/Lucinda_Review/code
+cd ~/segmentation-playground
 python3 -m pip install --user -r requirements-review.txt
 
 python3 place_frames.py --clone ~/mask-review/AIY_for_lucinda \
