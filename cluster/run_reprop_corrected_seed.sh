@@ -46,6 +46,16 @@ set -euo pipefail
 : "${OUT_MASK:?set OUT_MASK (mask-seed variant output tree) via --export}"
 : "${OUT_BOX:?set OUT_BOX (box-seed variant output tree) via --export}"
 MANIFEST="${MANIFEST:-cluster/corrected_chains.csv}"
+# both (default, unchanged) or mask. Mask-seed beat box-seed on overfill on all four
+# AIA/AIY sides while matching its underfill fix (2026-08-14), so a run that only wants
+# the winner halves its GPU time with VARIANT=mask. OUT_BOX stays required either way;
+# nothing is written there when the box variant is skipped.
+VARIANT="${VARIANT:-both}"
+case "$VARIANT" in
+    both) VARIANT_ARGS=() ;;
+    mask) VARIANT_ARGS=(--skip-box-variant) ;;
+    *)    echo "[reprop-array] VARIANT must be 'both' or 'mask', got '$VARIANT'" >&2; exit 2 ;;
+esac
 
 # --- paths (edit for your account, matches run-on-narval.md) -----------------
 REPO=$HOME/projects/def-mzhen/fsid/segmentation-playground
@@ -74,6 +84,6 @@ echo "[reprop-array] task=$SLURM_ARRAY_TASK_ID neuron=$NEURON chain=$CHAIN_IDX g
 python experiments/propagate_from_corrected_seed.py \
     --working "$WORKING_TREE" \
     --neuron "$NEURON" --chain "$CHAIN_IDX" \
-    --out-mask "$OUT_MASK" --out-box "$OUT_BOX"
+    --out-mask "$OUT_MASK" --out-box "$OUT_BOX" "${VARIANT_ARGS[@]}"
 
 echo "[reprop-array] task=$SLURM_ARRAY_TASK_ID neuron=$NEURON chain=$CHAIN_IDX done"
