@@ -23,8 +23,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
-# Stable per-object palette (obj_id -> RGB float). Cycles for >10 objects.
-_PALETTE = plt.cm.tab10(np.linspace(0, 1, 10))[:, :3]
+# Stable per-object palette (obj_id -> RGB float). Cycles once it runs out.
+#
+# tab10's 8th entry is grey (0.498, 0.498, 0.498), which is invisible over greyscale
+# EM: a real whole-neuron render lost chain_16 of AIAL entirely to it (obj_id 17,
+# 17 % 10 == 7), 22 frames of animation showing nothing at all. Every consumer of this
+# palette alpha-blends onto EM, so an achromatic entry is never usable here; drop any
+# whose channels are too close together rather than hand-pruning one index, in case
+# the matplotlib colormap ever changes underneath.
+_TAB10 = plt.cm.tab10(np.linspace(0, 1, 10))[:, :3]
+_PALETTE = np.array([c for c in _TAB10 if c.max() - c.min() > 0.15])
 
 # A single, deliberately chosen high-contrast color (matplotlib's tab:orange, the
 # same orange already used for "the corrected mask" elsewhere in this project, e.g.

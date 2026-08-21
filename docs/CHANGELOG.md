@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-21, merged render fix: a per-chain tour instead of one whole-worm window, a chain drawn in grey, a latent full_hw unit bug](#r-2026-08-21-merged-render-tour)
 - [2026-08-18, portable review: neuron id registry, chain meta.json, review bundle, launcher, GUI modes](#r-2026-08-18-portable-review)
 - [2026-08-14, re-propagation comparison report: mask-seed vs box-seed, a real underfill fix found, transient F:/RAM read failures hardened](#r-2026-08-14-reprop-comparison)
 - [2026-08-12, review-session follow-ups: a shared before/after crop window, --anchor-only context frames](#r-2026-08-12-review-followups)
@@ -52,6 +53,95 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-21-merged-render-tour"></a>
+## 2026-08-21, the whole-neuron merged render was framing the wrong thing, and one chain was drawn in grey
+
+The reprop report's per-chain triples hold up. The whole-neuron "merged" render sitting next to them
+did not, and the reason was a mismatch between how these chains are laid out in z and how the render
+framed them.
+
+**Four things were checked and cleared first, so they do not need checking again.** The z ranges are
+identical across the before, mask-seed and box-seed trees for every chain, 0 of 45 AIA and 0 of 42
+AIY differ. GIF frame count matches on-disk mask count in all 261 per-chain renders, so
+`build_reprop_docx_report._farthest_frame_index` was seeking to the frame it meant to. The reprop
+seeded on the right slice: IoU between the working tree's corrected anchor mask and the reprop mask
+at `anchor_z` runs 0.988 to 0.997, and `anchor_z` is the argmax over the whole chain. And the EM
+these renders draw on is the right slice: scoring boundary darkness over dz in -2 to +2 on
+human-corrected anchor masks picks dz=0 in 8 of 10 cases, the two exceptions being near-ties on tiny
+masks.
+
+**The merged render's window was the whole worm.** A median of one chain is present at any given z,
+while the masks travel 500 to 700px down the stack, so a single union window over every reprop'd
+chain came out at 622x1031 (AIAL) to 727x1152 (AIAR) against per-chain windows of median 262x273.
+The mask covered a median 0.11 to 0.27 percent of the frame, and AIAR had 84 of its 176 frames under
+0.1 percent. The middle-frame thumbnail `add_merged_render_section` drops into the docx landed on a
+frame that reads as blank.
+
+`neuron-gif-triple` now renders a tour instead: one static window per chain, chains visited in z
+order, every window padded out to a single common size so the frames still form one animation. The
+chain and the z are burned into each frame, since a tour cuts about 20 times per neuron and is hard
+to follow without them, and any neighbouring chain falling inside the current window is drawn too,
+which is the context a merged view is for.
+
+Measured on the re-rendered files, mask-seed side, old window and median coverage against new:
+
+| neuron | window | median mask coverage | frames showing nothing |
+|---|---|---|---|
+| AIAL | 622x1031 to 386x425 | 0.25% to 1.68% | 24 to 0 |
+| AIAR | 727x1152 to 434x445 | 0.11% to 0.61% | 84 to 0 |
+| AIYL | 833x1152 to 382x535 | 0.19% to 0.83% | 39 to 0 |
+| AIYR | 665x1152 to 337x397 | 0.27% to 1.53% | 31 to 0 |
+
+Frame counts go up (AIAR 176 to 243) because a z shared by two chains is now visited once per chain,
+in each one's own window, rather than once in a window belonging to neither.
+
+**One chain was being drawn in grey, on greyscale EM.** `sam2_utils/video_viz._PALETTE` was
+matplotlib's tab10, whose 8th entry is (0.498, 0.498, 0.498). AIAL's chain_16 is obj_id 17, and 17 %
+10 is 7, so all 22 of its frames showed nothing at all. Every consumer of that palette alpha-blends
+onto EM, where an achromatic entry cannot work, so it now filters out any colour whose channels sit
+within 0.15 of each other rather than hand-pruning the one index. Zero-coverage frames in the AIAL
+merged render went from 24 to 0 for both reprop variants. The frames still showing nothing on the
+before side (4 on AIAL, 6 on AIAR, 17 on AIYL, 7 on AIYR) are real pre-reprop dropouts, which is
+the underfill the 2026-08-14 round already measured, not a rendering artifact.
+
+**The window was sized from the mask's ARRAY, not from the mask.** `_compute_window` took each
+mask's placement rectangle (`x0, y0, x0 + w, y0 + h`) as its extent. `chain_masks_in_sam` hands back
+a crop-sized array for a tier-2 `_pcrop` chain but a whole-frame array at `x0=y0=0` for a legacy
+`_sam` one, so the window ended up sized by which space a chain happened to live in rather than by
+how big the neuron is. AIZL chain_26 is a 126x95 blob on a 1154x1152 array, and on its own it
+dragged a 44-chain tour to full frame, producing a 550MB gif. Since `padded_window`'s margin is
+proportional to the bbox it fed an oversized pad on top of that. Now it takes the bbox of the
+nonzero pixels. AIZL's common window goes 1154x1152 to 265x506, AUAL to 360x313, AUAR to 454x478,
+and the AIA/AIY chains that were already tight get tighter still (AIAL's median per-chain window
+265x290 to 88x102), so this improves every render in the module, not just the legacy-space ones.
+
+**A latent unit bug in the same file, fixed.** `pipeline.load_frame_sam(z, scale=8)` returns
+`(image_sam, full_hw)` where `full_hw` is the shape BEFORE downscaling (9216x9230), not the shape of
+the image it hands back (1152x1154). `build_view`, `render_before_after` and `render_reprop_triple`
+all passed that where the `_sam` canvas size belongs, and as `padded_window`'s clip bound. It
+allocated a 64x oversized bool canvas per z per chain, a plausible contributor to the RAM-exhaustion
+`imread` failures these renders hit in the first place. It would also have let a mask near the frame
+edge take a window running past the EM, at which point `_overlay` resizes the mask down onto the
+shorter EM crop and it stops lining up with the background. No AIA or AIY chain sits near an edge
+(0 of 87), so that second failure caused nothing here, but a chain closer to the border would have
+hit it.
+
+**`--box-tree` is now optional** on `neuron-gif-triple`. A `VARIANT=mask` cluster run writes no box
+tree at all, and the old code called `render()` on it regardless, where `build_view` raises
+SystemExit on an empty tree and `render_reprop_report.py` catches that and drops all three gifs for
+the chain. The tour also reads each EM frame once and shares it across every variant instead of
+re-reading per tree, since the window at a frame depends only on which chain is being visited. That
+cuts full-res reads by 3x, and it forces the outputs to share a frame index to (chain, z) mapping by
+construction rather than by coincidence.
+
+`neuron-gif-tour` (new subcommand) is the single-tree counterpart, for a neuron with nothing to
+compare against yet. `tests/test_report_tour_windows.py` covers the tour geometry, content-based
+windowing, the palette, and the optional-box-tree CLI wiring (20 cases, torch-free).
+
+502 passed, 1 skipped; ruff clean; no dashes.
 
 ---
 
