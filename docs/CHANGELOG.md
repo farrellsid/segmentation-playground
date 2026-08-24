@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-24, why 15 reprop chains died on Narval: a Windows path, a relative symlink, and a silent dangling link](#r-2026-08-24-legacy-sam-dangling-links)
 - [2026-08-21, merged render fix: a per-chain tour instead of one whole-worm window, a chain drawn in grey, a latent full_hw unit bug](#r-2026-08-21-merged-render-tour)
 - [2026-08-18, portable review: neuron id registry, chain meta.json, review bundle, launcher, GUI modes](#r-2026-08-18-portable-review)
 - [2026-08-14, re-propagation comparison report: mask-seed vs box-seed, a real underfill fix found, transient F:/RAM read failures hardened](#r-2026-08-14-reprop-comparison)
@@ -53,6 +54,53 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-24-legacy-sam-dangling-links"></a>
+## 2026-08-24, why 15 reprop chains died on Narval: a Windows path, a relative symlink, and a silent dangling link
+
+The 2026-08-21 reprop arrays (AIB 84, AIZ 88, AUA 52) finished 209 of 224. The 15
+failures separate perfectly: every one is a legacy `_sam` chain, every legacy chain
+failed, and no tier-2 `_pcrop` chain did. AIA and AIY were entirely tier-2, which is why
+this path had never actually run despite `propagate_from_corrected_seed.py` claiming to
+handle both.
+
+Each failure is the same `FileNotFoundError` out of SAM2's `init_state`, on
+`F:\ZhenLab\Data/chain_views/AIBL_chain12_s8/00000.jpg`. A Windows path, on Linux.
+
+Three things had to line up. `cluster/run_reprop_corrected_seed.sh` exported
+`SAM2_WORM_PATH` but not `SAM2_FRAMES_ROOT`, unlike `run_array.sh` and `run_exp.sh`
+which both pass `--frames-root "$SLURM_TMPDIR/frames"`. `config.FRAMES_ROOT` therefore
+kept its default `F:\ZhenLab\Data`, which on Linux is not an absolute path at all but a
+perfectly legal RELATIVE directory name, created under the repo without complaint. And
+`_link_frame` built the per-chain view with `dst.symlink_to(src)` where `src` was that
+relative cache path. A symlink stores its target verbatim and resolves it against the
+link's own directory, so every frame pointed at
+`chain_views/<chain>/F:\ZhenLab\Data/frames_cache_s8/z1468.jpg`. Opening a dangling
+symlink raises `FileNotFoundError`, indistinguishable from a frame that was never
+written.
+
+Tier-2 escaped because `prepare_chain_crop_frames` writes real JPEGs with `cv2.imwrite`
+and never links. The relative root was equally wrong for it; it just did not care.
+
+Fixed on both sides, since either alone would have left the trap armed. `_link_frame`
+now rejects a missing source instead of linking to nothing, and makes the target
+absolute before symlinking, so a relative `frames_root` can no longer produce a view of
+dangling links. The cluster script exports
+`SAM2_FRAMES_ROOT=${SLURM_TMPDIR:-/tmp}/frames`, matching where the other two jobs put
+their frame cache, which is also node-local and faster than writing into the repo on
+shared storage.
+
+The lesson worth keeping: a machine-specific default path that is absolute on one OS is
+a relative path on another, and the filesystem will accept it silently. Guarding the
+link step is what turns that into a loud failure.
+
+`tests/test_link_frame_relative_root.py` reproduces the dangling link from a relative
+root and guards the absolute case, the deep-nesting case, and the missing-source case
+(4 cases, torch-free).
+
+511 passed, 1 skipped; ruff clean; no dashes.
 
 ---
 

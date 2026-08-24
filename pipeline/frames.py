@@ -95,12 +95,28 @@ def _link_frame(src: Path, dst: Path) -> None:
     Tries symlink, then hard-link, then a plain copy. On Windows bare symlinks
     need Developer Mode or admin, so the hard-link branch is the usual one -> it
     requires src and dst on the same volume (both live under frames_root, so OK).
+
+    `src` is made ABSOLUTE first, and its existence checked, because neither is
+    guaranteed by the caller and both fail silently when violated. A symlink stores
+    its target verbatim and resolves it relative to the LINK'S OWN directory, so a
+    relative `src` produces a link pointing at
+    `<dst's dir>/<src>`, which is not where the cache is. Every frame in the view
+    then dangles, and the failure only surfaces later as a FileNotFoundError from
+    whatever opens `00000.jpg`. This is not hypothetical: `SAM2_FRAMES_ROOT` left at
+    its Windows default makes `F:\\ZhenLab\\Data` a RELATIVE directory name on Linux,
+    which is how all 15 legacy `_sam` chains of the 2026-08-21 reprop arrays died on
+    Narval while all 209 tier-2 chains passed (tier-2 writes real JPEGs, never links).
     """
+    import os
+
+    src = Path(src)
+    if not src.exists():
+        raise FileNotFoundError(f"cannot expose missing cache frame: {src}")
+    src = Path(os.path.abspath(src))
     try:
         dst.symlink_to(src)
     except OSError:
         try:
-            import os
             os.link(src, dst)                    # hard-link fallback (no privilege)
         except OSError:
             import shutil

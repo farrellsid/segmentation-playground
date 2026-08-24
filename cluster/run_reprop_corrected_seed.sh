@@ -61,6 +61,18 @@ esac
 REPO=$HOME/projects/def-mzhen/fsid/segmentation-playground
 export SAM2_WORM_PATH=$HOME/projects/def-mzhen/fsid/SAM2_test_NR_raw
 
+# Frame cache and per-chain views go to node-local $SLURM_TMPDIR (fast, private,
+# auto-cleaned), the same place run_array.sh and run_exp.sh put them via their
+# --frames-root flag. This script drives propagate_from_corrected_seed.py, which has
+# no such flag and reads sam2_utils.config.FRAMES_ROOT, so the env override is how it
+# gets told. Leaving it unset is not harmless: the default is the Windows path
+# F:\ZhenLab\Data, which on Linux is a RELATIVE directory name that gets created
+# under the repo, and the legacy _sam frame prep then builds its view out of symlinks
+# whose relative targets resolve against the wrong directory. That is what killed all
+# 15 legacy chains of the 2026-08-21 arrays; tier-2 chains survived only because they
+# write real JPEGs instead of linking.
+export SAM2_FRAMES_ROOT=${SLURM_TMPDIR:-/tmp}/frames
+
 # --- environment (same module set as every other job here) -------------------
 module load StdEnv/2023 gcc/12.3 python/3.11 cuda/12.2 cudnn/9.2.1.18 \
     opencv/4.13.0 scipy-stack/2026a ipykernel/2026a
