@@ -39,7 +39,7 @@ from docx.shared import Inches
 
 import pipeline
 
-SIDES = ("before", "mask", "box")
+ALL_SIDES = ("before", "mask", "box")
 SIDE_LABELS = {"before": "Before", "mask": "Mask-seed Reprop", "box": "Box-seed Reprop"}
 
 
@@ -76,49 +76,46 @@ def extract_farthest_png(assets: Path, frames_out: Path, tree: Path, neuron: str
     return out_path
 
 
-def build_table(doc: Document, before: Path, mask_tree: Path, box_tree: Path,
-                assets: Path, frames_out: Path, neuron: str,
-                rows: list[tuple[int, int]]) -> list[int]:
-    """rows: [(chain_idx, anchor_z), ...] for this neuron only."""
-    trees = {"before": before, "mask": mask_tree, "box": box_tree}
-    table = doc.add_table(rows=1, cols=6)
+def build_table(doc: Document, trees: dict, assets: Path, frames_out: Path,
+                neuron: str, rows: list[tuple[int, int]]) -> list[int]:
+    """rows: [(chain_idx, anchor_z), ...] for this neuron only. ``trees`` carries only
+    the sides that actually exist, so a VARIANT=mask run (no box-seed tree) yields a
+    two-up table instead of a column of blanks."""
+    sides = [s for s in ALL_SIDES if s in trees]
+    table = doc.add_table(rows=1, cols=len(sides) + 3)
     table.style = "Table Grid"
     hdr = table.rows[0].cells
-    headers = ["Chain",
-              "Before (Farthest Frame)",
-              "Mask-seed Reprop (Farthest Frame)",
-              "Box-seed Reprop (Farthest Frame)",
-              "Renders",
-              "Note"]
+    headers = (["Chain"] + [f"{SIDE_LABELS[s]} (Farthest Frame)" for s in sides]
+               + ["Renders", "Note"])
     for i, text in enumerate(headers):
         hdr[i].text = text
 
     missing = []
     for chain_idx, anchor_z in rows:
-        gif_paths = {s: assets / neuron / f"chain_{chain_idx:02d}_{s}.gif" for s in SIDES}
+        gif_paths = {s: assets / neuron / f"chain_{chain_idx:02d}_{s}.gif" for s in sides}
         if not all(p.exists() for p in gif_paths.values()):
             row = table.add_row().cells
             row[0].text = str(chain_idx)
-            row[5].text = "Not yet rendered (run render_reprop_report.py for this chain)"
+            row[-1].text = "Not yet rendered (run render_reprop_report.py for this chain)"
             missing.append(chain_idx)
             print(f"  {neuron} chain_{chain_idx:02d}: gif(s) missing, skipped for now")
             continue
 
         row = table.add_row().cells
         row[0].text = str(chain_idx)
-        for col, side in zip((1, 2, 3), SIDES):
+        for col, side in enumerate(sides, start=1):
             png = extract_farthest_png(assets, frames_out, trees[side], neuron,
                                        chain_idx, anchor_z, side)
             row[col].paragraphs[0].add_run().add_picture(str(png), width=Inches(1.3))
         render_lines = [f"{SIDE_LABELS[s]}: {neuron}/chain_{chain_idx:02d}_{s}.gif"
-                        for s in SIDES]
-        row[4].text = "\n".join(render_lines)
+                        for s in sides]
+        row[-2].text = "\n".join(render_lines)
         print(f"  {neuron} chain_{chain_idx:02d}: rendered")
     return missing
 
 
 def add_merged_render_section(doc: Document, assets: Path, frames_out: Path,
-                              neuron: str) -> bool:
+                              neuron: str, sides: list) -> bool:
     """Whole-neuron merged render (every reprop'd chain overlaid in one crop), from
     report_assets.py's neuron-gif-triple, one MIDDLE frame per variant as an
     orientation thumbnail. Unlike the per-chain table's farthest-from-anchor
@@ -128,14 +125,14 @@ def add_merged_render_section(doc: Document, assets: Path, frames_out: Path,
     not a claim about where the variants differ most. Returns False (and adds
     nothing) if `render_reprop_report.py`'s neuron-gif-triple output isn't there
     yet for this neuron, expected under <assets>/<neuron>_merged_{side}.gif."""
-    gif_paths = {s: assets / f"{neuron}_merged_{s}.gif" for s in SIDES}
+    gif_paths = {s: assets / f"{neuron}_merged_{s}.gif" for s in sides}
     if not all(p.exists() for p in gif_paths.values()):
         return False
 
     doc.add_paragraph("Merged Render (all reprop'd chains, one crop)").bold = True
-    table = doc.add_table(rows=2, cols=3)
+    table = doc.add_table(rows=2, cols=len(sides))
     table.style = "Table Grid"
-    for col, side in zip(range(3), SIDES):
+    for col, side in enumerate(sides):
         table.rows[0].cells[col].text = SIDE_LABELS[side]
         im = Image.open(gif_paths[side])
         im.seek(im.n_frames // 2)
@@ -143,13 +140,17 @@ def add_merged_render_section(doc: Document, assets: Path, frames_out: Path,
         im.convert("RGB").save(png_path)
         table.rows[1].cells[col].paragraphs[0].add_run().add_picture(
             str(png_path), width=Inches(1.8))
-    render_lines = [f"{SIDE_LABELS[s]}: {neuron}_merged_{s}.gif" for s in SIDES]
+    render_lines = [f"{SIDE_LABELS[s]}: {neuron}_merged_{s}.gif" for s in sides]
     doc.add_paragraph("\n".join(render_lines)).italic = True
     return True
 
 
-def build_report(before: Path, mask_tree: Path, box_tree: Path, manifest: Path,
+def build_report(before: Path, mask_tree: Path, box_tree, manifest: Path,
                  assets: Path, out_path: Path) -> None:
+    trees = {"before": before, "mask": mask_tree}
+    if box_tree is not None:
+        trees["box"] = box_tree
+    sides = [s for s in ALL_SIDES if s in trees]
     frames_out = assets / "anchor_frames"
     frames_out.mkdir(parents=True, exist_ok=True)
 
@@ -182,12 +183,11 @@ def build_report(before: Path, mask_tree: Path, box_tree: Path, manifest: Path,
     for neuron, rows in by_neuron.items():
         doc.add_heading(neuron, level=1)
         print(f"=== {neuron} ===")
-        if add_merged_render_section(doc, assets, frames_out, neuron):
+        if add_merged_render_section(doc, assets, frames_out, neuron, sides):
             print(f"  {neuron}: merged render added")
         else:
             print(f"  {neuron}: no merged render yet (neuron-gif-triple not run), skipped")
-        missing = build_table(doc, before, mask_tree, box_tree, assets, frames_out,
-                              neuron, rows)
+        missing = build_table(doc, trees, assets, frames_out, neuron, rows)
         if missing:
             all_missing[neuron] = missing
         doc.add_page_break()
@@ -209,14 +209,16 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--before", required=True, help="pre-reprop working tree")
     ap.add_argument("--mask-tree", required=True, help="mask-seed reprop output tree")
-    ap.add_argument("--box-tree", required=True, help="box-seed reprop output tree")
+    ap.add_argument("--box-tree",
+                    help="box-seed reprop output tree; omit for a VARIANT=mask run")
     ap.add_argument("--manifest", required=True, help="neuron,chain_idx,anchor_z CSV")
     ap.add_argument("--assets", required=True,
                     help="render_reprop_report.py output root (has <neuron>/chain_NN_{before,mask,box}.gif)")
     ap.add_argument("--out", required=True, help="output .docx path")
     args = ap.parse_args(argv)
 
-    build_report(Path(args.before), Path(args.mask_tree), Path(args.box_tree),
+    build_report(Path(args.before), Path(args.mask_tree),
+                Path(args.box_tree) if args.box_tree else None,
                 Path(args.manifest), Path(args.assets), Path(args.out))
 
 

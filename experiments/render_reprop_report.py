@@ -20,10 +20,11 @@ import argparse
 import csv
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from experiments.report_assets import render_reprop_triple
+from experiments.report_assets import render_reprop_sides
 
 
 def _read_manifest(path: Path) -> list[tuple[str, int, int]]:
@@ -34,23 +35,27 @@ def _read_manifest(path: Path) -> list[tuple[str, int, int]]:
     return rows
 
 
-def render_all(before: Path, mask_tree: Path, box_tree: Path, manifest: Path,
-               assets: Path) -> None:
+def render_all(before: Path, mask_tree: Path, box_tree: Optional[Path],
+               manifest: Path, assets: Path) -> None:
+    """``box_tree`` may be None. A VARIANT=mask cluster run writes no box-seed tree,
+    so demanding one would turn that deliberate half-the-GPU-time saving into a
+    renderer that produces nothing at all."""
+    trees = {"before": before, "mask": mask_tree}
+    if box_tree is not None:
+        trees["box"] = box_tree
     rows = _read_manifest(manifest)
-    print(f"[render-reprop] {len(rows)} chain(s) in {manifest}")
+    print(f"[render-reprop] {len(rows)} chain(s) in {manifest}, "
+          f"sides: {', '.join(trees)}")
     skipped, rendered, failed = 0, 0, 0
     for neuron, chain_idx, _anchor_z in rows:
         out_dir = assets / neuron
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_before = out_dir / f"chain_{chain_idx:02d}_before.gif"
-        out_mask = out_dir / f"chain_{chain_idx:02d}_mask.gif"
-        out_box = out_dir / f"chain_{chain_idx:02d}_box.gif"
-        if out_before.exists() and out_mask.exists() and out_box.exists():
+        outs = {side: out_dir / f"chain_{chain_idx:02d}_{side}.gif" for side in trees}
+        if all(p.exists() for p in outs.values()):
             skipped += 1
             continue
         try:
-            render_reprop_triple(before, mask_tree, box_tree, neuron, [chain_idx],
-                                 out_before, out_mask, out_box)
+            render_reprop_sides(trees, neuron, [chain_idx], outs)
             rendered += 1
         except SystemExit as e:
             print(f"  [render-reprop] {neuron} chain_{chain_idx:02d}: skipped, {e}")
@@ -64,12 +69,14 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--before", required=True, help="pre-reprop working tree")
     ap.add_argument("--mask-tree", required=True, help="mask-seed reprop output tree")
-    ap.add_argument("--box-tree", required=True, help="box-seed reprop output tree")
+    ap.add_argument("--box-tree",
+                    help="box-seed reprop output tree; omit for a VARIANT=mask run")
     ap.add_argument("--manifest", required=True, help="neuron,chain_idx,anchor_z CSV")
     ap.add_argument("--assets", required=True, help="output root for the rendered gifs")
     args = ap.parse_args(argv)
 
-    render_all(Path(args.before), Path(args.mask_tree), Path(args.box_tree),
+    render_all(Path(args.before), Path(args.mask_tree),
+              Path(args.box_tree) if args.box_tree else None,
               Path(args.manifest), Path(args.assets))
 
 

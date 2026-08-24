@@ -328,26 +328,57 @@ def render_reprop_triple(before_tree: Path, mask_tree: Path, box_tree: Path, neu
     other chains never ran through propagate_from_corrected_seed.py at all), so
     ``chain_idxs`` should already be limited to that set (e.g. from
     find_corrected_chains), not a neuron's full chain list."""
-    mask_masks = _load_chains_masks(mask_tree, neuron, chain_idxs)
-    box_masks = _load_chains_masks(box_tree, neuron, chain_idxs)
-    all_z = {z for masks in mask_masks.values() for z in masks} | \
-            {z for masks in box_masks.values() for z in masks}
-    if not all_z:
-        raise SystemExit(f"[report] no reprop masks for {neuron} chains {chain_idxs} "
-                         f"in {mask_tree} or {box_tree}")
-    # union the two trees' mask sets before computing one window over both, so a chain
-    # where box-seed and mask-seed diverge spatially still gets a window covering
-    # whichever one reaches further, never just one variant's own footprint.
-    combined = {ci: {**mask_masks.get(ci, {}), **box_masks.get(ci, {})} for ci in chain_idxs}
-    window = _compute_window(combined, sam_hw(min(all_z)))
+    trees = {"before": before_tree, "mask": mask_tree, "box": box_tree}
+    outs = {"before": out_before, "mask": out_mask, "box": out_box}
+    rendered = render_reprop_sides(trees, neuron, chain_idxs, outs, fmt=fmt,
+                                   preview_scale=preview_scale)
+    return rendered["before"], rendered["mask"], rendered["box"]
 
-    before_path = render(before_tree, neuron, chain_idxs, out_before,
-                         fmt=fmt, preview_scale=preview_scale, window=window)
-    mask_path = render(mask_tree, neuron, chain_idxs, out_mask,
-                       fmt=fmt, preview_scale=preview_scale, window=window)
-    box_path = render(box_tree, neuron, chain_idxs, out_box,
-                      fmt=fmt, preview_scale=preview_scale, window=window)
-    return before_path, mask_path, box_path
+
+def reprop_window(trees: dict[str, Path], neuron: str, chain_idxs: list[int], *,
+                  seed_keys: tuple[str, ...] = ("mask", "box")) -> tuple:
+    """One crop window covering every reprop variant present in ``trees``.
+
+    Sized from the reprop trees only, never the before tree: the before tail is the
+    thing under test, and letting it set the frame would hide exactly the overfill
+    the comparison exists to show.
+
+    The variants' windows are unioned as BOXES, not by merging their mask dicts.
+    A dict merge is keyed by z, so `{**mask_masks, **box_masks}` silently keeps only
+    the later tree's mask at any z both cover, which is every z, meaning the window
+    came from box-seed alone despite the code reading like a union."""
+    seeds = [(k, _load_chains_masks(trees[k], neuron, chain_idxs))
+             for k in seed_keys if k in trees]
+    seeds = [(k, m) for k, m in seeds if m]
+    if not seeds:
+        named = ", ".join(str(trees[k]) for k in seed_keys if k in trees)
+        raise SystemExit(f"[report] no reprop masks for {neuron} chains {chain_idxs} in {named}")
+    all_z = {z for _k, m in seeds for masks in m.values() for z in masks}
+    frame_hw = sam_hw(min(all_z))
+    boxes = [_compute_window(m, frame_hw) for _k, m in seeds]
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def render_reprop_sides(trees: dict[str, Path], neuron: str, chain_idxs: list[int],
+                        outs: dict[str, Path], *, fmt: str = "gif",
+                        preview_scale: int = 1) -> dict[str, Path]:
+    """Render one gif per entry in ``trees`` to a single shared crop window, so the
+    outputs are comparable frame for frame.
+
+    ``trees`` may hold just "before" and "mask": a VARIANT=mask cluster run writes no
+    box-seed tree, mask-seed having beaten box-seed on overfill on all four AIA/AIY
+    sides, and a renderer that insists on all three turns that saving into a hard
+    failure. Both reprop trees only cover the chains that actually went through
+    propagate_from_corrected_seed.py, so ``chain_idxs`` should already be limited to
+    a find_corrected_chains manifest rather than a neuron's full chain list."""
+    missing = set(trees) - set(outs)
+    if missing:
+        raise ValueError(f"no output path for tree(s): {sorted(missing)}")
+    window = reprop_window(trees, neuron, chain_idxs)
+    return {side: render(tree, neuron, chain_idxs, outs[side], fmt=fmt,
+                         preview_scale=preview_scale, window=window)
+            for side, tree in trees.items()}
 
 
 def tour_plan(mask_tree: Path, box_tree: Optional[Path], neuron: str,

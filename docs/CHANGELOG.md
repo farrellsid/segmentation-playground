@@ -129,7 +129,8 @@ shorter EM crop and it stops lining up with the background. No AIA or AIY chain 
 (0 of 87), so that second failure caused nothing here, but a chain closer to the border would have
 hit it.
 
-**`--box-tree` is now optional** on `neuron-gif-triple`. A `VARIANT=mask` cluster run writes no box
+**`--box-tree` is now optional across the whole reprop report path**, not just on
+`neuron-gif-triple`. A `VARIANT=mask` cluster run writes no box
 tree at all, and the old code called `render()` on it regardless, where `build_view` raises
 SystemExit on an empty tree and `render_reprop_report.py` catches that and drops all three gifs for
 the chain. The tour also reads each EM frame once and shares it across every variant instead of
@@ -137,11 +138,24 @@ re-reading per tree, since the window at a frame depends only on which chain is 
 cuts full-res reads by 3x, and it forces the outputs to share a frame index to (chain, z) mapping by
 construction rather than by coincidence.
 
+`render_reprop_report.py` and `build_reprop_docx_report.py` take the sides they are given rather
+than three fixed ones, so a VARIANT=mask run yields a two-up gif set and a two-up docx table instead
+of a hard failure and a column of blanks. The AIB, AIZ and AUA arrays submitted on 2026-08-21 are all
+mask-seed only, so without this there would have been nothing to render when they land.
+
+Sizing those shared windows moved into `reprop_window`, which fixes a second dict-merge bug of the
+same shape as the tour's: `{**mask_masks, **box_masks}` is keyed by z, so box-seed's mask replaced
+mask-seed's at every z they both cover, which is all of them. The window came from box-seed alone
+while the comment above it claimed a union. It now unions the variants' windows as boxes, and it
+still refuses to let the before tree influence the frame, since the before tail is the thing under
+test and letting it size the crop would hide the overfill the comparison exists to show.
+
 `neuron-gif-tour` (new subcommand) is the single-tree counterpart, for a neuron with nothing to
 compare against yet. `tests/test_report_tour_windows.py` covers the tour geometry, content-based
-windowing, the palette, and the optional-box-tree CLI wiring (20 cases, torch-free).
+windowing, the shared reprop window, the palette, and the optional-box-tree CLI wiring (25 cases,
+torch-free and data-free, `sam_hw` stubbed so none of it needs the EM store).
 
-502 passed, 1 skipped; ruff clean; no dashes.
+507 passed, 1 skipped; ruff clean; no dashes.
 
 ---
 

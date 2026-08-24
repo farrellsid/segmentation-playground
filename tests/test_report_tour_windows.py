@@ -203,5 +203,71 @@ class TestComputeWindowUsesContent:
             self._win(np.zeros(FRAME, dtype=bool), 0, 0)
 
 
+class TestReproWindowUnionsVariants:
+    """reprop_window must union the variants as BOXES. The old code merged their mask
+    DICTS (`{**mask_masks, **box_masks}`), which is keyed by z, so box-seed's mask
+    replaced mask-seed's at every z they both cover, i.e. all of them. The window then
+    came from box-seed alone while the comment claimed a union, and a chain where the
+    two variants diverge spatially got cropped to one of them.
+
+    Data-free: sam_hw is stubbed so nothing here needs the EM store on F:."""
+
+    @pytest.fixture(autouse=True)
+    def _no_em_store(self, monkeypatch):
+        from experiments import report_assets
+        monkeypatch.setattr(report_assets, "sam_hw", lambda z: FRAME)
+
+    def _tree(self, tmp_path, name, box):
+        """A minimal on-disk chain: chain_masks_in_sam reads masks/ plus state.json."""
+        import json
+
+        import cv2
+        d = tmp_path / name / "N" / "chain_00"
+        (d / "masks").mkdir(parents=True)
+        (d / "state.json").write_text(json.dumps({"neuron": "N", "chain_idx": 0}))
+        x0, y0, x1, y1 = box
+        for z in (1000, 1001):
+            m = np.zeros(FRAME, dtype=np.uint8)
+            m[y0:y1, x0:x1] = 255
+            cv2.imwrite(str(d / "masks" / f"mask_{z:04d}.png"), m)
+        return tmp_path / name
+
+    def test_window_covers_both_variants(self, tmp_path):
+        from experiments.report_assets import reprop_window
+        # the two variants sit in disjoint places; the window must contain both
+        mask_tree = self._tree(tmp_path, "mask", (100, 100, 160, 160))
+        box_tree = self._tree(tmp_path, "box", (700, 700, 760, 760))
+        w = reprop_window({"before": tmp_path / "nope", "mask": mask_tree,
+                           "box": box_tree}, "N", [0])
+        assert w[0] <= 100 and w[1] <= 100, w
+        assert w[2] >= 760 and w[3] >= 760, w
+
+    def test_works_with_only_the_mask_variant(self, tmp_path):
+        from experiments.report_assets import reprop_window
+        mask_tree = self._tree(tmp_path, "mask", (100, 100, 160, 160))
+        w = reprop_window({"before": tmp_path / "nope", "mask": mask_tree}, "N", [0])
+        assert w[0] <= 100 and w[2] >= 160
+
+    def test_before_tree_never_sets_the_window(self, tmp_path):
+        # the before tail is the thing under test; letting it size the frame would
+        # hide the overfill the comparison exists to show
+        from experiments.report_assets import reprop_window
+        mask_tree = self._tree(tmp_path, "mask", (100, 100, 160, 160))
+        before = self._tree(tmp_path, "before", (0, 0, 1100, 1100))
+        w = reprop_window({"before": before, "mask": mask_tree}, "N", [0])
+        assert (w[2] - w[0]) < 200 and (w[3] - w[1]) < 200, w
+
+    def test_no_reprop_masks_anywhere_is_refused(self, tmp_path):
+        from experiments.report_assets import reprop_window
+        with pytest.raises(SystemExit):
+            reprop_window({"before": tmp_path, "mask": tmp_path / "nope"}, "N", [0])
+
+    def test_render_sides_refuses_a_tree_with_no_output_path(self, tmp_path):
+        from experiments.report_assets import render_reprop_sides
+        with pytest.raises(ValueError):
+            render_reprop_sides({"before": tmp_path, "mask": tmp_path}, "N", [0],
+                                {"before": tmp_path / "b.gif"})
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
