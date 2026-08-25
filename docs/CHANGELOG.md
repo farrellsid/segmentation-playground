@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-25, GUI recrop silently threw away the window the reviewer drew](#r-2026-08-25-gui-recrop-fallback)
 - [2026-08-24, why 15 reprop chains died on Narval: a Windows path, a relative symlink, and a silent dangling link](#r-2026-08-24-legacy-sam-dangling-links)
 - [2026-08-21, merged render fix: a per-chain tour instead of one whole-worm window, a chain drawn in grey, a latent full_hw unit bug](#r-2026-08-21-merged-render-tour)
 - [2026-08-18, portable review: neuron id registry, chain meta.json, review bundle, launcher, GUI modes](#r-2026-08-18-portable-review)
@@ -54,6 +55,44 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-25-gui-recrop-fallback"></a>
+## 2026-08-25, GUI recrop silently threw away the window the reviewer drew
+
+Two symptoms reported from a real review session: recrop "sometimes defaults to the big low
+res full-frame", and the region picker "goes out to the big frame and does not return". They
+are one cause.
+
+`gui._recrop_to_window` re-runs the chain with `chain_crop=True` but left
+`chain_crop_fallback` at its default `True`. That valve exists for AUTOMATED batch runs,
+where a poorly-scoring crop anchor means the crop is probably worse than the plain `_sam`
+path, so reverting is the right call. In the GUI the premise is inverted: a person has just
+drawn or grown that window on purpose. When the valve fired it rewrote the chain as `_sam`
+with `crop_window=None` and the GUI reopened the full low-res frame, which is indistinguishable
+from the picker never coming back.
+
+The fallback records itself, so the session left evidence. All three chains recropped in
+`manual_verify_RIP` on 2026-08-25 came back `fell_back_to_sam=True`, reason `score<0.7`, with
+`crop_window` gone: RIPL chain_25 (crop 0.64 -> `_sam` 0.53), RIPL chain_27 (0.29 -> 0.23),
+RIPR chain_01 (0.63 -> 0.68). In two of the three the `_sam` recovery scored LOWER than the
+crop it replaced, so the valve was not winning on its own measure either. There is a
+second-order harm as well: the chain is no longer tier-2, so grow-recrop refuses it
+afterwards, which removes the other recrop path from that chain.
+
+Recrop now passes `chain_crop_fallback=False`. A genuinely bad anchor is still visible, an
+empty anchor mask flags the chain exactly as before; what changes is that a score below the
+floor no longer discards the reviewer's window without saying so.
+
+Two regression tests capture the config `run_chain` actually receives, since the bug was
+entirely in what was passed rather than in what was computed.
+
+The three chains already flattened keep their masks but have no crop window; recropping them
+again through the picker now works, and the picker handles a `_sam` chain by defaulting its
+rectangle to the skeleton bbox.
+
+519 passed, 1 skipped; ruff clean; no dashes.
 
 ---
 

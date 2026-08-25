@@ -1166,7 +1166,19 @@ class ReviewGUI:
         print(f"[gui] recrop {self.neuron} chain {self.chain_idx:02d}: {old} -> "
               f"{cw_new.size_tif} _tif ({label}), re-running the chain (this is slow)...")
         self.ctx.ensure_predictors(need_image=True, need_video=True)
-        cfg = replace(self.ctx.cfg, chain_crop=True, chain_crop_from_mask=False)
+        # chain_crop_fallback OFF for a human-directed recrop. It is a safety valve for
+        # AUTOMATED runs: a poorly-scoring crop anchor there probably means the crop is
+        # worse than the plain _sam path, so reverting is right. Here a person has just
+        # drawn or grown this window on purpose, and the valve silently threw it away,
+        # rewrote the chain as _sam with crop_window=None, and reopened the full low-res
+        # frame, which reads as "the recrop did nothing" with no error to explain it.
+        # Real session (manual_verify_RIP, 2026-08-25): all three recropped chains fell
+        # back on "score<0.7", and in two of them the _sam recovery scored LOWER than the
+        # crop it replaced, so the valve was not even winning on its own measure. It also
+        # left them non-tier-2, which makes grow-recrop refuse them afterwards.
+        # A genuinely bad anchor is still visible: an empty mask flags the chain as before.
+        cfg = replace(self.ctx.cfg, chain_crop=True, chain_crop_from_mask=False,
+                      chain_crop_fallback=False)
         state = pipeline.ChainState(neuron=self.neuron, chain_idx=self.chain_idx, config=cfg)
         self._close_session()                  # the old _pcrop session is stale
         pipeline.run_chain(

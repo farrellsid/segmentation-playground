@@ -95,3 +95,53 @@ def test_the_persisted_window_matches_what_the_masks_were_written_in(tmp_path, m
     w, h = cw["size_tif"]
     implied = (h // cw["crop_scale"], w // cw["crop_scale"])
     assert implied == (1400, 1312), f"state implies {implied}, masks are written 1400x1312"
+
+
+def _cfg_seen_by_run_chain(tmp_path, monkeypatch):
+    """Run a recrop and return the PipelineConfig run_chain actually received."""
+    seen = {}
+    new = alignment.CropWindow(origin_tif=(2464.0, 5832.0), size_tif=(2624, 2800),
+                               crop_scale=2, sam_scale=8)
+    g = _gui_for_recrop(tmp_path, monkeypatch, new)
+
+    def capture(state, **kw):
+        seen["cfg"] = state.config
+        state.crop_window = kw["override_crop_window"].to_dict()
+        state.status = "done"
+        return state
+
+    monkeypatch.setattr(pipeline, "run_chain", capture)
+    monkeypatch.setattr(gui.pipeline, "run_chain", capture, raising=False)
+    g._recrop_to_window(new, "test")
+    return seen["cfg"]
+
+
+def test_recrop_disables_the_tier2_fallback(tmp_path, monkeypatch):
+    """A human-directed recrop must honour the window the human chose.
+
+    chain_crop_fallback is a safety valve for AUTOMATED batch runs: if the crop anchor
+    scores poorly, the plain _sam path is probably better than a bad crop. In the GUI the
+    premise is inverted, because a person has just drawn or grown this window on purpose.
+    Leaving the valve armed made run_chain silently rewrite the chain as _sam, dropping
+    crop_window entirely, so the GUI reopened the full low-res frame and the drawn window
+    was discarded with no visible error.
+
+    Measured on real data (manual_verify_RIP, 2026-08-25): all three chains recropped in
+    one session fell back with reason "score<0.7" and came back with crop_window=None. In
+    two of the three the _sam recovery scored LOWER than the crop it replaced (0.64 -> 0.53
+    and 0.29 -> 0.23), so the valve also hurt by its own measure. A second-order harm: the
+    chain is no longer tier-2, so grow-recrop then refuses it outright.
+    """
+    cfg = _cfg_seen_by_run_chain(tmp_path, monkeypatch)
+    assert cfg.chain_crop is True, "recrop must run the tier-2 crop path"
+    assert cfg.chain_crop_fallback is False, (
+        "recrop left the batch fallback armed; a poor anchor score will silently discard "
+        "the window the reviewer chose and reopen the full _sam frame")
+
+
+def test_recrop_still_runs_the_crop_path_from_the_given_window(tmp_path, monkeypatch):
+    """Guard the rest of the cfg the fix touches, so disabling the valve cannot quietly
+    change which window is used or re-enable mask-derived sizing."""
+    cfg = _cfg_seen_by_run_chain(tmp_path, monkeypatch)
+    assert cfg.chain_crop_from_mask is False, (
+        "recrop must size from the reviewer's window, not re-derive one from the mask")
