@@ -46,11 +46,33 @@ NEURON_FILTERED_CSVS = ("_manifest.csv", "_triage.csv")
 COPY_VERBATIM = ("_run_meta.json",)
 
 
-def make_review_tree(source: Path, neurons: list[str], out: Path) -> None:
+def make_review_tree(source: Path, neurons: list[str], out: Path, *,
+                     allow_missing: bool = False) -> None:
+    """Copy `neurons` out of `source` into a review-ready working tree at `out`.
+
+    A neuron the source does not have is an ERROR by default, not a warning. The
+    manifest and triage CSVs are the GUI's chain queue and they live at the tree root,
+    so filtering them by the REQUESTED neurons while the copy loop quietly skipped one
+    produces a tree whose queue advertises chains that are not on disk. That is how
+    `manual_verify_RMDD` came out claiming 115 chains over 57 real ones: the source
+    tree's own `_manifest.csv` still lists RMDDL, but its RMDDL directory is absent, and
+    a warning printed 60 lines up is not a guard. `allow_missing=True` restores the old
+    skip-and-continue, and even then the CSVs are filtered to what was actually copied,
+    so the tree stays self-consistent either way.
+    """
     if source.resolve() == out.resolve():
         raise SystemExit("[review-tree] --out must differ from --source")
-    out.mkdir(parents=True, exist_ok=True)
 
+    absent = [n for n in neurons if not (source / n).exists()]
+    if absent and not allow_missing:
+        raise SystemExit(
+            f"[review-tree] {source} has no directory for: {', '.join(absent)}. "
+            f"Nothing was written. Pass allow_missing/--allow-missing to build the tree "
+            f"from the neurons that ARE present, or point --source at a tree that has them."
+        )
+
+    out.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
     for neuron in neurons:
         src_dir = source / neuron
         if not src_dir.exists():
@@ -61,6 +83,7 @@ def make_review_tree(source: Path, neurons: list[str], out: Path) -> None:
             shutil.rmtree(dst_dir)
         shutil.copytree(src_dir, dst_dir)
         n_chains = sum(1 for p in dst_dir.glob("chain_*") if p.is_dir())
+        copied.append(neuron)
         print(f"[review-tree] copied {neuron}: {n_chains} chains")
 
     for name in NEURON_FILTERED_CSVS:
@@ -70,17 +93,20 @@ def make_review_tree(source: Path, neurons: list[str], out: Path) -> None:
                  f"will be incomplete without it")
             continue
         df = pd.read_csv(src_csv)
-        fresh = df[df["neuron"].isin(neurons)]
+        # keyed on what was COPIED, never on what was requested
+        fresh = df[df["neuron"].isin(copied)]
         dst_csv = out / name
         if dst_csv.exists():
             existing = pd.read_csv(dst_csv)
-            kept = existing[~existing["neuron"].isin(neurons)]   # everyone else, untouched
+            # drop rows for every requested neuron, so a re-run that now skips one
+            # clears its stale rows instead of leaving them behind
+            kept = existing[~existing["neuron"].isin(neurons)]
             merged = pd.concat([kept, fresh], ignore_index=True)
         else:
             merged = fresh
         merged.to_csv(dst_csv, index=False)
         print(f"[review-tree] wrote {name}: {len(merged)} rows total "
-             f"({len(fresh)} for {neurons}, {len(merged) - len(fresh)} kept from other neurons)")
+             f"({len(fresh)} for {copied}, {len(merged) - len(fresh)} kept from other neurons)")
 
     for name in COPY_VERBATIM:
         src_file = source / name
@@ -95,10 +121,14 @@ def main(argv=None):
     ap.add_argument("--source", required=True)
     ap.add_argument("--neurons", required=True, help="comma-separated neuron names")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="build from the neurons the source actually has instead of "
+                         "refusing; the CSVs are filtered to what was copied either way")
     args = ap.parse_args(argv)
 
     neurons = [n.strip() for n in args.neurons.split(",") if n.strip()]
-    make_review_tree(Path(args.source), neurons, Path(args.out))
+    make_review_tree(Path(args.source), neurons, Path(args.out),
+                     allow_missing=args.allow_missing)
     print(f"[review-tree] done: py -3 gui.py --output-root \"{args.out}\" --neuron {neurons[0]}")
 
 
