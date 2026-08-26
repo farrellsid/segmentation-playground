@@ -157,6 +157,52 @@ class TestVolumeToMesh:
         assert PRESETS["balanced"] == {"step_size": 1, "iterations": 10}
         assert PRESETS["smooth"] == {"step_size": 2, "iterations": 25}
 
+    def test_balanced_smooths_further_than_faithful_at_matched_vertex_count(self):
+        """Regression test for a bug where volume_to_mesh silently ignores
+        cfg["iterations"] and always smooths with the default iterations count.
+
+        `faithful` (iterations=2) and `balanced` (iterations=10) share step_size=1, so
+        marching cubes produces the same base mesh for both: same vertex count and the
+        same vertex-to-vertex correspondence. That means triangle/vertex counts alone
+        (as in test_presets_differ_in_triangle_count and
+        test_preset_table_matches_the_spec) cannot tell them apart; a bug that used the
+        `faithful` iterations count for every preset except the one already covered by
+        test_faithful_is_the_default would pass every other test in this file.
+
+        Instead this compares actual vertex positions. More Taubin iterations should
+        keep moving vertices away from where marching cubes originally placed them, so
+        `balanced` must land further from `faithful` than two `faithful` runs land
+        from each other. Two `faithful` runs are a repeat of the same preset
+        (iterations forced to 2 on both sides), so their displacement is a
+        deterministic noise floor of zero; if `balanced` matched that floor, iterations
+        would not be doing anything.
+        """
+        vol = _blob()
+        spacing = (50.0, 128.0, 128.0)
+        v_faithful, f_faithful = volume_to_mesh(vol, spacing=spacing, preset="faithful")
+        v_faithful_again, _f_again = volume_to_mesh(vol, spacing=spacing, preset="faithful")
+        v_balanced, f_balanced = volume_to_mesh(vol, spacing=spacing, preset="balanced")
+
+        assert v_faithful.shape == v_balanced.shape, (
+            "faithful and balanced share step_size, so they should produce the same "
+            "vertex count; if they do not, marching cubes itself is nondeterministic "
+            "here and this test's premise does not hold")
+        assert len(f_faithful) == len(f_balanced), "faces should match too, same reason"
+
+        repeat_displacement = float(
+            np.linalg.norm(v_faithful - v_faithful_again, axis=1).mean())
+        displacement = float(np.linalg.norm(v_balanced - v_faithful, axis=1).mean())
+
+        assert repeat_displacement == 0.0, (
+            "volume_to_mesh should be deterministic for a fixed preset on a fixed "
+            "volume; the fixture or the smoothing is not, so this comparison is not "
+            "meaningful")
+        assert displacement > repeat_displacement, (
+            f"balanced (iterations=10) produced vertices no further from faithful "
+            f"(iterations=2) than two faithful runs are from each other (mean "
+            f"displacement {displacement:.6f}nm); this means volume_to_mesh is not "
+            f"actually using cfg['iterations']")
+
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

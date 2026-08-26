@@ -1,9 +1,9 @@
 """Turn a binary volume into a mesh a person can open in Blender.
 
-Pure geometry: numpy only, no project IO and no knowledge of chains, bundles or
-trees. Callers hand in vertices and faces and get vertices and faces back. Marching
-cubes, which turns a volume into that starting mesh, is built on top of this module
-in a later step; this module only smooths and writes.
+Pure geometry: numpy only, no project IO and no knowledge of chains, bundles, or
+trees. `volume_to_mesh` takes a binary volume, runs marching cubes to surface it,
+smooths the result with `taubin_smooth`, and returns vertices and faces. `write_ply`
+writes vertices and faces out to an ASCII PLY file.
 """
 from __future__ import annotations
 
