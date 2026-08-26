@@ -98,8 +98,22 @@ def neuron_volume(root, neuron: str, *, max_voxels: int = 400_000_000):
     blocks = []
     for _ci, cdir in _chain_dirs(root, neuron):
         for z, (mask, x0, y0) in pipeline.chain_masks_in_sam(cdir).items():
-            if mask.any():
-                blocks.append((int(z), np.asarray(mask, dtype=bool), int(x0), int(y0)))
+            mask = np.asarray(mask, dtype=bool)
+            ys, xs = np.nonzero(mask)
+            if len(xs) == 0:
+                continue
+            # Crop each mask to its own CONTENT before anything sizes a bbox from it.
+            # chain_masks_in_sam hands back a crop-sized array for a tier-2 `_pcrop`
+            # chain but a WHOLE-FRAME array at x0=y0=0 for a legacy `_sam` one, so
+            # measuring the array instead of the mask lets one legacy chain size the
+            # entire volume. Real case from the AUA bundle: AUAL/chain_00 carries an
+            # 84x183 blob on a 1154x1152 array, which pushed the volume to
+            # (336, 1152, 1154), 446 million voxels, past the memory budget, so the
+            # mesh was never produced at all.
+            iy0, iy1 = int(ys.min()), int(ys.max()) + 1
+            ix0, ix1 = int(xs.min()), int(xs.max()) + 1
+            blocks.append((int(z), mask[iy0:iy1, ix0:ix1],
+                           int(x0) + ix0, int(y0) + iy0))
     if not blocks:
         return np.zeros((0, 0, 0), dtype=np.uint8), SPACING_SAM8_NM
 

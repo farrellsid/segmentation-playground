@@ -180,5 +180,62 @@ class TestNeuronMesh:
         assert not (tmp_path / "x.ply").exists()
 
 
+class TestBboxUsesMaskContent:
+    """The bbox must come from where the mask's True pixels ARE, not from the array
+    holding them.
+
+    chain_masks_in_sam returns a crop-sized array for a tier-2 `_pcrop` chain but a
+    WHOLE-FRAME array at x0=y0=0 for a legacy `_sam` one. Sizing the volume from array
+    bounds therefore lets a single legacy chain drag the volume to the full frame.
+
+    Measured on the real AUA bundle: AUAL/chain_00 is legacy, its mask array is
+    1154x1152 while its actual content is 84x183, and it pushed the volume to
+    (336, 1152, 1154) = 446,681,088 voxels, over the memory budget, so the mesh was
+    never produced at all. This is the same mistake that was fixed in
+    experiments/report_assets._compute_window, recurring here.
+    """
+
+    def _legacy_and_crop_chains(self, tmp_path):
+        root = tmp_path / "tree"
+        (root / "_manifest.csv").parent.mkdir(parents=True, exist_ok=True)
+        (root / "_manifest.csv").write_text("neuron,chain_idx\n", encoding="utf-8")
+        placements = {}
+        for ci in (0, 1):
+            d = root / "AUAL" / f"chain_{ci:02d}"
+            (d / "masks").mkdir(parents=True)
+            (d / "state.json").write_text(json.dumps({"neuron": "AUAL", "chain_idx": ci}),
+                                          encoding="utf-8")
+        # chain 0: LEGACY, a whole-frame array at the origin holding a small blob
+        big = np.zeros((1152, 1154), dtype=bool)
+        big[500:520, 600:640] = True
+        placements[0] = {1600: (big, 0, 0)}
+        # chain 1: tier-2, a small array placed near the same blob
+        small = np.zeros((20, 20), dtype=bool)
+        small[5:15, 5:15] = True
+        placements[1] = {1601: (small, 610, 505)}
+        return root, placements
+
+    def test_a_legacy_whole_frame_array_does_not_size_the_volume(self, tmp_path,
+                                                                 monkeypatch):
+        root, placements = self._legacy_and_crop_chains(tmp_path)
+        _patch_masks(monkeypatch, placements)
+        vol, _spacing = render_review.neuron_volume(root, "AUAL")
+        assert vol.shape[1] < 200 and vol.shape[2] < 200, (
+            f"volume is {vol.shape}: the legacy chain's whole-frame array sized the "
+            f"bbox instead of its 20x40 of actual content")
+
+    def test_the_legacy_chain_content_is_still_present_and_placed(self, tmp_path,
+                                                                  monkeypatch):
+        """Shrinking the bbox must not drop or move the mask it was sized from."""
+        root, placements = self._legacy_and_crop_chains(tmp_path)
+        _patch_masks(monkeypatch, placements)
+        vol, _spacing = render_review.neuron_volume(root, "AUAL")
+        assert vol.sum() > 0
+        # both chains contribute, on their own z planes
+        assert vol.shape[0] == 2
+        assert vol[0].sum() == 20 * 40, "the legacy blob lost pixels"
+        assert vol[1].sum() == 10 * 10, "the tier-2 blob lost pixels"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
