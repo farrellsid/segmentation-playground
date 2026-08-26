@@ -343,25 +343,54 @@ def render_all(root, out_dir, neurons=None, *, video: bool = True, mesh: bool = 
     ``should_cancel`` is polled BETWEEN neurons, never during one. Stopping mid-write
     would leave a truncated GIF or a partial PLY, which is worse than no file because
     it looks like output.
+
+    ``progress``, when given, is called as ``progress(current, total, message)`` at
+    neuron granularity: once before a neuron's video and once before its mesh, with
+    ``current``/``total`` pinned to (how many neurons in, how many neurons total).
+    That pinned pair is the only thing that ever moves the caller's bar. It is fired
+    regardless of which outputs are enabled, which is what lets a mesh-only run
+    (``video=False``) still report progress: marching cubes has no incremental hook
+    of its own, so this is the only place that can say which neuron is being worked
+    on while it runs.
+
+    ``neuron_video`` keeps reporting its own per-frame progress, but on a frame-count
+    scale that has nothing to do with the neuron count above. Forwarding that
+    straight through would flip the bar's total on every single frame tick, which
+    reads as the bar jumping around rather than advancing. So it is not forwarded
+    directly: each frame tick is folded back into the neuron-pinned call, its
+    ``idx``/``total`` appended to the message text instead of driving ``current``.
+    The bar therefore advances once per neuron, and the message updates live under it.
     """
     if not video and not mesh:
         raise SystemExit("[render] nothing to do: both --no-video and --no-mesh given")
     root, out_dir = Path(root), Path(out_dir)
     source_kind(root)                       # refuse a bad source before any work
     wanted = list(neurons) if neurons else list_neurons(root)
+    n_total = len(wanted)
     out_dir.mkdir(parents=True, exist_ok=True)
     written, cancelled = [], False
-    for neuron in wanted:
+    for i, neuron in enumerate(wanted):
         if should_cancel and should_cancel():
             cancelled = True
             break
+
+        def _report(message, _i=i):
+            if progress:
+                progress(_i, n_total, message)
+
         if video:
             ext = "gif" if fmt == "gif" else "mp4"
+            _report(f"{neuron} ({i + 1}/{n_total}): video")
+
+            def _video_progress(idx, total, message, _report=_report):
+                _report(f"{message} [frame {idx}/{total}]")
+
             p = neuron_video(root, neuron, out_dir / f"{neuron}.{ext}", fmt=fmt,
-                             progress=progress)
+                             progress=_video_progress if progress else None)
             if p:
                 written.append(p)
         if mesh:
+            _report(f"{neuron} ({i + 1}/{n_total}): computing mesh")
             p = neuron_mesh(root, neuron, out_dir / f"{neuron}.ply", preset=preset)
             if p:
                 written.append(p)
