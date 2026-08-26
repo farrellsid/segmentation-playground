@@ -328,3 +328,64 @@ def _stamp(img_rgb: np.ndarray, text: str) -> None:
     for color, thickness in (((0, 0, 0), 3), ((255, 255, 255), 1)):
         cv2.putText(img_rgb, text, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                     color, thickness, cv2.LINE_AA)
+
+
+def list_neurons(root):
+    """Every neuron with at least one chain, bundle or tree alike."""
+    return sorted({r["cell_name"] for r in bundle_utils.index_chains(Path(root))})
+
+
+def render_all(root, out_dir, neurons=None, *, video: bool = True, mesh: bool = True,
+               fmt: str = "gif", preset: str = "faithful", progress=None,
+               should_cancel=None) -> dict:
+    """Render every requested neuron. Returns ``{"written": [...], "cancelled": bool}``.
+
+    ``should_cancel`` is polled BETWEEN neurons, never during one. Stopping mid-write
+    would leave a truncated GIF or a partial PLY, which is worse than no file because
+    it looks like output.
+    """
+    if not video and not mesh:
+        raise SystemExit("[render] nothing to do: both --no-video and --no-mesh given")
+    root, out_dir = Path(root), Path(out_dir)
+    source_kind(root)                       # refuse a bad source before any work
+    wanted = list(neurons) if neurons else list_neurons(root)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written, cancelled = [], False
+    for neuron in wanted:
+        if should_cancel and should_cancel():
+            cancelled = True
+            break
+        if video:
+            ext = "gif" if fmt == "gif" else "mp4"
+            p = neuron_video(root, neuron, out_dir / f"{neuron}.{ext}", fmt=fmt,
+                             progress=progress)
+            if p:
+                written.append(p)
+        if mesh:
+            p = neuron_mesh(root, neuron, out_dir / f"{neuron}.ply", preset=preset)
+            if p:
+                written.append(p)
+    print(f"[render] {len(written)} file(s) in {out_dir}"
+          + (" (cancelled)" if cancelled else ""))
+    return {"written": written, "cancelled": cancelled}
+
+
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--source", required=True, help="a review bundle or an output tree")
+    ap.add_argument("--out", required=True, help="directory for the rendered files")
+    ap.add_argument("--neurons", nargs="*", default=None, help="default: all of them")
+    ap.add_argument("--no-video", dest="video", action="store_false")
+    ap.add_argument("--no-mesh", dest="mesh", action="store_false")
+    ap.add_argument("--format", dest="fmt", choices=["gif", "mp4"], default="gif")
+    ap.add_argument("--detail", dest="preset", choices=sorted(meshing.PRESETS),
+                    default="faithful")
+    args = ap.parse_args(argv)
+    render_all(Path(args.source), Path(args.out), args.neurons, video=args.video,
+               mesh=args.mesh, fmt=args.fmt, preset=args.preset)
+
+
+if __name__ == "__main__":
+    main()
