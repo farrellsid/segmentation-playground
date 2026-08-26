@@ -150,7 +150,9 @@ class TestCli:
         assert seen["args"] == (root, out, None)
         assert seen["kwargs"]["video"] is True
         assert seen["kwargs"]["mesh"] is True
-        assert seen["kwargs"]["fmt"] == "gif"
+        assert seen["kwargs"]["fmt"] == "mp4", (
+            "mp4 is the default: these videos exist to find a bad slice among "
+            "hundreds, which needs pausing and scrubbing, and a GIF cannot")
         assert seen["kwargs"]["preset"] == "faithful"
 
     def test_every_flag_reaches_render_all_with_its_own_value(self, src, tmp_path, monkeypatch):

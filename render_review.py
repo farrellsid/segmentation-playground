@@ -252,12 +252,18 @@ def _chain_mask(chain_dir: Path, z, *, kind: str, frame_shape,
 
 
 #: A rendered video past this many bytes is awkward to hand to someone over Drive, so
-#: say so rather than letting them discover it at upload time. Measured: a 685 frame
-#: whole-neuron GIF at the full 900px canvas came out 415MB.
+#: say so rather than letting them discover it at upload time. Measured on one real
+#: neuron, 685 frames at the full 900px canvas: 415MB as a GIF, 132MB as mp4.
+#:
+#: mp4 is the default because these videos exist to find a bad slice among hundreds,
+#: which means pausing on it and stepping back a frame. Every desktop player scrubs an
+#: mp4; no GIF viewer does it well. The codec is mp4v (MPEG-4 Part 2), since this
+#: OpenCV build has no OpenH264, so it plays in QuickTime and VLC but is not reliable
+#: inside a browser tab. GIF stays available for that case.
 BIG_VIDEO_BYTES = 100 * 1024 * 1024
 
 
-def neuron_video(root, neuron: str, out_path, *, fmt: str = "gif", scale: int = 1,
+def neuron_video(root, neuron: str, out_path, *, fmt: str = "mp4", scale: int = 1,
                  progress=None):
     """One video for ``neuron``: every chain in z order, each in its own window, padded
     onto one canvas, captioned with chain and z so a problem is traceable back."""
@@ -341,9 +347,11 @@ def neuron_video(root, neuron: str, out_path, *, fmt: str = "gif", scale: int = 
     shutil.rmtree(tmp)
     size = out_path.stat().st_size
     print(f"[render] {neuron}: video {idx} frames, {size / 1048576:.0f} MB -> {out_path}")
-    if size > BIG_VIDEO_BYTES and fmt == "gif":
-        print("[render]   that is large for a GIF. --format mp4 is much smaller for a "
-              "long neuron, and --scale 2 halves each side if you want to stay on GIF.")
+    if size > BIG_VIDEO_BYTES:
+        extra = (" --format mp4 is about 3x smaller than gif and can be scrubbed."
+                 if fmt == "gif" else "")
+        print(f"[render]   that is large to hand over Drive.{extra} --scale 2 halves "
+              f"each side, which quarters the file.")
     return out_path
 
 
@@ -361,7 +369,7 @@ def list_neurons(root):
 
 
 def render_all(root, out_dir, neurons=None, *, video: bool = True, mesh: bool = True,
-               fmt: str = "gif", preset: str = "faithful", scale: int = 1,
+               fmt: str = "mp4", preset: str = "faithful", scale: int = 1,
                progress=None, should_cancel=None) -> dict:
     """Render every requested neuron. Returns ``{"written": [...], "cancelled": bool}``.
 
@@ -646,7 +654,8 @@ def main(argv=None):
     ap.add_argument("--neurons", nargs="*", default=None, help="default: all of them")
     ap.add_argument("--no-video", dest="video", action="store_false")
     ap.add_argument("--no-mesh", dest="mesh", action="store_false")
-    ap.add_argument("--format", dest="fmt", choices=["gif", "mp4"], default="gif")
+    ap.add_argument("--format", dest="fmt", choices=["mp4", "gif"], default="mp4",
+                    help="mp4 (default) can be paused and scrubbed; gif cannot")
     ap.add_argument("--detail", dest="preset", choices=sorted(meshing.PRESETS),
                     default="faithful")
     ap.add_argument("--scale", type=int, default=1,

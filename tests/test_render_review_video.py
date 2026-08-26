@@ -103,8 +103,14 @@ def _write_bundle_chain(root, neuron, chain_idx, *, crop_scale, canvas_hw,
 
 
 def _capture_writer(monkeypatch):
-    """Stand in for video_viz.to_gif so a test can inspect the exact `segments` dict
-    neuron_video built, instead of decoding a GIF back into pixels."""
+    """Stand in for the video writer so a test can inspect the exact `segments` dict
+    neuron_video built, instead of decoding a video back into pixels.
+
+    BOTH writers are patched on purpose. These tests are about scale, mask placement
+    and frame coverage, none of which depends on the container, so patching only the
+    one that happens to be the current default silently un-tests all of them the day
+    that default changes. It did: they broke the moment mp4 became the default.
+    """
     captured = {}
 
     def fake(segments, tmp, out_path, obj_id=None, preview_scale=1, color=None):
@@ -115,6 +121,7 @@ def _capture_writer(monkeypatch):
         return str(out_path)
 
     monkeypatch.setattr(render_review.video_viz, "to_gif", fake)
+    monkeypatch.setattr(render_review.video_viz, "to_mp4", fake)
     return captured
 
 
