@@ -149,6 +149,18 @@ def _summary_text(root: Path) -> str:
     return "\n".join(lines)
 
 
+def open_render_window(source: str, neurons) -> None:
+    """Hand the currently picked source and ticked neurons to the render window.
+
+    A named function rather than a closure inside `run()`, for the same reason
+    `build_launch_kwargs` is one: it can be tested without Qt or a display. The
+    reviewer picks a bundle once here, and the render window inherits that choice
+    instead of asking again.
+    """
+    import render_review
+    render_review.run(source=source, neurons=list(neurons or []))
+
+
 def run() -> None:
     """Open the launcher window, then hand off to the review GUI."""
     from qtpy.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
@@ -208,6 +220,8 @@ def run() -> None:
     layout.addWidget(status)
     launch_btn = QPushButton("Launch review")
     layout.addWidget(launch_btn)
+    render_btn = QPushButton("Render video + mesh")
+    layout.addWidget(render_btn)
 
     def refresh(*_):
         root = Path(path_edit.text().strip() or ".")
@@ -253,9 +267,13 @@ def run() -> None:
         win.close()
         gui.launch(**kwargs)
 
+    def do_render(*_):
+        open_render_window(path_edit.text().strip(), ticked())
+
     browse.clicked.connect(pick)
     path_edit.editingFinished.connect(refresh)
     launch_btn.clicked.connect(do_launch)
+    render_btn.clicked.connect(do_render)
     refresh()
 
     win.resize(640, 620)

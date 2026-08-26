@@ -399,12 +399,224 @@ def render_all(root, out_dir, neurons=None, *, video: bool = True, mesh: bool = 
     return {"written": written, "cancelled": cancelled}
 
 
+def render_defaults(profile) -> dict:
+    """Render settings out of a launcher profile.
+
+    They live under the profile's own ``render`` key so nothing the launcher already
+    stores can collide with them. An unrecognised preset or format falls back to the
+    default rather than raising, because a profile written by a newer version must not
+    break an older one, and a reviewer cannot be expected to hand-edit JSON to recover.
+    """
+    saved = (profile or {}).get("render") or {}
+    preset = saved.get("preset", "faithful")
+    if preset not in meshing.PRESETS:
+        preset = "faithful"
+    fmt = saved.get("fmt", "gif")
+    if fmt not in ("gif", "mp4"):
+        fmt = "gif"
+    return {
+        "out_dir": saved.get("out_dir", ""),
+        "video": bool(saved.get("video", True)),
+        "mesh": bool(saved.get("mesh", True)),
+        "fmt": fmt,
+        "preset": preset,
+    }
+
+
+#: Presets offered by what they are for, not by their code name. A reviewer choosing
+#: between "faithful" and "smooth" has to guess; choosing between "for review" and
+#: "for figures" does not.
+PRESET_LABELS = [("faithful", "faithful (for review)"),
+                 ("balanced", "balanced"),
+                 ("smooth", "smooth (for figures)")]
+
+
+def run(source: str = "", neurons=None) -> None:
+    """The render window, thin over render_all, in the same shape as launcher.run.
+
+    Rendering happens on a worker thread. It takes minutes, and a window that stops
+    repainting for minutes reads as a crash, which is the thing a progress bar exists
+    to prevent. Cancel sets a flag that ``render_all`` polls between neurons, so it
+    never truncates a file.
+    """
+    from qtpy.QtCore import QObject, QThread, Qt, Signal
+    from qtpy.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
+                                QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                                QListWidgetItem, QProgressBar, QPushButton,
+                                QVBoxLayout, QWidget)
+    import launcher as launcher_mod
+
+    profile = launcher_mod.load_profile()
+    d = render_defaults(profile)
+    app = QApplication.instance() or QApplication([])
+    win = QWidget()
+    win.setWindowTitle("Render video and mesh")
+    layout = QVBoxLayout(win)
+
+    src_row = QHBoxLayout()
+    src_edit = QLineEdit(source or profile.get("output_root", ""))
+    src_browse = QPushButton("Browse...")
+    src_row.addWidget(QLabel("Bundle or tree:"))
+    src_row.addWidget(src_edit, 1)
+    src_row.addWidget(src_browse)
+    layout.addLayout(src_row)
+
+    neuron_list = QListWidget()
+    neuron_list.setSelectionMode(QListWidget.NoSelection)
+    layout.addWidget(QLabel("Neurons (none ticked means all):"))
+    layout.addWidget(neuron_list, 1)
+
+    opts = QHBoxLayout()
+    video_cb = QCheckBox("Video")
+    video_cb.setChecked(d["video"])
+    fmt_combo = QComboBox()
+    for f in ("gif", "mp4"):
+        fmt_combo.addItem(f, f)
+    fmt_combo.setCurrentIndex(0 if d["fmt"] == "gif" else 1)
+    mesh_cb = QCheckBox("Mesh")
+    mesh_cb.setChecked(d["mesh"])
+    preset_combo = QComboBox()
+    for key, label in PRESET_LABELS:
+        preset_combo.addItem(label, key)
+    preset_combo.setCurrentIndex([k for k, _ in PRESET_LABELS].index(d["preset"]))
+    for w in (video_cb, fmt_combo, mesh_cb, QLabel("detail:"), preset_combo):
+        opts.addWidget(w)
+    layout.addLayout(opts)
+
+    out_row = QHBoxLayout()
+    out_edit = QLineEdit(d["out_dir"])
+    out_browse = QPushButton("Browse...")
+    out_row.addWidget(QLabel("Output to:"))
+    out_row.addWidget(out_edit, 1)
+    out_row.addWidget(out_browse)
+    layout.addLayout(out_row)
+
+    bar = QProgressBar()
+    status = QLabel("")
+    status.setWordWrap(True)
+    layout.addWidget(bar)
+    layout.addWidget(status)
+    go = QPushButton("Render")
+    cancel = QPushButton("Cancel")
+    cancel.setEnabled(False)
+    btns = QHBoxLayout()
+    btns.addWidget(go)
+    btns.addWidget(cancel)
+    layout.addLayout(btns)
+
+    flags = {"cancel": False}
+
+    class _Worker(QObject):
+        tick = Signal(int, int, str)
+        done = Signal(str)
+
+        def __init__(self, kwargs):
+            super().__init__()
+            self.kwargs = kwargs
+
+        def work(self):
+            try:
+                res = render_all(progress=lambda i, n, m: self.tick.emit(i, n, m),
+                                 should_cancel=lambda: flags["cancel"], **self.kwargs)
+                self.done.emit(f"{len(res['written'])} file(s) written"
+                               + (", cancelled" if res["cancelled"] else ""))
+            except BaseException as exc:          # surface it, never swallow it
+                self.done.emit(f"failed: {exc}")
+
+    def refresh(*_):
+        neuron_list.clear()
+        root = Path(src_edit.text().strip() or ".")
+        if not root.is_dir():
+            status.setText(f"Not a directory: {root}")
+            return
+        try:
+            names = list_neurons(root)
+        except SystemExit as exc:                 # source_kind refuses a bad root
+            status.setText(str(exc))
+            return
+        for name in names:
+            item = QListWidgetItem(name)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if (neurons and name in neurons)
+                               else Qt.Unchecked)
+            neuron_list.addItem(item)
+        status.setText(f"{len(names)} neuron(s)")
+
+    def ticked():
+        return [neuron_list.item(i).text() for i in range(neuron_list.count())
+                if neuron_list.item(i).checkState() == Qt.Checked]
+
+    def start(*_):
+        out = out_edit.text().strip()
+        if not out:
+            status.setText("Pick an output folder first")
+            return
+        if not video_cb.isChecked() and not mesh_cb.isChecked():
+            status.setText("Tick Video, Mesh, or both")
+            return
+        profile.setdefault("render", {}).update(
+            {"out_dir": out, "video": video_cb.isChecked(), "mesh": mesh_cb.isChecked(),
+             "fmt": fmt_combo.currentData(), "preset": preset_combo.currentData()})
+        launcher_mod.save_profile(profile)
+        flags["cancel"] = False
+        go.setEnabled(False)
+        cancel.setEnabled(True)
+        thread = QThread()
+        worker = _Worker(dict(root=Path(src_edit.text().strip()), out_dir=Path(out),
+                              neurons=ticked() or None, video=video_cb.isChecked(),
+                              mesh=mesh_cb.isChecked(), fmt=fmt_combo.currentData(),
+                              preset=preset_combo.currentData()))
+        # Held on the window on purpose. A QThread that goes out of scope is garbage
+        # collected mid-run and takes the render with it, silently.
+        win._thread, win._worker = thread, worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.work)
+        worker.tick.connect(lambda i, n, m: (bar.setMaximum(max(1, n)),
+                                             bar.setValue(i), status.setText(m)))
+
+        def finish(msg):
+            status.setText(msg)
+            bar.setValue(bar.maximum())
+            go.setEnabled(True)
+            cancel.setEnabled(False)
+            thread.quit()
+
+        worker.done.connect(finish)
+        thread.start()
+
+    def pick_src(*_):
+        chosen = QFileDialog.getExistingDirectory(
+            win, "Pick a bundle or tree", src_edit.text() or str(Path.home()))
+        if chosen:
+            src_edit.setText(chosen)
+            refresh()
+
+    def pick_out(*_):
+        chosen = QFileDialog.getExistingDirectory(
+            win, "Output folder", out_edit.text() or str(Path.home()))
+        if chosen:
+            out_edit.setText(chosen)
+
+    src_browse.clicked.connect(pick_src)
+    out_browse.clicked.connect(pick_out)
+    src_edit.editingFinished.connect(refresh)
+    go.clicked.connect(start)
+    cancel.clicked.connect(lambda: (flags.__setitem__("cancel", True),
+                                    status.setText("cancelling after this neuron...")))
+    refresh()
+    win.resize(640, 560)
+    win.show()
+    app.exec_()
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--source", required=True, help="a review bundle or an output tree")
-    ap.add_argument("--out", required=True, help="directory for the rendered files")
+    ap.add_argument("--gui", action="store_true",
+                    help="open the render window instead of rendering from these flags")
+    ap.add_argument("--source", help="a review bundle or an output tree")
+    ap.add_argument("--out", help="directory for the rendered files")
     ap.add_argument("--neurons", nargs="*", default=None, help="default: all of them")
     ap.add_argument("--no-video", dest="video", action="store_false")
     ap.add_argument("--no-mesh", dest="mesh", action="store_false")
@@ -412,6 +624,14 @@ def main(argv=None):
     ap.add_argument("--detail", dest="preset", choices=sorted(meshing.PRESETS),
                     default="faithful")
     args = ap.parse_args(argv)
+    if args.gui:
+        run(source=args.source or "", neurons=args.neurons)
+        return
+    # Required only for the non-GUI path, so --gui does not demand paths the window
+    # is about to ask for anyway.
+    missing = [f for f, v in (("--source", args.source), ("--out", args.out)) if not v]
+    if missing:
+        ap.error(f"{' and '.join(missing)} required unless --gui is given")
     render_all(Path(args.source), Path(args.out), args.neurons, video=args.video,
                mesh=args.mesh, fmt=args.fmt, preset=args.preset)
 
