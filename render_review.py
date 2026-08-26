@@ -263,6 +263,41 @@ def _chain_mask(chain_dir: Path, z, *, kind: str, frame_shape,
 BIG_VIDEO_BYTES = 100 * 1024 * 1024
 
 
+def mask_content_window(masks, frame_hw, *, pad_frac: float = 0.25,
+                       min_pad: int = 15):
+    """``(y0, x0, y1, x1)`` covering every mask's CONTENT, padded and clipped.
+
+    The window a chain was segmented in is sized for the segmenter, not for a person
+    watching. On a real neuron it is mostly context, so the mask ends up a small blob in
+    a large view, which wastes the frame and inflates the file at the same time.
+
+    The padding is proportional to the mask rather than a fixed number of pixels: a
+    fixed pad swamps a thin neurite in empty margin, which is exactly backwards from
+    what makes a small mask legible. ``min_pad`` is the floor so a few-pixel mask still
+    gets some context. Same rule experiments/report_assets uses for the reprop tours.
+
+    Masks with no content are ignored, and a chain with none of them keeps the whole
+    frame, since there is nothing to crop toward.
+    """
+    ys0, xs0, ys1, xs1 = [], [], [], []
+    for m in masks:
+        if m is None:
+            continue
+        ys, xs = np.nonzero(m)
+        if len(xs) == 0:
+            continue
+        ys0.append(int(ys.min())); ys1.append(int(ys.max()) + 1)
+        xs0.append(int(xs.min())); xs1.append(int(xs.max()) + 1)
+    if not xs0:
+        return 0, 0, int(frame_hw[0]), int(frame_hw[1])
+    y0, y1 = min(ys0), max(ys1)
+    x0, x1 = min(xs0), max(xs1)
+    ph = max(min_pad, int(round((y1 - y0) * pad_frac)))
+    pw = max(min_pad, int(round((x1 - x0) * pad_frac)))
+    return (max(0, y0 - ph), max(0, x0 - pw),
+            min(int(frame_hw[0]), y1 + ph), min(int(frame_hw[1]), x1 + pw))
+
+
 def neuron_video(root, neuron: str, out_path, *, fmt: str = "mp4", scale: int = 1,
                  progress=None):
     """One video for ``neuron``: every chain in z order, each in its own window, padded
@@ -290,7 +325,16 @@ def neuron_video(root, neuron: str, out_path, *, fmt: str = "mp4", scale: int = 
         # are the chain's own pre-cropped frames, already the same space as the
         # chain's own mask PNGs, so nothing needs remapping.
         masks_in_sam = pipeline.chain_masks_in_sam(cdir) if kind == "tree" else None
-        loaded.append((ci, cdir, state, frames, f2z, masks_in_sam))
+        # Resolve this chain's masks once, here, rather than once per frame below:
+        # the per-chain window has to see all of them before any frame is drawn, and
+        # reading them twice would double the disk work for a long chain.
+        chain_masks = {fi: _chain_mask(cdir, f2z.get(fi), kind=kind,
+                                       frame_shape=frames[fi].shape,
+                                       masks_in_sam=masks_in_sam)
+                       for fi in sorted(frames)}
+        first = frames[sorted(frames)[0]]
+        window = mask_content_window(chain_masks.values(), first.shape[:2])
+        loaded.append((ci, cdir, state, frames, f2z, chain_masks, window))
     if not loaded:
         print(f"[render] {neuron}: no masks, skipping video")
         return None
@@ -303,10 +347,10 @@ def neuron_video(root, neuron: str, out_path, *, fmt: str = "mp4", scale: int = 
     # past the detail it actually has.
     coarsest_scale = max(_crop_scale(t[2]) for t in loaded)
     sizes = []
-    for _ci, _cd, state, frames, _f2z, _masks in loaded:
+    for _ci, _cd, state, _frames, _f2z, _cmasks, window in loaded:
         s = _crop_scale(state) / coarsest_scale
-        for img in frames.values():
-            sizes.append((int(img.shape[0] * s), int(img.shape[1] * s)))
+        y0, x0, y1, x1 = window
+        sizes.append((int((y1 - y0) * s), int((x1 - x0) * s)))
     canvas = common_canvas(sizes)
 
     tmp = Path("scratch_render") / f"review_{neuron}"
@@ -316,11 +360,12 @@ def neuron_video(root, neuron: str, out_path, *, fmt: str = "mp4", scale: int = 
     tmp.mkdir(parents=True)
 
     segments, idx, total = {}, 0, sum(len(t[3]) for t in loaded)
-    for ci, cdir, state, frames, f2z, masks_in_sam in loaded:
+    for ci, cdir, state, frames, f2z, chain_masks, window in loaded:
         s = _crop_scale(state) / coarsest_scale
+        y0, x0, y1, x1 = window
         for fi in sorted(frames):
             z = f2z.get(fi)
-            img = fit_to_canvas(frames[fi], canvas, scale=s)
+            img = fit_to_canvas(frames[fi][y0:y1, x0:x1], canvas, scale=s)
             _stamp(img, f"chain_{ci:02d}  z={z}")
             cv2.imwrite(str(tmp / f"{idx:05d}.jpg"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
             # Always give this frame an entry, even an empty one: to_gif/to_mp4 only
@@ -328,9 +373,9 @@ def neuron_video(root, neuron: str, out_path, *, fmt: str = "mp4", scale: int = 
             # (rather than mapped to {}) would silently vanish from the video instead
             # of showing up as a chain with no mask at this z.
             segments[idx] = {}
-            mask = _chain_mask(cdir, z, kind=kind, frame_shape=frames[fi].shape,
-                               masks_in_sam=masks_in_sam)
+            mask = chain_masks.get(fi)
             if mask is not None:
+                mask = mask[y0:y1, x0:x1]
                 seg = fit_to_canvas(np.stack([mask.astype(np.uint8) * 255] * 3, -1),
                                     canvas, scale=s)
                 segments[idx] = {ci + 1: seg[..., 0] > 127}

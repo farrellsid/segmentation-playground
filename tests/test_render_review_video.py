@@ -211,14 +211,18 @@ class TestNeuronVideoMaskSpace:
             return full_frame.copy(), (2400, 3200)
 
         monkeypatch.setattr(render_review.pipeline, "load_frame_sam", fake_load)
-        captured = _capture_writer(monkeypatch)
 
-        out = render_review.neuron_video(root, neuron, tmp_path / "out.gif")
-        assert out is not None
-
-        segs = list(captured["segments"].values())
-        assert len(segs) == 1
-        mask = segs[0][1]
+        # Asserted against _chain_mask directly, in FULL frame coordinates, rather than
+        # through neuron_video. The video crops each chain to its own mask now, which
+        # legitimately moves those coordinates, so going through the whole pipeline
+        # would make this test fail every time the framing changes while saying nothing
+        # about the offset it exists to guard. _chain_mask is where the placement
+        # happens, so that is where it is checked.
+        masks_in_sam = render_review.pipeline.chain_masks_in_sam(d)
+        mask = render_review._chain_mask(d, 1500, kind="tree",
+                                         frame_shape=full_frame.shape,
+                                         masks_in_sam=masks_in_sam)
+        assert mask is not None
         assert mask.shape == (300, 400)
         # Inside the crop_window's remapped footprint: rows 10:40, cols 10:60.
         assert mask[15, 15], (
@@ -263,6 +267,84 @@ class TestNeuronVideoFrameCoverage:
         has_mask = [bool(seg) for seg in segments.values()]
         assert sum(has_mask) == 1, "exactly one frame has a mask"
         assert not all(has_mask), "the frame with no mask must map to an empty entry"
+
+
+def _multiframe_bundle_chain(root, neuron, chain_idx, *, canvas_hw, boxes,
+                             crop_scale=1, z0=1500):
+    """A bundle chain of several frames, each carrying one filled square at the given
+    (y, x). `boxes` is one (y, x, size) per frame, so a test can move the mask down the
+    chain and check the window still covers every frame of it."""
+    d = root / neuron / f"chain_{chain_idx:02d}"
+    (d / "frames").mkdir(parents=True)
+    (d / "masks").mkdir(parents=True)
+    h, w = canvas_hw
+    for i, (y, x, size) in enumerate(boxes):
+        cv2.imwrite(str(d / "frames" / f"{i:05d}.jpg"),
+                    np.full((h, w, 3), 80, dtype=np.uint8))
+        m = np.zeros((h, w), dtype=np.uint8)
+        m[y:y + size, x:x + size] = 255
+        cv2.imwrite(str(d / "masks" / f"mask_{z0 + i:04d}.png"), m)
+    state = {"neuron": neuron, "chain_idx": chain_idx,
+             "frame_to_z": {str(i): z0 + i for i in range(len(boxes))},
+             "crop_window": {"crop_scale": crop_scale}}
+    (d / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    return d
+
+
+class TestChainCroppedToItsMask:
+    """A chain is shown cropped to its own MASK, not to its whole pipeline crop.
+
+    The crop a chain was segmented in is sized for the segmenter, not for a person
+    watching it. On a real neuron it is mostly context: a dumped frame from AUAL showed
+    the mask as a small blob inside a large EM view with black padding around it. That
+    wastes the frame twice, once by making the thing under review small and once by
+    making the file large, and shrinking the video to fix the size then makes the mask
+    too small to judge.
+
+    Cropping to the mask plus proportional padding fixes both at once, and is the same
+    rule experiments/report_assets already uses for the reprop tours.
+
+    The window is per chain and static within it, never per frame, so the picture does
+    not drift under the viewer while they are reading it.
+    """
+
+    def _render(self, tmp_path, monkeypatch, boxes, canvas_hw=(600, 600)):
+        root = tmp_path / "b"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "bundle.json").write_text("{}", encoding="utf-8")
+        _multiframe_bundle_chain(root, "AIBL", 0, canvas_hw=canvas_hw, boxes=boxes)
+        cap = _capture_writer(monkeypatch)
+        render_review.neuron_video(root, "AIBL", tmp_path / "out.mp4")
+        return cap["segments"]
+
+    def test_the_window_follows_the_mask_not_the_frame(self, tmp_path, monkeypatch):
+        seg = self._render(tmp_path, monkeypatch,
+                           [(300, 320, 40), (300, 320, 40), (300, 320, 40)])
+        present = [v for v in seg.values() if v]
+        assert present, "the mask never reached the video"
+        canvas = next(iter(present[0].values())).shape
+        assert max(canvas) < 300, (
+            f"canvas is {canvas}: it followed the 600x600 frame instead of cropping to "
+            f"the 40x40 mask")
+
+    def test_the_mask_is_a_real_fraction_of_the_frame(self, tmp_path, monkeypatch):
+        """The point of the crop: the thing under review must be big enough to judge."""
+        seg = self._render(tmp_path, monkeypatch, [(300, 320, 40), (300, 320, 40)])
+        mask = next(iter(next(v for v in seg.values() if v).values()))
+        frac = mask.sum() / mask.size
+        assert frac > 0.05, (
+            f"mask covers {frac:.1%} of the frame; uncropped it is 40*40/600/600 = "
+            f"0.4%, which is what made scaling the video down unusable")
+
+    def test_the_window_covers_the_mask_across_every_frame(self, tmp_path, monkeypatch):
+        """Static per chain, so the window must be the union over that chain's frames.
+        One sized from a single frame would clip the mask on the others."""
+        seg = self._render(tmp_path, monkeypatch,
+                           [(100, 100, 30), (300, 300, 30), (450, 450, 30)])
+        present = [v for v in seg.values() if v]
+        assert len(present) == 3, "a frame lost its mask, so the window clipped it"
+        for v in present:
+            assert next(iter(v.values())).sum() > 0
 
 
 if __name__ == "__main__":
