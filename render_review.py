@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pipeline
 from sam2_utils import bundle as bundle_utils
 from sam2_utils import meshing
+from sam2_utils import video_viz
 
 
 def source_kind(root) -> str:
@@ -163,8 +164,6 @@ def neuron_mesh(root, neuron: str, out_path, *, preset: str = "faithful",
     return out
 
 
-from sam2_utils import video_viz
-
 #: Largest canvas edge, in _sam px, before one chain is treated as an outlier. The
 #: merged reprop render is the cautionary case: a single legacy chain whose window
 #: covered the whole frame dragged every frame to full-frame size and the masks fell to
@@ -252,7 +251,14 @@ def _chain_mask(chain_dir: Path, z, *, kind: str, frame_shape,
     return out
 
 
-def neuron_video(root, neuron: str, out_path, *, fmt: str = "gif", progress=None):
+#: A rendered video past this many bytes is awkward to hand to someone over Drive, so
+#: say so rather than letting them discover it at upload time. Measured: a 685 frame
+#: whole-neuron GIF at the full 900px canvas came out 415MB.
+BIG_VIDEO_BYTES = 100 * 1024 * 1024
+
+
+def neuron_video(root, neuron: str, out_path, *, fmt: str = "gif", scale: int = 1,
+                 progress=None):
     """One video for ``neuron``: every chain in z order, each in its own window, padded
     onto one canvas, captioned with chain and z so a problem is traceable back."""
     import json
@@ -329,10 +335,15 @@ def neuron_video(root, neuron: str, out_path, *, fmt: str = "gif", progress=None
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     writer = video_viz.to_gif if fmt == "gif" else video_viz.to_mp4
-    writer(segments, tmp, out_path, obj_id=None, preview_scale=1, color=None)
+    writer(segments, tmp, out_path, obj_id=None, preview_scale=max(1, int(scale)),
+           color=None)
     import shutil
     shutil.rmtree(tmp)
-    print(f"[render] {neuron}: video {idx} frames -> {out_path}")
+    size = out_path.stat().st_size
+    print(f"[render] {neuron}: video {idx} frames, {size / 1048576:.0f} MB -> {out_path}")
+    if size > BIG_VIDEO_BYTES and fmt == "gif":
+        print("[render]   that is large for a GIF. --format mp4 is much smaller for a "
+              "long neuron, and --scale 2 halves each side if you want to stay on GIF.")
     return out_path
 
 
@@ -350,8 +361,8 @@ def list_neurons(root):
 
 
 def render_all(root, out_dir, neurons=None, *, video: bool = True, mesh: bool = True,
-               fmt: str = "gif", preset: str = "faithful", progress=None,
-               should_cancel=None) -> dict:
+               fmt: str = "gif", preset: str = "faithful", scale: int = 1,
+               progress=None, should_cancel=None) -> dict:
     """Render every requested neuron. Returns ``{"written": [...], "cancelled": bool}``.
 
     ``should_cancel`` is polled BETWEEN neurons, never during one. Stopping mid-write
@@ -400,6 +411,7 @@ def render_all(root, out_dir, neurons=None, *, video: bool = True, mesh: bool = 
                 _report(f"{message} [frame {idx}/{total}]")
 
             p = neuron_video(root, neuron, out_dir / f"{neuron}.{ext}", fmt=fmt,
+                             scale=scale,
                              progress=_video_progress if progress else None)
             if p:
                 written.append(p)
@@ -637,6 +649,8 @@ def main(argv=None):
     ap.add_argument("--format", dest="fmt", choices=["gif", "mp4"], default="gif")
     ap.add_argument("--detail", dest="preset", choices=sorted(meshing.PRESETS),
                     default="faithful")
+    ap.add_argument("--scale", type=int, default=1,
+                    help="integer downscale for the video only, 2 halves each side")
     args = ap.parse_args(argv)
     if args.gui:
         run(source=args.source or "", neurons=args.neurons)
@@ -647,7 +661,7 @@ def main(argv=None):
     if missing:
         ap.error(f"{' and '.join(missing)} required unless --gui is given")
     render_all(Path(args.source), Path(args.out), args.neurons, video=args.video,
-               mesh=args.mesh, fmt=args.fmt, preset=args.preset)
+               mesh=args.mesh, fmt=args.fmt, preset=args.preset, scale=args.scale)
 
 
 if __name__ == "__main__":
