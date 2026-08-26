@@ -1,11 +1,15 @@
 """Render a reviewed neuron as a video and as a Blender-ready mesh.
 
 Runs against a review bundle or an output tree. Both are laid out
-``<neuron>/chain_NN/state.json``, so `bundle.index_chains` indexes either and
-`pipeline.chain_masks_in_sam` reads masks from either. They differ in exactly one way
-that matters here: a bundle carries its own per-chain ``frames/`` while a tree expects
-the EM store. That difference lives in `chain_frames` and nowhere else, which is what
-lets this run on a reviewer's laptop with no EM store and no torch.
+``<neuron>/chain_NN/state.json``, so `bundle.index_chains` indexes either. They differ
+in two places that matter here. EM: a bundle carries its own per-chain ``frames/``
+while a tree expects the EM store, handled in `chain_frames` and nowhere else, which is
+what lets this run on a reviewer's laptop with no EM store and no torch. And mask
+space: a bundle's chain frames are the chain's own pre-cropped frames, so the chain's
+own mask PNG already matches them pixel for pixel, while a tree's chain frames are the
+FULL scale-8 `_sam` frame, so a tier-2 chain's mask (saved in its own smaller `_pcrop`
+crop space) has to be remapped and placed via `pipeline.chain_masks_in_sam` instead of
+read directly. `neuron_video` picks between the two with `source_kind`.
 
     py -3 render_review.py --source ~/mask-review/AIB --out AIB/review
     py -3 render_review.py --gui
@@ -191,25 +195,47 @@ def _crop_scale(state: dict) -> int:
     return int(cw.get("crop_scale") or 1)
 
 
-def _chain_mask(chain_dir: Path, z) -> np.ndarray | None:
-    """Read one chain's own saved mask for ``z``, or None if it has none.
+def _chain_mask(chain_dir: Path, z, *, kind: str, frame_shape,
+                masks_in_sam: dict | None = None) -> np.ndarray | None:
+    """One chain's mask for ``z``, in the same pixel space `chain_frames` returned
+    for this ``kind``, or None if it has none.
 
-    Deliberately NOT `pipeline.chain_masks_in_sam`: that remaps onto the shared
-    scale-8 _sam grid for cross-chain aggregation (Task 4's volume), which is a
-    different pixel size from the chain's own frames whenever crop_scale != 8. For
-    display the chain's own mask PNG is already in the same space and the same pixel
-    dimensions as the chain's own frames (verified on AIBL/chain_00: frame and mask
-    both 1096x1208 at crop_scale 2), so no offset arithmetic is needed here at all.
+    bundle: `chain_frames` returns the chain's own pre-cropped frames, and the
+    chain's own mask PNG is already the same space and the same pixel dimensions
+    (verified on AIBL/chain_00: frame and mask both 1096x1208 at crop_scale 2), so
+    it is read directly with no offset arithmetic.
+
+    tree: `chain_frames` returns the FULL scale-8 _sam frame, but a tier-2 chain's
+    mask is saved in its own smaller _pcrop crop space. Reading the mask PNG
+    directly here and pasting it at (0, 0) would draw it in the wrong place on a
+    tree, which is why for a tree this instead reads ``masks_in_sam`` (one
+    `pipeline.chain_masks_in_sam(chain_dir)` call per chain, passed in so it is not
+    redone per frame): that already remapped the mask onto the shared scale-8 grid
+    and carries the (x0, y0) placement to paste it at inside a ``frame_shape``
+    canvas.
     """
     if z is None:
         return None
-    p = Path(chain_dir) / "masks" / f"mask_{int(z):04d}.png"
-    if not p.exists():
+    if kind == "bundle":
+        p = Path(chain_dir) / "masks" / f"mask_{int(z):04d}.png"
+        if not p.exists():
+            return None
+        m = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+        if m is None:
+            return None
+        return m > 127
+
+    entry = (masks_in_sam or {}).get(int(z))
+    if entry is None:
         return None
-    m = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
-    if m is None:
-        return None
-    return m > 127
+    m, x0, y0 = entry
+    fh, fw = int(frame_shape[0]), int(frame_shape[1])
+    out = np.zeros((fh, fw), dtype=bool)
+    h, w = m.shape[:2]
+    y1, x1 = min(fh, y0 + h), min(fw, x0 + w)
+    if y1 > y0 and x1 > x0:
+        out[y0:y1, x0:x1] = m[: y1 - y0, : x1 - x0]
+    return out
 
 
 def neuron_video(root, neuron: str, out_path, *, fmt: str = "gif", progress=None):
@@ -231,16 +257,28 @@ def neuron_video(root, neuron: str, out_path, *, fmt: str = "gif", progress=None
         state = json.loads((cdir / "state.json").read_text(encoding="utf-8"))
         frames = chain_frames(cdir, state, kind)
         f2z = {int(k): int(v) for k, v in (state.get("frame_to_z") or {}).items()}
-        loaded.append((ci, cdir, state, frames, f2z))
+        # A tree keeps a tier-2 chain's mask in its own _pcrop crop space, a
+        # different pixel size and offset from the full _sam frame chain_frames
+        # returned above; chain_masks_in_sam remaps it onto that shared grid, once
+        # per chain here rather than once per frame below. A bundle's chain frames
+        # are the chain's own pre-cropped frames, already the same space as the
+        # chain's own mask PNGs, so nothing needs remapping.
+        masks_in_sam = pipeline.chain_masks_in_sam(cdir) if kind == "tree" else None
+        loaded.append((ci, cdir, state, frames, f2z, masks_in_sam))
     if not loaded:
         print(f"[render] {neuron}: no masks, skipping video")
         return None
 
     loaded.sort(key=lambda t: min(t[4].values()) if t[4] else 0)
-    finest = min(_crop_scale(t[2]) for t in loaded)
+    # crop_scale is the downscale applied when a chain's crop is read, so a LARGER
+    # crop_scale means each of its pixels covers MORE physical area: a coarser
+    # chain. Normalising to the coarsest chain present (the largest crop_scale)
+    # means every other chain only ever gets shrunk to match it, never enlarged
+    # past the detail it actually has.
+    coarsest_scale = max(_crop_scale(t[2]) for t in loaded)
     sizes = []
-    for _ci, _cd, state, frames, _f2z in loaded:
-        s = finest / _crop_scale(state)
+    for _ci, _cd, state, frames, _f2z, _masks in loaded:
+        s = _crop_scale(state) / coarsest_scale
         for img in frames.values():
             sizes.append((int(img.shape[0] * s), int(img.shape[1] * s)))
     canvas = common_canvas(sizes)
@@ -252,8 +290,8 @@ def neuron_video(root, neuron: str, out_path, *, fmt: str = "gif", progress=None
     tmp.mkdir(parents=True)
 
     segments, idx, total = {}, 0, sum(len(t[3]) for t in loaded)
-    for ci, cdir, state, frames, f2z in loaded:
-        s = finest / _crop_scale(state)
+    for ci, cdir, state, frames, f2z, masks_in_sam in loaded:
+        s = _crop_scale(state) / coarsest_scale
         for fi in sorted(frames):
             z = f2z.get(fi)
             img = fit_to_canvas(frames[fi], canvas, scale=s)
@@ -264,7 +302,8 @@ def neuron_video(root, neuron: str, out_path, *, fmt: str = "gif", progress=None
             # (rather than mapped to {}) would silently vanish from the video instead
             # of showing up as a chain with no mask at this z.
             segments[idx] = {}
-            mask = _chain_mask(cdir, z)
+            mask = _chain_mask(cdir, z, kind=kind, frame_shape=frames[fi].shape,
+                               masks_in_sam=masks_in_sam)
             if mask is not None:
                 seg = fit_to_canvas(np.stack([mask.astype(np.uint8) * 255] * 3, -1),
                                     canvas, scale=s)
