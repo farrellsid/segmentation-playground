@@ -74,7 +74,7 @@ def write_ply(path, verts: np.ndarray, faces: np.ndarray) -> Path:
               f"element vertex {len(verts)}",
               "property float x", "property float y", "property float z",
               f"element face {len(faces)}",
-              "property list uchar int vertex_index",
+              "property list uchar int vertex_indices",
               "end_header"]
     lines = header
     lines += [f"{x:.4f} {y:.4f} {z:.4f}" for x, y, z in verts]

@@ -88,6 +88,7 @@ class TestWritePly:
         assert text[0] == "ply"
         assert f"element vertex {len(v)}" in text
         assert f"element face {len(f)}" in text
+        assert "property list uchar int vertex_indices" in text
         body = text[text.index("end_header") + 1:]
         assert len(body) == len(v) + len(f)
         assert body[len(v)].split()[0] == "3", "faces must be written as triangles"
