@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-26, the GUI re-predict now gets the cleanup the batch already had](#r-2026-08-26-gui-image-cleanup)
 - [2026-08-26, a video and a Blender mesh from a corrected bundle](#r-2026-08-26-review-render)
 - [2026-08-25, GUI recrop silently threw away the window the reviewer drew](#r-2026-08-25-gui-recrop-fallback)
 - [2026-08-24, why 15 reprop chains died on Narval: a Windows path, a relative symlink, and a silent dangling link](#r-2026-08-24-legacy-sam-dangling-links)
@@ -58,6 +59,42 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-08-26-gui-image-cleanup"></a>
+## 2026-08-26, the GUI re-predict now gets the cleanup the batch already had
+
+Re-running the image phase in the GUI wrote SAM2's raw mask straight into the layer. On an EM
+frame that mask carries detached fuzz outside the cell and a frayed boundary, and the reviewer
+had to paint all of it away by hand.
+
+The fix needed no new algorithm. `pipeline.postprocess_mask` and the three size-aware ops beside
+it have handled exactly this for the batch since the postproc A/B, and the orchestrator ran them
+as an inline sequence that nothing else could reach. That sequence is now `pipeline.clean_mask`,
+the orchestrator calls it, and so does the GUI, so the preview a human corrects matches what a
+batch run would have delivered instead of being dirtier than it.
+
+The dock gets one dropdown and two spin boxes. **drop specks**, the default, keeps every
+component at or above the island floor, which matters because a genuine second cross-section of
+the cell is common and `keep_largest_cc` would silently erase it. That aggressive option is still
+there as **largest blob only** for a re-predict that bled onto a neighbour, and the docs say what
+it costs. Neither level fills large cavities.
+
+The two sizes are knobs rather than constants because they are in pixels of the displayed frame,
+and a tier-2 `_pcrop` chain is finer than a scale-8 `_sam` one, so the same physical size is a
+different pixel count. The defaults, 64 px islands and a 1 px smooth, are sized for scale-8. This
+is the same unit trap as the render nm-per-pixel inversion, one level down.
+
+Only the preview is cleaned. Propagated masks, painted pixels, and anything on disk are
+untouched, and the log line after each `R` reports the pixel count before and after so the
+cleanup is never invisible.
+
+**Measured on real masks before shipping the defaults.** Over 91 masks sampled across the AIA
+review bundle, 21 were multi-component and the default settings collapsed nearly all of them to
+one blob while changing area by a median of 0.00 percent. No mask was ever emptied. The worst
+case, minus 20 percent, is a 176 px mask losing a detached 33 px fragment, which is the island
+floor doing its job; the 1 px smooth on that same tiny mask cost 3 px. So the defaults are
+conservative on masks that are already clean, which is the property that matters for a control
+that is on by default.
 
 <a id="r-2026-08-26-review-render"></a>
 ## 2026-08-26, a video and a Blender mesh from a corrected bundle

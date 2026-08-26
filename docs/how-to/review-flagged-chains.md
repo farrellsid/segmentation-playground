@@ -148,7 +148,7 @@ never re-tracked:
    neighbours; select and delete bad points. (**Reset prompts** restores the original
    seed, §5e.)
 3. **Re-run image phase** (`R`), re-predicts the anchor mask from your points into the
-   **mask** layer. Tweak it by painting if needed.
+   **mask** layer. What comes back is cleaned up first (§5h). Tweak it by painting if needed.
    - *Optional box.* If points alone won't capture the neurite's full extent, press
      `B` (or "draw box") and drag a box around it, then `R`. The box and any points go
      into SAM2 together (box-only works too). The box shapes only this image-phase
@@ -202,6 +202,30 @@ While walking frames, **mark FRAME wrong** (`W`) / **mark FRAME ok** (`O`) recor
 per-frame verdict for the current frame using the selected error type. Marking a
 *non-flagged* frame wrong is especially valuable, it's a "silent error" the rule
 missed, which the queue alone can never surface.
+
+### 5h. Clean up what the re-predict returns
+SAM2's raw image-mode mask on an EM frame usually arrives with detached fuzz sitting
+outside the cell and a frayed, netty boundary. **clean re-predict** decides what happens
+to that before the mask lands in the layer, and it only ever touches the `R` preview:
+propagated masks, painted pixels, and anything already on disk are left alone.
+
+- **drop specks** (the default) removes detached components below **min island (px)** and
+  keeps every larger one, so a genuine second cross-section of the cell survives. It also
+  fills interior holes below the same size and smooths the boundary by **smooth (px)**.
+- **largest blob only** additionally keeps a single component. Reach for it when the
+  re-predict bled onto a neighbouring cell, and remember it will erase a real second
+  process without saying so.
+- **off (raw SAM2)** hands you the mask exactly as the model returned it.
+
+Both sizes are in pixels of the frame you are looking at, which is why they are knobs
+rather than fixed numbers: a tier-2 `_pcrop` chain is finer than a scale-8 `_sam` one and
+wants larger values for the same physical size. The defaults, 64 px and 1 px, are sized
+for scale-8. Set either to 0 to turn that one op off. The log line after each `R` reports
+the pixels before and after, so you can see what the cleanup took.
+
+This is the same deterministic, model-free sequence the batch runs when
+`postprocess_masks` is on (`pipeline.clean_mask`), so the preview you correct matches what
+a batch run would have delivered.
 
 ---
 

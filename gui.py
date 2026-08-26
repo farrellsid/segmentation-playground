@@ -160,6 +160,45 @@ def keys_for_mode(mode: str) -> frozenset:
         raise ValueError(f"unknown UI mode {mode!r}; expected one of {UI_MODES}")
     return ALL_KEYS if mode == UI_MODE_FULL else ALL_KEYS - MODEL_KEYS
 
+# Cleanup of the image-phase re-predict. SAM2's raw mask on an EM frame comes back
+# with detached specks and fuzz outside the cell and a frayed, netty boundary; the batch
+# already has a deterministic model-free fix for exactly that (pipeline.clean_mask), which
+# the GUI never applied, so a human previewing a correction saw a dirtier mask than the
+# batch would have delivered. These levels name what the reviewer wants done, and the two
+# sizes stay adjustable because they are in pixels of the displayed frame: a _pcrop chain
+# at a finer crop_scale wants larger numbers than a scale-8 _sam one.
+CLEANUP_OFF = "off (raw SAM2)"
+CLEANUP_SPECKS = "drop specks"
+CLEANUP_LARGEST = "largest blob only"
+CLEANUP_LEVELS = [CLEANUP_OFF, CLEANUP_SPECKS, CLEANUP_LARGEST]
+#: Defaults for a scale-8 _sam frame: 64 px is well under a neurite cross-section, and a
+#: 1 px close-then-open shaves the fray without eroding a thin process.
+CLEANUP_MIN_ISLAND_PX = 64
+CLEANUP_SMOOTH_RADIUS = 1
+
+
+def image_cleanup_kwargs(level: str, *, min_island_px: int = CLEANUP_MIN_ISLAND_PX,
+                         smooth_radius: int = CLEANUP_SMOOTH_RADIUS) -> Optional[dict]:
+    """Keyword arguments for ``pipeline.clean_mask``, or None when cleanup is off.
+
+    ``CLEANUP_SPECKS`` keeps every component at or above ``min_island_px``, so a genuine
+    second cross-section of the cell survives while detached fuzz goes; ``CLEANUP_LARGEST``
+    keeps one component, which is right when the re-predict bled onto a neighbour but WILL
+    erase a real second process. Neither fills large cavities. Pure, so it unit-tests
+    without a viewer.
+    """
+    if level == CLEANUP_OFF:
+        return None
+    if level not in CLEANUP_LEVELS:
+        raise ValueError(f"unknown cleanup level {level!r}; expected one of {CLEANUP_LEVELS}")
+    return dict(open_px=1, close_px=1,
+                keep_largest_cc=(level == CLEANUP_LARGEST),
+                fill_holes=False,
+                remove_islands_min_size=max(0, int(min_island_px)),
+                fill_small_holes_area=max(0, int(min_island_px)),
+                smooth_radius=max(0, int(smooth_radius)))
+
+
 # Box-prompt geometry: convert between an xyxy box (the pipeline.Prompts.box_sam
 # format) and a napari Shapes rectangle's (N, 3) vertices in (t, y, x). Pure and
 # torch/napari-free so they unit-test without a GPU or a viewer.
@@ -1052,13 +1091,43 @@ class ReviewGUI:
         em_sam = self._frame_image_sam(frame_idx)              # (H, W, 3) RGB uint8
         mask, score, _ = pipeline.image_predict(self.ctx.image_predictor, em_sam, prompts)
         self.ctx.image_predictor.reset_predictor()
+        mask, clean_desc = self._clean_predicted(mask)
         self._set_frame_mask(frame_idx, mask)                  # into the mask layer + segments
         seed = (f"{int((prompts.labels == 1).sum())}+/{int((prompts.labels == 0).sum())}- pts"
                 + ("" if prompts.box_sam is None else " + box"))
         print(f"[gui] re-predicted frame {frame_idx} ({seed}): {int(mask.sum())} px, "
-              f"score {score:.3f}, tweak by painting if needed, then 'resume propagation'")
+              f"score {score:.3f}{clean_desc}, tweak by painting if needed, "
+              "then 'resume propagation'")
         self._zoom_to_mask(frame_idx)
         self._refresh_info()
+
+    def _clean_predicted(self, mask):
+        """Post-process a freshly re-predicted mask per the dock's cleanup setting.
+
+        Returns ``(mask, description)``, the description being a printable summary of what
+        cleanup did (empty when it is off), so the reviewer can see in the log whether the
+        mask they are looking at was trimmed and by how much. Only the *preview* is cleaned:
+        the reviewer still paints over the result, and it is the mask layer, not this
+        return value, that seeds the propagation.
+        """
+        def _setting(name, default):
+            # The dock is built in both UI modes, but read defensively: a missing widget
+            # must mean "leave the mask alone", never a silent transformation.
+            return getattr(getattr(self, name, None), "value", default)
+
+        level = _setting("_clean_mode", CLEANUP_OFF)
+        kwargs = image_cleanup_kwargs(
+            level,
+            min_island_px=int(_setting("_clean_island_spin", CLEANUP_MIN_ISLAND_PX)),
+            smooth_radius=int(_setting("_clean_smooth_spin", CLEANUP_SMOOTH_RADIUS)))
+        if kwargs is None:
+            return np.asarray(mask), ""
+        before = int(np.asarray(mask).sum())
+        cleaned = pipeline.clean_mask(mask, **kwargs)
+        after = int(cleaned.sum())
+        return cleaned, (f", cleaned {before}->{after} px "
+                         f"({level}, island<{kwargs['remove_islands_min_size']}, "
+                         f"smooth {kwargs['smooth_radius']})")
 
     def resume_propagation(self, *_) -> None:
         """Re-propagate from the CURRENT frame over a PropagationSession, seeding with
@@ -1592,6 +1661,16 @@ class ReviewGUI:
         resume = PushButton(text="resume propagation (G)")
         resume.changed.connect(self.resume_propagation)
 
+        # cleanup of what the re-predict returns (see image_cleanup_kwargs). Sizes are in
+        # displayed-frame px, so they are knobs rather than constants: a tier-2 _pcrop chain
+        # is finer than scale-8 _sam and wants larger ones.
+        self._clean_mode = ComboBox(label="clean re-predict", choices=CLEANUP_LEVELS,
+                                    value=CLEANUP_SPECKS)
+        self._clean_island_spin = SpinBox(label="min island (px)", value=CLEANUP_MIN_ISLAND_PX,
+                                          min=0, max=100000, step=16)
+        self._clean_smooth_spin = SpinBox(label="smooth (px)", value=CLEANUP_SMOOTH_RADIUS,
+                                          min=0, max=16, step=1)
+
         # tier-2 recrop: grow this chain's crop window by N _tif px/side and re-run it
         # (for a window that auto-sized too small). Only meaningful on a tier-2 chain.
         self._grow_spin = SpinBox(label="grow crop (tif px)", value=512, min=0, max=8192, step=64)
@@ -1607,6 +1686,7 @@ class ReviewGUI:
 
         return [Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
                 Label(value=", correct, "), rerun, resume,
+                self._clean_mode, self._clean_island_spin, self._clean_smooth_spin,
                 Label(value=", recrop, "), self._grow_spin, recrop,
                 pick_region, confirm_recrop, cancel_recrop]
 

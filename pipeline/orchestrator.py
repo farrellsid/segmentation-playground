@@ -18,13 +18,7 @@ from .crop import (
     _prior_queued_z,
 )
 from .frames import FrameStore, TifFrameStore, load_frame_sam
-from .masks import (
-    fill_small_holes,
-    postprocess_mask,
-    remove_small_islands,
-    save_masks,
-    smooth_edges,
-)
+from .masks import clean_mask, save_masks
 from .predict import (
     anchor_crop_predict,
     box_from_mask,
@@ -386,20 +380,16 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         n_changed = 0
         for seg in video_segments.values():
             if state.obj_id in seg:
-                cleaned = postprocess_mask(
+                # open/close/cc/fill, then the size-aware ops (each off at 0). Shared
+                # with the GUI's image-phase re-predict so both apply the same sequence.
+                cleaned = clean_mask(
                     seg[state.obj_id],
                     open_px=cfg.postproc_open_px, close_px=cfg.postproc_close_px,
                     keep_largest_cc=cfg.postproc_keep_largest_cc,
-                    fill_holes=cfg.postproc_fill_holes)
-                # size-aware ops (each off at 0); after the open/close/cc/fill above
-                if cfg.postproc_remove_islands_min_size > 0:
-                    cleaned = remove_small_islands(
-                        cleaned, min_size=cfg.postproc_remove_islands_min_size)
-                if cfg.postproc_fill_small_holes_area > 0:
-                    cleaned = fill_small_holes(
-                        cleaned, area_threshold=cfg.postproc_fill_small_holes_area)
-                if cfg.postproc_smooth_radius > 0:
-                    cleaned = smooth_edges(cleaned, radius=cfg.postproc_smooth_radius)
+                    fill_holes=cfg.postproc_fill_holes,
+                    remove_islands_min_size=cfg.postproc_remove_islands_min_size,
+                    fill_small_holes_area=cfg.postproc_fill_small_holes_area,
+                    smooth_radius=cfg.postproc_smooth_radius)
                 n_changed += int(not np.array_equal(cleaned, seg[state.obj_id]))
                 seg[state.obj_id] = cleaned
         print(f"    post-processed {n_changed}/{len(video_segments)} masks")

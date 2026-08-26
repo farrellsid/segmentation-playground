@@ -76,6 +76,7 @@ from .frames import (
     _read_tif_window,
 )
 from .masks import (
+    clean_mask,
     fill_small_holes,
     postprocess_mask,
     remove_small_islands,
@@ -146,6 +147,7 @@ __all__ = [
     "save_masks",
     "postprocess_mask",
     "remove_small_islands",
+    "clean_mask",
     "fill_small_holes",
     "smooth_edges",
     "run_qc",
