@@ -299,11 +299,6 @@ class TestVolumeToMesh:
         assert 800 < span[1] < 1200, f"y span {span[1]:.0f}nm, expected about 1024"
         assert 200 < span[2] < 400, f"z span {span[2]:.0f}nm, expected about 300"
 
-    def test_z_is_the_finer_axis_at_scale_8(self):
-        """A guard on the counterintuitive fact, not on the code: 50nm in z against
-        128nm in xy means z resolves finer, the opposite of the usual EM intuition."""
-        assert 50.0 < 128.0
-
     def test_presets_differ_in_triangle_count(self):
         vol = _blob()
         counts = {}
@@ -393,7 +388,7 @@ Add `Tuple` to the existing `typing` import if it is not already there.
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `py -3 -m pytest tests/test_meshing.py -q`
-Expected: PASS, 13 passed
+Expected: PASS, 12 passed
 
 - [ ] **Step 5: Lint and commit**
 
