@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-26, a video and a Blender mesh from a corrected bundle](#r-2026-08-26-review-render)
 - [2026-08-25, GUI recrop silently threw away the window the reviewer drew](#r-2026-08-25-gui-recrop-fallback)
 - [2026-08-24, why 15 reprop chains died on Narval: a Windows path, a relative symlink, and a silent dangling link](#r-2026-08-24-legacy-sam-dangling-links)
 - [2026-08-21, merged render fix: a per-chain tour instead of one whole-worm window, a chain drawn in grey, a latent full_hw unit bug](#r-2026-08-21-merged-render-tour)
@@ -55,6 +56,60 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §7, Design decisions: full log (landed + rejected, with rationale)](#old-7)
 - [old §8, M4.5 A/B results & decisions log](#old-8)
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
+
+---
+
+<a id="r-2026-08-26-review-render"></a>
+## 2026-08-26, a video and a Blender mesh from a corrected bundle
+
+A reviewer corrects a bundle one crop window at a time and never sees the neuron whole.
+`render_review.py` adds the two views that were missing: one video per neuron, every chain
+in z order captioned with chain and z, and one PLY per neuron.
+
+It runs from a bundle or an output tree behind one command, reached from `launcher.py` with
+a Render button so the reviewer keeps the entry point she already knows. Two facts made that
+cheap. `napari` already declares `scikit-image` and `imageio` as hard dependencies, so
+marching cubes costs no new install on the machine where macOS setup was the original
+friction. And bundles and trees share the `<neuron>/chain_NN/state.json` layout, so
+`bundle.index_chains` and `pipeline.chain_masks_in_sam` already read either; the only real
+difference is that a bundle ships its own `frames/`, which is isolated in `chain_frames`.
+
+Meshing bakes the anisotropy in, `spacing=(50, 128, 128)` in `(z, y, x)`, so vertices are
+nanometres and Blender gets true proportions. Note z is the FINER axis at scale 8, the
+opposite of the usual EM intuition. Smoothing is Taubin rather than Laplacian because
+Laplacian shrinks thin tubes and a neurite is mostly thin tube. The default preset is
+`faithful`, since the purpose is finding mistakes and smoothing removes the z-to-z jitter
+that marks a bad slice. Real quadric decimation needs `trimesh` or `open3d`, which the review
+install does not have, so `smooth` coarsens through marching cubes `step_size` instead. That
+is a stated limitation rather than an implied capability.
+
+**Four defects the review caught that the tests as first written did not.** Worth recording,
+because three of the four are the same shape: a value that is silently plausible.
+
+The volume compacted the z axis. It mapped whatever z values had masks onto consecutive
+planes while `marching_cubes` treats every step as exactly 50nm, so any dropped mask pulled
+its neighbours together. That is not hypothetical, mask dropout here runs from about 5 to
+about 30 percent over propagation distance. The volume now spans min to max z with gaps left
+empty, so a real gap reads as a real gap.
+
+The nm per pixel normalisation was inverted. `crop_scale` is a downscale, so a larger value
+means a coarser chain, and `finest / crop_scale` shrank the coarse chain that should have
+grown. It now normalises to the coarsest, which also means nothing is ever upscaled past the
+detail it has.
+
+The video paired masks and EM from different spaces. Masks were sourced through
+`chain_masks_in_sam`, which exists for cross-chain aggregation and remaps onto the shared
+scale-8 grid. On a real bundle chain the frame and its own mask PNG are both 1096x1208, while
+the aggregation path yields about 274x302. Display now reads the chain's own PNG for a
+bundle, and uses the aggregation path with its x0/y0 offsets for a tree, so the mask source
+always matches the frame source.
+
+And `video_viz` emits only frames whose index is a key in `segments`, so recording a frame
+only when it had a mask silently dropped mask-less frames from the video.
+
+Every one of those was caught by asking a reviewer to trace specific arithmetic rather than
+to look for problems in general, and each fix carries a test that was confirmed to fail
+against the old behaviour first.
 
 ---
 
