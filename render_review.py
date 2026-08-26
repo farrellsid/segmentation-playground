@@ -22,6 +22,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pipeline
+from sam2_utils import bundle as bundle_utils
+from sam2_utils import meshing
 
 
 def source_kind(root) -> str:
@@ -68,9 +70,6 @@ def chain_frames(chain_dir, state: dict, kind: str) -> Dict[int, np.ndarray]:
     return out
 
 
-from sam2_utils import bundle as bundle_utils
-from sam2_utils import meshing
-
 #: Nanometres per voxel at `_sam` scale 8, as (z, y, x). Full res is 16nm in xy and
 #: 50nm in z, so xy coarsens by 8 to 128nm while z does not change. z is therefore the
 #: FINER axis, which is the opposite of the usual EM intuition.
@@ -100,13 +99,21 @@ def neuron_volume(root, neuron: str, *, max_voxels: int = 400_000_000):
     if not blocks:
         return np.zeros((0, 0, 0), dtype=np.uint8), SPACING_SAM8_NM
 
-    zs = sorted({b[0] for b in blocks})
-    z_index = {z: i for i, z in enumerate(zs)}
+    # The volume spans every z from the minimum to the maximum present, not just the
+    # z values that happen to survive the `mask.any()` filter above. Compacting past
+    # a missing z (mask dropout is real here, measured at 5-30% over propagation
+    # distance) would pull the surviving planes together and silently fuse a real gap
+    # to 50nm, which is exactly the defect this mesh exists to reveal. A missing z
+    # instead leaves an empty plane, so a real gap in the source data shows up as a
+    # real gap in the mesh.
+    z_min = min(b[0] for b in blocks)
+    z_max = max(b[0] for b in blocks)
+    n_z = z_max - z_min + 1
     x0 = min(b[2] for b in blocks)
     y0 = min(b[3] for b in blocks)
     x1 = max(b[2] + b[1].shape[1] for b in blocks)
     y1 = max(b[3] + b[1].shape[0] for b in blocks)
-    shape = (len(zs), y1 - y0, x1 - x0)
+    shape = (n_z, y1 - y0, x1 - x0)
     n_vox = shape[0] * shape[1] * shape[2]
     if n_vox > max_voxels:
         raise SystemExit(
@@ -118,7 +125,7 @@ def neuron_volume(root, neuron: str, *, max_voxels: int = 400_000_000):
     for z, mask, bx, by in blocks:
         h, w = mask.shape
         sy, sx = by - y0, bx - x0
-        vol[z_index[z], sy:sy + h, sx:sx + w] |= mask.astype(np.uint8)
+        vol[z - z_min, sy:sy + h, sx:sx + w] |= mask.astype(np.uint8)
     return vol, SPACING_SAM8_NM
 
 
