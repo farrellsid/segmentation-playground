@@ -1,5 +1,6 @@
 """The launcher's config layer, tested without constructing a window."""
 import json
+import os
 
 import pytest
 
@@ -64,3 +65,39 @@ def test_review_mode_does_not_require_torch(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "torch_available", lambda: False)
     prof = dict(launcher.DEFAULT_PROFILE, output_root=str(tmp_path), ui_mode="review")
     assert launcher.build_launch_kwargs(prof)["ui_mode"] == "review"
+
+
+def test_machine_paths_default_to_empty():
+    """Empty means 'not set', which the checks report as such. A wrong default
+    would be worse than none: it reads as configured and fails later."""
+    assert launcher.DEFAULT_PROFILE["worm_path"] == ""
+    assert launcher.DEFAULT_PROFILE["checkpoint_dir"] == ""
+
+
+def test_apply_profile_env_exports_every_machine_path(monkeypatch):
+    for var in ("SAM2_OUTPUT_ROOT", "SAM2_FRAMES_ROOT",
+                "SAM2_WORM_PATH", "SAM2_CHECKPOINT_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    launcher.apply_profile_env({"output_root": "/o", "frames_root": "/f",
+                                "worm_path": "/w", "checkpoint_dir": "/c"})
+    assert os.environ["SAM2_OUTPUT_ROOT"] == "/o"
+    assert os.environ["SAM2_FRAMES_ROOT"] == "/f"
+    assert os.environ["SAM2_WORM_PATH"] == "/w"
+    assert os.environ["SAM2_CHECKPOINT_DIR"] == "/c"
+
+
+def test_apply_profile_env_leaves_unset_paths_alone(monkeypatch):
+    """An empty field must not export an empty env var: config would then read ''
+    as the path instead of falling back to its default."""
+    monkeypatch.delenv("SAM2_WORM_PATH", raising=False)
+    launcher.apply_profile_env({"output_root": "/o", "worm_path": ""})
+    assert "SAM2_WORM_PATH" not in os.environ
+
+
+def test_a_profile_written_before_these_keys_existed_still_loads(tmp_path):
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps({"output_root": "/o", "reviewer": "lucinda"}),
+                    encoding="utf-8")
+    prof = launcher.load_profile(path)
+    assert prof["worm_path"] == "" and prof["checkpoint_dir"] == ""
+    assert prof["reviewer"] == "lucinda"

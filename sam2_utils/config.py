@@ -18,8 +18,11 @@ from pathlib import Path
 #: GT paths below; F: contents match the old E: layout).
 WORM_PATH = Path(os.environ.get("SAM2_WORM_PATH", r"F:\ZhenLab\Data\SAM2_test_NR_raw"))
 
-#: Where SAM2 checkpoints are downloaded to. Relative to notebook CWD by default.
-CHECKPOINT_DIR = Path("checkpoints")
+#: Where SAM2 checkpoints are downloaded to. Override with the SAM2_CHECKPOINT_DIR env
+#: var, the same pattern WORM_PATH uses above. The default is relative to the working
+#: directory, so a launcher started from anywhere but the repo root would otherwise look
+#: for checkpoints somewhere the user never put them, and silently re-download.
+CHECKPOINT_DIR = Path(os.environ.get("SAM2_CHECKPOINT_DIR", "checkpoints"))
 
 # -----------------------------------------------------------------------------
 # Pipeline data + output paths (one home, imported by run_aval.py / batch.py)

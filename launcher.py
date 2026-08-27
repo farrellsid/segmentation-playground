@@ -28,6 +28,8 @@ PROFILE_PATH = Path.home() / ".sam2review" / "profile.json"
 DEFAULT_PROFILE = {
     "output_root": "",
     "frames_root": "",
+    "worm_path": "",
+    "checkpoint_dir": "",
     "neurons": [],
     "reviewer": "",
     "ui_mode": "review",
@@ -122,13 +124,19 @@ def build_launch_kwargs(profile: dict) -> dict:
 def apply_profile_env(profile: dict) -> None:
     """Export the profile's paths as the env vars sam2_utils.config reads.
 
-    This is what replaces editing tracked source: config.OUTPUT_ROOT and
-    config.FRAMES_ROOT pick these up on import.
+    This is what replaces editing tracked source: config.OUTPUT_ROOT, FRAMES_ROOT,
+    WORM_PATH and CHECKPOINT_DIR pick these up on import. An empty field exports
+    nothing, so config keeps its own default rather than reading an empty string as
+    a path.
     """
     if profile.get("output_root"):
         os.environ["SAM2_OUTPUT_ROOT"] = str(profile["output_root"])
     if profile.get("frames_root"):
         os.environ["SAM2_FRAMES_ROOT"] = str(profile["frames_root"])
+    if profile.get("worm_path"):
+        os.environ["SAM2_WORM_PATH"] = str(profile["worm_path"])
+    if profile.get("checkpoint_dir"):
+        os.environ["SAM2_CHECKPOINT_DIR"] = str(profile["checkpoint_dir"])
 
 
 def _summary_text(root: Path) -> str:
@@ -182,6 +190,36 @@ def run() -> None:
     path_row.addWidget(path_edit, 1)
     path_row.addWidget(browse)
     layout.addLayout(path_row)
+
+    def _path_row(label: str, value: str, caption: str):
+        """A label + line edit + Browse button, added to the layout. Returns the edit.
+
+        Four of these now exist; without a helper the window is the same six lines
+        four times over, and the fourth one drifts."""
+        row = QHBoxLayout()
+        edit = QLineEdit(value)
+        btn = QPushButton("Browse...")
+
+        def _pick(*_):
+            chosen = QFileDialog.getExistingDirectory(win, caption,
+                                                      edit.text() or str(Path.home()))
+            if chosen:
+                edit.setText(chosen)
+
+        btn.clicked.connect(_pick)
+        row.addWidget(QLabel(label))
+        row.addWidget(edit, 1)
+        row.addWidget(btn)
+        layout.addLayout(row)
+        return edit
+
+    layout.addWidget(QLabel("This machine (needed for recrop and SAM2):"))
+    worm_edit = _path_row("Raw EM (tif stack):", profile.get("worm_path", ""),
+                          "Pick the raw EM tif stack")
+    frames_edit = _path_row("Frames cache:", profile.get("frames_root", ""),
+                            "Pick a folder for prepared frames")
+    ckpt_edit = _path_row("Checkpoints:", profile.get("checkpoint_dir", ""),
+                          "Pick the SAM2 checkpoint folder")
 
     neuron_list = QListWidget()
     neuron_list.setSelectionMode(QListWidget.NoSelection)
@@ -252,6 +290,9 @@ def run() -> None:
     def do_launch(*_):
         prof = {**profile,
                 "output_root": path_edit.text().strip(),
+                "frames_root": frames_edit.text().strip(),
+                "worm_path": worm_edit.text().strip(),
+                "checkpoint_dir": ckpt_edit.text().strip(),
                 "neurons": ticked(),
                 "reviewer": reviewer_edit.text().strip(),
                 "ui_mode": mode_combo.currentData()}
@@ -276,7 +317,7 @@ def run() -> None:
     render_btn.clicked.connect(do_render)
     refresh()
 
-    win.resize(640, 620)
+    win.resize(640, 760)
     win.show()
     app.exec_()
 

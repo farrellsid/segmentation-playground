@@ -23,6 +23,7 @@ def _restore_config_module():
     yield
     os.environ.pop("SAM2_OUTPUT_ROOT", None)
     os.environ.pop("SAM2_FRAMES_ROOT", None)
+    os.environ.pop("SAM2_CHECKPOINT_DIR", None)
     from sam2_utils import config
     importlib.reload(config)
 
@@ -51,3 +52,17 @@ def test_defaults_survive_without_env(monkeypatch):
     cfg = importlib.reload(config)
     assert isinstance(cfg.OUTPUT_ROOT, Path)
     assert isinstance(cfg.FRAMES_ROOT, Path)
+
+
+def test_checkpoint_dir_honours_env(monkeypatch, tmp_path):
+    """CHECKPOINT_DIR used to be a bare relative Path("checkpoints"), so which
+    checkpoint a session found depended on the directory it was launched from."""
+    cfg = _reload(monkeypatch, SAM2_CHECKPOINT_DIR=str(tmp_path / "ckpts"))
+    assert cfg.CHECKPOINT_DIR == Path(tmp_path / "ckpts")
+
+
+def test_checkpoint_dir_default_is_unchanged(monkeypatch):
+    from sam2_utils import config
+    monkeypatch.delenv("SAM2_CHECKPOINT_DIR", raising=False)
+    cfg = importlib.reload(config)
+    assert cfg.CHECKPOINT_DIR == Path("checkpoints")
