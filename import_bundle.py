@@ -346,6 +346,14 @@ def merge_labels_ledger(bundle_root: Path, output_root: Path,
     return counts
 
 
+def _window_label(window) -> str:
+    """A crop window's size for a report line, or a name for having none."""
+    if not window:
+        return "_sam (no crop window)"
+    w, h = window.get("size_tif", ["?", "?"])
+    return f"{w}x{h} _tif at crop_scale {window.get('crop_scale', '?')}"
+
+
 def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False,
                   allow_tree_mismatch: bool = False) -> List[dict]:
     """Merge reviewer-owned files from ``bundle_root`` into ``output_root``.
@@ -397,6 +405,7 @@ def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False
     check_source_tree(bundle_root, output_root, allow_mismatch=allow_tree_mismatch)
 
     changed: List[dict] = []
+    recropped: List[tuple] = []
     for rec in bundle.index_chains(bundle_root):
         src_dir = bundle_root / rec["chain_dir"]
         dst_dir = output_root / rec["chain_dir"]
@@ -428,6 +437,27 @@ def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False
             else:
                 shutil.copy2(src, dst)
 
+        # A recrop rewrites the chain's GEOMETRY, and masks alone would land in the
+        # master tree describing the window they were NOT drawn in. Merge the allowlist
+        # field by field, never the file: state.json also carries the reviewer's config,
+        # whose output_root and frames_root are her machine's.
+        src_state_path, dst_state_path = src_dir / "state.json", dst_dir / "state.json"
+        if src_state_path.exists() and dst_state_path.exists():
+            src_state = json.loads(src_state_path.read_text(encoding="utf-8"))
+            dst_state = json.loads(dst_state_path.read_text(encoding="utf-8"))
+            if bundle.geometry_of(src_state) != bundle.geometry_of(dst_state):
+                chain_changed = True
+                recropped.append((rec["chain_dir"],
+                                  _window_label(dst_state.get("crop_window")),
+                                  _window_label(src_state.get("crop_window"))))
+                if not dry_run:
+                    merged = bundle.merge_geometry(dst_state, src_state)
+                    dst_state_path.write_text(json.dumps(merged, indent=2),
+                                              encoding="utf-8")
+                    src_meta = src_dir / chain_meta.META_FILENAME
+                    if src_meta.exists():
+                        shutil.copy2(src_meta, dst_dir / chain_meta.META_FILENAME)
+
         if chain_changed:
             changed.append({k: rec[k] for k in ("chain_dir", "cell_name", "chain_idx")})
 
@@ -439,6 +469,11 @@ def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False
     print(f"[import] {verb} {len(changed)} chain(s)")
     for rec in changed:
         print(f"  {rec['chain_dir']}")
+    if recropped:
+        print(f"[import] {verb} the crop window on {len(recropped)} recropped chain(s); "
+              f"their frames will be re-prepared from the raw EM on next open")
+        for chain_dir, before, after in recropped:
+            print(f"  {chain_dir}: {before} -> {after}")
     for name, counts in ((_REVIEW_LEDGER, review_counts), (_LABELS_LEDGER, label_counts)):
         print(f"[import] {name}: {verb} {counts['updated']} row(s), "
               f"appended {counts['appended']} row(s)")

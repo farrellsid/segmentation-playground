@@ -460,9 +460,15 @@ def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
     whose z is not in the given `frame_to_z` (see sam2_utils/review.py), so a
     narrowed `frame_to_z` cascades cleanly into a single-frame session with no
     other change needed."""
-    resolved = resolve_frames_dir(recorded_frames_dir, chain_dir) if chain_dir else \
-        Path(recorded_frames_dir)
-    have_recorded = (resolved / "00000.jpg").exists()
+    # None is a real state, not a bug: import_bundle clears frames_dir when a chain comes
+    # home recropped, precisely so the stale view (same directory name, old window's
+    # frames) is regenerated instead of silently reused.
+    if not recorded_frames_dir:
+        resolved = None
+    else:
+        resolved = (resolve_frames_dir(recorded_frames_dir, chain_dir) if chain_dir
+                    else Path(recorded_frames_dir))
+    have_recorded = resolved is not None and (resolved / "00000.jpg").exists()
     if have_recorded and not anchor_only:
         return str(resolved), recorded_frame_to_z, recorded_anchor_idx
 

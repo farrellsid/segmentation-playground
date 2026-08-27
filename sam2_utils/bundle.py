@@ -33,6 +33,12 @@ REVIEWER_OWNED = ("masks", "qc.csv")
 #: bundle, and copying the file over would delete them.
 REVIEWER_LEDGERS = ("_review.csv", "_labels.csv")
 
+#: state.json fields a recrop changes, and the only ones import merges back. The whole
+#: `config` block is deliberately absent: it carries output_root and frames_root, which
+#: are the reviewer's machine's paths, not the master tree's. An allowlist rather than a
+#: denylist, so a field added to ChainState later cannot quietly start crossing machines.
+GEOMETRY_FIELDS = ("crop_window", "frame_to_z", "n_frames", "anchor_frame_idx")
+
 #: Directory inside a bundle holding the CATMAID slice the GUI reads.
 BUNDLE_DATA_DIR = "data"
 
@@ -245,6 +251,32 @@ def rewrite_state_frames_dir(state: dict, relative: str = "frames") -> dict:
     out = dict(state)
     out["frames_dir"] = relative
     return out
+
+
+def geometry_of(state: dict) -> dict:
+    """The recrop-sensitive slice of a parsed ``state.json``.
+
+    Comparing this, rather than the whole file, is what separates "she recropped this
+    chain" from "these two files were written on different machines": ``frames_dir``,
+    ``config`` and the timing blocks differ on every machine and mean nothing here.
+    """
+    return {k: state.get(k) for k in GEOMETRY_FIELDS}
+
+
+def merge_geometry(master_state: dict, bundle_state: dict) -> dict:
+    """``master_state`` with the bundle's geometry merged in, as a new dict.
+
+    Clears ``frames_dir``, which is the part that is easy to miss.
+    ``prepare_chain_crop_frames`` namespaces its view directory by neuron, chain and
+    crop scale, so a new window at the SAME scale reuses the same directory name: the
+    master's recorded path still exists and still holds the old window's frames, and
+    the GUI would draw the new masks on them with nothing missing to signal it. None
+    makes the next open regenerate from the raw EM, which the master machine has.
+    """
+    merged = dict(master_state)
+    merged.update(geometry_of(bundle_state))
+    merged["frames_dir"] = None
+    return merged
 
 
 def validate_bundle(bundle_root: Path, *, require_frames: bool = True) -> List[str]:
