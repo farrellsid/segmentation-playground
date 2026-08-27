@@ -80,6 +80,30 @@ class TestAdoptChainFrames:
         rel = bundle.adopt_chain_frames(chain_dir, chain_dir / "frames")
         assert rel == "frames" and (chain_dir / "frames" / "00000.jpg").exists()
 
+    def test_a_delete_that_silently_fails_refuses_instead_of_nesting(self, tmp_path, monkeypatch):
+        """I4: shutil.rmtree(dest, ignore_errors=True) swallows a failed delete (e.g.
+        napari still holding a handle on the old frames/), and shutil.move onto an
+        EXISTING directory moves the source INSIDE it instead of replacing it. That
+        leaves chain_dir/frames/<view name>/ on disk: state.frames_dir is recorded as
+        "frames", whose 00000.jpg is still the OLD window's frame, and
+        validate_bundle passes because jpgs are present.
+
+        Simulates the swallowed failure by making rmtree a no-op, the same effect a
+        held file handle has, and checks the old frames are still there UNMOVED
+        rather than nested one level down.
+        """
+        chain_dir = _chain_dir(tmp_path)
+        view = _view(tmp_path)
+        monkeypatch.setattr(bundle.shutil, "rmtree", lambda *a, **k: None)
+        with pytest.raises(RuntimeError):
+            bundle.adopt_chain_frames(chain_dir, view)
+        assert (chain_dir / "frames" / "00000.jpg").read_bytes() == b"old", (
+            "the old frames must be exactly where they were, not nested under a "
+            "half-deleted directory")
+        assert not (chain_dir / "frames" / view.name).exists(), \
+            "the new view must not have been moved inside the old one"
+        assert view.exists(), "the new frames must stay put when nothing was moved"
+
 
 class TestRefreshMeta:
     def _write_meta(self, chain_dir, crop_window):

@@ -40,8 +40,14 @@ def _state(window, *, frames_dir, frame_to_z=None, n_frames=3, anchor=1, extra=N
 
 class TestGeometryOf:
     def test_it_reads_exactly_the_recrop_sensitive_fields(self):
+        # prompts is here too (I3): a tier-2 chain's state.prompts is stored in
+        # _pcrop pixels, not _sam (see pipeline/orchestrator.py's anchor-phase box
+        # seeding), so it is exactly as crop-window-relative as crop_window itself.
+        # Leaving it out of the allowlist meant a recrop merged the NEW window
+        # beside the OLD window's prompt points, seeding a re-predict from a
+        # positive point no longer on the cell.
         assert set(bundle.GEOMETRY_FIELDS) == {
-            "crop_window", "frame_to_z", "n_frames", "anchor_frame_idx"}
+            "crop_window", "frame_to_z", "n_frames", "anchor_frame_idx", "prompts"}
 
     def test_two_states_with_the_same_window_compare_equal(self):
         a = _state(OLD_WINDOW, frames_dir="/a")
@@ -97,9 +103,20 @@ class TestMergeGeometry:
                                        _state(None, frames_dir="frames"))
         assert merged["crop_window"] is None
 
+    def test_the_new_prompts_replace_the_old(self):
+        """I3: state.prompts is _pcrop pixels, exactly as crop-window-relative as
+        crop_window itself, so a recrop's new prompts must merge in the same way."""
+        old_prompts = {"points_sam": [[5, 5]], "labels": [1], "box_sam": [0, 0, 20, 20]}
+        new_prompts = {"points_sam": [[80, 80]], "labels": [1],
+                       "box_sam": [60, 60, 100, 100]}
+        master = _state(OLD_WINDOW, frames_dir="/master/f", extra={"prompts": old_prompts})
+        incoming = _state(NEW_WINDOW, frames_dir="frames", extra={"prompts": new_prompts})
+        merged = bundle.merge_geometry(master, incoming)
+        assert merged["prompts"] == new_prompts
+
 
 class TestImportCarriesItHome:
-    def _tree(self, tmp_path, name, window, *, frames_dir, source_tree="t"):
+    def _tree(self, tmp_path, name, window, *, frames_dir, source_tree="t", extra=None):
         from sam2_utils import chain_meta
         root = tmp_path / name
         chain_dir = root / "AIAL" / "chain_00"
@@ -107,15 +124,16 @@ class TestImportCarriesItHome:
         (chain_dir / "masks" / "mask_1500.png").write_bytes(b"png" + name.encode())
         (chain_dir / "qc.csv").write_text("frame,flag\n0,0\n", encoding="utf-8")
         (chain_dir / "state.json").write_text(
-            json.dumps(_state(window, frames_dir=frames_dir)), encoding="utf-8")
+            json.dumps(_state(window, frames_dir=frames_dir, extra=extra)), encoding="utf-8")
         chain_meta.write_meta(chain_dir, chain_meta.build_meta(
             {"neuron": "AIAL", "chain_idx": 0, "crop_window": window,
              "config": {"save_downscale": 8}},
             neuron_id=7, source_tree=source_tree, chain_dir=chain_dir))
         return root, chain_dir
 
-    def _bundle(self, tmp_path, window):
-        root, chain_dir = self._tree(tmp_path, "bundle", window, frames_dir="frames")
+    def _bundle(self, tmp_path, window, *, extra=None):
+        root, chain_dir = self._tree(tmp_path, "bundle", window, frames_dir="frames",
+                                     extra=extra)
         (chain_dir / "frames").mkdir()
         (root / bundle.BUNDLE_MANIFEST).write_text(json.dumps(
             {"schema_version": 1, "source_tree": "master",
@@ -172,6 +190,74 @@ class TestImportCarriesItHome:
         assert state["crop_window"] == OLD_WINDOW
         out = capsys.readouterr().out
         assert "recrop" in out.lower() and "2048" in out
+
+    def test_a_recropped_chains_prompts_come_home(self, tmp_path):
+        """I3 end to end: without prompts in GEOMETRY_FIELDS, the master keeps the
+        OLD window's seed points beside the bundle's NEW crop_window, so opening the
+        recropped chain seeds a positive point at the wrong offset. The bundle's own
+        prompts are already correct for the new window (run_chain re-seeds the
+        anchor as part of the recrop), so import must carry them home too."""
+        import import_bundle as ib
+        old_prompts = {"points_sam": [[5, 5]], "labels": [1], "box_sam": [0, 0, 20, 20]}
+        new_prompts = {"points_sam": [[80, 80]], "labels": [1],
+                       "box_sam": [60, 60, 100, 100]}
+        master, master_chain = self._tree(tmp_path, "master", OLD_WINDOW,
+                                          frames_dir="/master/f", extra={"prompts": old_prompts})
+        b = self._bundle(tmp_path, NEW_WINDOW, extra={"prompts": new_prompts})
+        ib.import_bundle(b, master, allow_tree_mismatch=True)
+        state = json.loads((master_chain / "state.json").read_text(encoding="utf-8"))
+        assert state["prompts"] == new_prompts, \
+            "the recropped chain's new-window prompts must replace the old ones"
+
+
+class TestAtomicStateWrite:
+    """M9: import_bundle used to write the master's state.json with a plain
+    write_text while every other master-tree write in the module (the two ledgers)
+    goes through a temp-file-plus-os.replace helper. An interrupt mid-write
+    truncates the chain's only geometry record, which a ledger row is not."""
+
+    def test_a_replace_failure_leaves_the_original_file_untouched(self, tmp_path, monkeypatch):
+        import import_bundle as ib
+        path = tmp_path / "state.json"
+        path.write_text('{"crop_window": "old"}', encoding="utf-8")
+
+        def _boom(*a, **k):
+            raise OSError("simulated interrupt between the temp write and the swap")
+        monkeypatch.setattr(ib.os, "replace", _boom)
+
+        with pytest.raises(OSError):
+            ib._atomic_write_text(path, '{"crop_window": "new"}')
+        assert path.read_text(encoding="utf-8") == '{"crop_window": "old"}', \
+            "a failure during the swap must never leave the destination half-written"
+
+    def test_a_successful_write_reaches_the_destination(self, tmp_path):
+        import import_bundle as ib
+        path = tmp_path / "state.json"
+        ib._atomic_write_text(path, '{"crop_window": "new"}')
+        assert path.read_text(encoding="utf-8") == '{"crop_window": "new"}'
+
+
+class TestWindowLabelIsDefensive:
+    """M10: _window_label runs in the report line AFTER the writes, the worst place
+    for a report-only helper to crash: `w, h = window.get("size_tif", ["?", "?"])`
+    raised whenever size_tif was present but None or not length 2."""
+
+    def test_a_none_size_tif_does_not_raise(self):
+        import import_bundle as ib
+        assert "unreadable" in ib._window_label({"size_tif": None, "crop_scale": 2})
+
+    def test_a_wrong_length_size_tif_does_not_raise(self):
+        import import_bundle as ib
+        assert "unreadable" in ib._window_label({"size_tif": [1024], "crop_scale": 2})
+
+    def test_a_well_formed_window_is_unaffected(self):
+        import import_bundle as ib
+        assert ib._window_label({"size_tif": [1024, 768], "crop_scale": 2}) == \
+            "1024x768 _tif at crop_scale 2"
+
+    def test_no_window_at_all(self):
+        import import_bundle as ib
+        assert ib._window_label(None) == "_sam (no crop window)"
 
 
 if __name__ == "__main__":

@@ -145,8 +145,13 @@ For each chain the bundle holds, compare its `state.json` geometry against the m
 When it differs, the chain was recropped, and the import:
 
 1. Merges an allowlist into the master's `state.json`: `crop_window`, `frame_to_z`,
-   `n_frames`, `anchor_frame_idx`. The file is merged field by field and never copied,
-   the same rule the two root ledgers already follow.
+   `n_frames`, `anchor_frame_idx`, `prompts`. The file is merged field by field and
+   never copied, the same rule the two root ledgers already follow. `prompts` belongs
+   here for the same reason `crop_window` does: a tier-2 chain's seed points and box
+   are stored in `_pcrop` pixels, the crop window's own space, not `_sam` (see
+   `pipeline/orchestrator.py`'s anchor-phase box seeding). Leaving it out merges the
+   new window in beside the old window's prompt points, and a re-predict then runs
+   from a positive point no longer on the cell.
 2. Copies the bundle's `meta.json` over the master's, since it is a pure projection of
    the same chain's new geometry.
 3. Clears the master's `frames_dir`, because the stale view directory would otherwise be
@@ -170,7 +175,7 @@ supported state rather than a crash.
     she returns the bundle
       import merges masks + qc.csv (unchanged behaviour)
       import detects the geometry difference
-      master state.json takes crop_window/frame_to_z/n_frames/anchor_frame_idx
+      master state.json takes crop_window/frame_to_z/n_frames/anchor_frame_idx/prompts
       master meta.json is replaced
       master frames_dir is cleared, so the next open re-preps from raw EM
       config is never merged

@@ -30,8 +30,10 @@ from __future__ import annotations
 import argparse
 import filecmp
 import json
+import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
@@ -67,6 +69,24 @@ def _differs(src: Path, dst: Path) -> bool:
 
 #: The bundle's two root ledgers, in merge order, for reporting.
 _REVIEW_LEDGER, _LABELS_LEDGER = bundle.REVIEWER_LEDGERS
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Temp file + os.replace, the same pattern review_queue._atomic_write_csv and
+    labels._atomic_write_csv use for the two ledgers this module also writes.
+
+    Every other master-tree write in this file goes through one of those two atomic
+    helpers; this one plain ``write_text``'d the master's state.json instead. An
+    interrupt mid-write (the process killed, the machine losing power) truncates the
+    file, and a chain's state.json is not a ledger row that can be re-derived: it is
+    the only record of that chain's geometry.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    os.close(fd)
+    Path(tmp).write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _manifest_keys(bundle_root: Path) -> Set[Tuple[str, int]]:
@@ -347,10 +367,20 @@ def merge_labels_ledger(bundle_root: Path, output_root: Path,
 
 
 def _window_label(window) -> str:
-    """A crop window's size for a report line, or a name for having none."""
+    """A crop window's size for a report line, or a name for having none.
+
+    Defensive on purpose: this runs in the report line AFTER the writes have
+    already happened (see import_bundle's ``recropped`` loop below), the worst
+    place in this function to raise. ``size_tif`` absent is normal (no window at
+    all); present but None or the wrong length is malformed data, not a reason to
+    lose an otherwise-successful import's summary.
+    """
     if not window:
         return "_sam (no crop window)"
-    w, h = window.get("size_tif", ["?", "?"])
+    size = window.get("size_tif")
+    if not isinstance(size, (list, tuple)) or len(size) != 2:
+        return f"crop window (unreadable size) at crop_scale {window.get('crop_scale', '?')}"
+    w, h = size
     return f"{w}x{h} _tif at crop_scale {window.get('crop_scale', '?')}"
 
 
@@ -452,8 +482,7 @@ def import_bundle(bundle_root: Path, output_root: Path, *, dry_run: bool = False
                                   _window_label(src_state.get("crop_window"))))
                 if not dry_run:
                     merged = bundle.merge_geometry(dst_state, src_state)
-                    dst_state_path.write_text(json.dumps(merged, indent=2),
-                                              encoding="utf-8")
+                    _atomic_write_text(dst_state_path, json.dumps(merged, indent=2))
                     src_meta = src_dir / chain_meta.META_FILENAME
                     if src_meta.exists():
                         shutil.copy2(src_meta, dst_dir / chain_meta.META_FILENAME)

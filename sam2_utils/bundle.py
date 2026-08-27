@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -37,7 +38,16 @@ REVIEWER_LEDGERS = ("_review.csv", "_labels.csv")
 #: `config` block is deliberately absent: it carries output_root and frames_root, which
 #: are the reviewer's machine's paths, not the master tree's. An allowlist rather than a
 #: denylist, so a field added to ChainState later cannot quietly start crossing machines.
-GEOMETRY_FIELDS = ("crop_window", "frame_to_z", "n_frames", "anchor_frame_idx")
+#:
+#: `prompts` is here because it is crop-space too, not just the frame/window fields:
+#: pipeline/orchestrator.py's tier-2 anchor phase seeds state.prompts with the _pcrop
+#: points/box for the window that chain ran in and never maps them back to _sam (see
+#: the comment at orchestrator.py's box-seeding step). After a recrop the master's OLD
+#: prompts sit next to the bundle's NEW crop_window, so opening the chain seeds a point
+#: at the wrong offset and a re-predict runs from a positive point no longer on the
+#: cell. The bundle's own prompts are already correct for the new window, since
+#: run_chain re-seeds the anchor as part of the recrop.
+GEOMETRY_FIELDS = ("crop_window", "frame_to_z", "n_frames", "anchor_frame_idx", "prompts")
 
 #: Directory inside a bundle holding the CATMAID slice the GUI reads.
 BUNDLE_DATA_DIR = "data"
@@ -128,9 +138,15 @@ def adopt_chain_frames(chain_dir, frames_dir, *, relative: str = "frames") -> st
         If the source holds no prepared frames. Replacing a chain's frames with an
         empty directory would leave the bundle unopenable, which is worse than a
         failed recrop.
+    RuntimeError
+        If ``dest`` cannot be cleared before the move. Something still has it open
+        (napari's image layer keeps a handle on the OLD frames/ until the session
+        closes it) or it is a symlink (``shutil.rmtree`` refuses to remove one).
+        Moving onto a directory that is still there would nest the new view INSIDE
+        it (``dest/<old view name>/``) rather than replace it, and everything
+        downstream, including ``validate_bundle``, would find jpgs and pass, while
+        the GUI draws the new masks on the old window's pixels.
     """
-    import shutil
-
     chain_dir, frames_dir = Path(chain_dir), Path(frames_dir)
     if not sorted(frames_dir.glob("*.jpg")):
         raise ValueError(f"{frames_dir} holds no prepared frames; refusing to replace "
@@ -138,7 +154,19 @@ def adopt_chain_frames(chain_dir, frames_dir, *, relative: str = "frames") -> st
     dest = chain_dir / relative
     if dest.exists() and frames_dir.resolve() == dest.resolve():
         return relative
-    shutil.rmtree(dest, ignore_errors=True)
+    if dest.exists():
+        # ignore_errors=True is deliberate: it means "don't raise for a directory
+        # that partly does not exist", not "pretend the delete worked". Checking the
+        # result afterward, rather than trusting shutil.rmtree's silence, is what
+        # turns a swallowed failure into a refusal instead of a silent nest.
+        shutil.rmtree(dest, ignore_errors=True)
+        if dest.exists():
+            raise RuntimeError(
+                f"could not remove {dest} to adopt the recrop's frames; something "
+                f"still has it open (close any viewer showing this chain first) or "
+                f"it is a symlink. The new frames are still at {frames_dir}; "
+                f"nothing was moved, so the chain keeps its OLD frames rather than "
+                f"a silently nested mix of the two.")
     shutil.move(str(frames_dir), str(dest))
     return relative
 
