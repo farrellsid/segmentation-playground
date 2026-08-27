@@ -13,6 +13,7 @@ runs on macOS.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from dataclasses import dataclass
@@ -137,6 +138,15 @@ def machine_checks(profile: dict) -> list:
         return MachineCheck("torch", True, f"version {torch.__version__}")
 
     def _device():
+        # Checked here rather than let _device_name() raise into the generic _check()
+        # wrapper: that would report the device as ok=False with "this is a bug;
+        # report it", which is wrong on both counts. A missing torch is the torch
+        # check's job to report, not a bug, and the spec promises device is never
+        # ok=False.
+        if not torch_available():
+            return MachineCheck("device", True,
+                                "unknown: torch is not installed, so the device this "
+                                "machine would run on cannot be probed yet")
         name = _device_name()
         if name == "cuda":
             detail = "cuda, the fast path"
@@ -148,7 +158,15 @@ def machine_checks(profile: dict) -> list:
         return MachineCheck("device", True, detail)
 
     def _checkpoint():
-        ckpt_dir = Path(profile.get("checkpoint_dir") or cfg_mod.CHECKPOINT_DIR)
+        # No fallback to cfg_mod.CHECKPOINT_DIR: that is this repo's own default
+        # (relative "checkpoints", resolved against wherever the launcher happens to
+        # be started from), not a path the reviewer chose. Reporting it as if she had
+        # is the same lie _raw_em avoids below: an empty field means unset, full stop.
+        ckpt_str = (profile.get("checkpoint_dir") or "").strip()
+        if not ckpt_str:
+            return MachineCheck("checkpoint", False, "not set",
+                                "point 'Checkpoints' at a folder you can write to")
+        ckpt_dir = Path(ckpt_str)
         problem = _writable(ckpt_dir)
         if problem:
             return MachineCheck("checkpoint", False, f"{ckpt_dir}: {problem}",
@@ -175,7 +193,15 @@ def machine_checks(profile: dict) -> list:
         return MachineCheck("raw EM", True, f"tif stack at {worm}")
 
     def _frames():
-        root = Path(profile.get("frames_root") or cfg_mod.FRAMES_ROOT)
+        # Same reasoning as _checkpoint above: cfg_mod.FRAMES_ROOT is this repo's
+        # Windows default (F:\ZhenLab\Data). Falling back to it silently created a
+        # directory of that literal name in the working directory on a Mac and
+        # reported it as writable, which is M8 in the review notes.
+        root_str = (profile.get("frames_root") or "").strip()
+        if not root_str:
+            return MachineCheck("frames cache", False, "not set",
+                                "point 'Frames cache' at a folder you can write to")
+        root = Path(root_str)
         problem = _writable(root)
         if problem:
             return MachineCheck("frames cache", False, f"{root}: {problem}",
@@ -252,17 +278,35 @@ def build_launch_kwargs(profile: dict) -> dict:
     Raises
     ------
     ValueError
-        If no output root is set, or if full mode is requested on a machine with no
-        torch. Failing here is the point: the alternative is an exception several
-        minutes into a session, after the frames have loaded.
+        If no output root is set, or if full mode is requested on a machine that
+        cannot honestly run it (no torch, or no writable checkpoint folder). Failing
+        here is the point: the alternative is an exception several minutes into a
+        session, after the frames have loaded and the predictor build fails.
+
+    Notes
+    -----
+    This is the decision point's own refusal, not just the mode combo's. The combo
+    is re-gated on every path edit (see launcher.run's refresh_mode_gate), but a
+    disabled item can still be the CURRENT one in a stale window (a saved profile
+    from a machine that could run full mode, reopened on one that cannot), so the
+    check is repeated here rather than trusted from the widget.
     """
     root = str(profile.get("output_root") or "").strip()
     if not root:
         raise ValueError("no output root set; pick a bundle or an output tree first")
     mode = profile.get("ui_mode", DEFAULT_PROFILE["ui_mode"])
-    if mode == "full" and not torch_available():
-        raise ValueError("full mode needs torch, which is not installed on this machine. "
-                         "Use review mode to redraw, or install the full requirements.")
+    if mode == "full":
+        if not torch_available():
+            raise ValueError("full mode needs torch, which is not installed on this "
+                             "machine. Use review mode to redraw, or install the full "
+                             "requirements.")
+        checks = machine_checks(profile)
+        if not can_run_model(checks):
+            failing = ", ".join(c.name for c in checks
+                                if not c.ok and c.name in ("torch", "checkpoint"))
+            raise ValueError(f"full mode is not runnable on this machine ({failing} "
+                             f"failing); use 'Check this machine' for details, or use "
+                             f"review mode.")
     neurons = list(profile.get("neurons") or [])
     return {
         "output_root": Path(root),
@@ -273,12 +317,27 @@ def build_launch_kwargs(profile: dict) -> dict:
 
 
 def apply_profile_env(profile: dict) -> None:
-    """Export the profile's paths as the env vars sam2_utils.config reads.
+    """Export the profile's paths as the env vars sam2_utils.config reads, and make
+    config see them.
 
     This is what replaces editing tracked source: config.OUTPUT_ROOT, FRAMES_ROOT,
     WORM_PATH and CHECKPOINT_DIR pick these up on import. An empty field exports
     nothing, so config keeps its own default rather than reading an empty string as
     a path.
+
+    Setting the env vars is only half the job. `sam2_utils.config` reads them at
+    MODULE IMPORT time, and by the time this runs, `machine_checks` has already
+    imported it once (at launcher startup, to build the preflight checks), so the
+    module is already sitting in `sys.modules` with its Path constants computed
+    from whatever the environment held at that first import: the repo's Windows
+    defaults on a machine that has never set anything. Exporting a new env var
+    after that point changes nothing on its own. `gui.py` and `pipeline` hold the
+    SAME module object (`from sam2_utils import config`), not a copy of its
+    values, so reloading it in place here is what makes them see the new paths:
+    an import elsewhere just returns the same, now-updated, object from
+    sys.modules. Without this, a reviewer who fills in the profile and launches
+    still gets refused with "Set 'Raw EM (tif stack)'" naming the field she just
+    set, because config.WORM_PATH was never told.
     """
     if profile.get("output_root"):
         os.environ["SAM2_OUTPUT_ROOT"] = str(profile["output_root"])
@@ -288,6 +347,8 @@ def apply_profile_env(profile: dict) -> None:
         os.environ["SAM2_WORM_PATH"] = str(profile["worm_path"])
     if profile.get("checkpoint_dir"):
         os.environ["SAM2_CHECKPOINT_DIR"] = str(profile["checkpoint_dir"])
+    from sam2_utils import config as cfg_mod
+    importlib.reload(cfg_mod)
 
 
 def _summary_text(root: Path) -> str:
@@ -329,6 +390,13 @@ def run() -> None:
     from qtpy.QtCore import Qt
 
     profile = load_profile()
+    # Apply the saved profile before anything below (machine_checks, first paint of
+    # the mode combo) runs, and before it gets its own chance to import
+    # sam2_utils.config for the first time. Not the only place this is called (see
+    # refresh_mode_gate and do_launch), but the earliest one matters too: a reviewer
+    # who reopens the launcher with a profile already saved should not need to
+    # touch a field before config reflects her paths.
+    apply_profile_env(profile)
     app = QApplication.instance() or QApplication([])
     win = QWidget()
     win.setWindowTitle("SAM2 review launcher")
@@ -356,6 +424,15 @@ def run() -> None:
                                                       edit.text() or str(Path.home()))
             if chosen:
                 edit.setText(chosen)
+                # setText() emits textChanged, never editingFinished, which is all
+                # the mode gate below is wired to. Without this, Browse-ing a good
+                # checkpoint folder left full mode disabled (it can now run), and
+                # Browse-ing an unwritable one after full mode was already enabled
+                # left it enabled and selected: the exact "selected but not
+                # runnable" state the gate exists to prevent. refresh_mode_gate is
+                # defined later in this function but resolved at call time, by
+                # which point it exists (this closure only runs after a click).
+                refresh_mode_gate()
 
         btn.clicked.connect(_pick)
         row.addWidget(QLabel(label))
@@ -398,8 +475,15 @@ def run() -> None:
 
         Torch alone is not enough: a machine with torch and no checkpoint used to be
         offered the reprop controls and failed minutes later, at predictor build.
+
+        Also the one place, besides do_launch, that pushes the edited paths into
+        sam2_utils.config: this runs on every path-field edit (wired below) and on
+        every Browse pick, so config stays in step with what is on screen rather
+        than only catching up at the moment Launch is pressed.
         """
-        checks = machine_checks(_machine_profile())
+        prof = _machine_profile()
+        apply_profile_env(prof)
+        checks = machine_checks(prof)
         ok = can_run_model(checks)
         mode_combo.model().item(1).setEnabled(ok)
         if not ok:
@@ -437,15 +521,20 @@ def run() -> None:
     layout.addWidget(check_btn)
 
     def do_check(*_):
-        """Report every machine check into the summary pane, fixes included."""
+        """Report every machine check into the summary pane, fixes included.
+
+        Reuses refresh_mode_gate's own checks rather than running machine_checks a
+        second time: the two used to run the write-probe / checkpoint-scan pass
+        twice on every click, once here and once inside refresh_mode_gate.
+        """
+        checks = refresh_mode_gate()
         lines = []
-        for c in machine_checks(_machine_profile()):
+        for c in checks:
             mark = "ok  " if c.ok else "NO  "
             lines.append(f"{mark}{c.name}: {c.detail}")
             if c.fix:
                 lines.append(f"      fix: {c.fix}")
         summary.setPlainText("\n".join(lines))
-        refresh_mode_gate()
 
     def refresh(*_):
         root = Path(path_edit.text().strip() or ".")

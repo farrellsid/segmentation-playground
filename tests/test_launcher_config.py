@@ -1,10 +1,31 @@
 """The launcher's config layer, tested without constructing a window."""
+import importlib
 import json
 import os
 
 import pytest
 
 import launcher
+
+
+@pytest.fixture(autouse=True)
+def _restore_config_module():
+    """Reload sam2_utils.config back to real defaults after every test in this file.
+
+    apply_profile_env now reloads sam2_utils.config in place (that reload IS the
+    fix for C1: config.WORM_PATH etc. were frozen at their defaults because the
+    module was already imported by the time the old apply_profile_env ran). A test
+    below that calls apply_profile_env with a tmp_path leaves that reload in
+    sys.modules for the rest of the process, exactly the leak
+    tests/test_config_env.py's own fixture guards against, so this file needs the
+    same guard for the same reason.
+    """
+    yield
+    for var in ("SAM2_OUTPUT_ROOT", "SAM2_FRAMES_ROOT",
+                "SAM2_WORM_PATH", "SAM2_CHECKPOINT_DIR"):
+        os.environ.pop(var, None)
+    from sam2_utils import config
+    importlib.reload(config)
 
 
 def test_default_profile_is_review_mode():
@@ -101,3 +122,64 @@ def test_a_profile_written_before_these_keys_existed_still_loads(tmp_path):
     prof = launcher.load_profile(path)
     assert prof["worm_path"] == "" and prof["checkpoint_dir"] == ""
     assert prof["reviewer"] == "lucinda"
+
+
+def test_apply_profile_env_makes_config_actually_see_the_new_paths(monkeypatch, tmp_path):
+    """C1 regression test: setting the env vars is not the same as config observing
+    them, because sam2_utils.config reads them at MODULE IMPORT time and the module
+    is already imported by the time apply_profile_env runs (machine_checks imports
+    it during the launcher's own startup). Asserting only os.environ, which the
+    other apply_profile_env tests above do, is exactly what missed this: the env
+    var can be set correctly while config.WORM_PATH still reports the old value.
+
+    Reproduces the reviewer's actual failure: fill in the profile, apply it, then
+    ask config for the path pipeline.raw_em_problem() would have read.
+    """
+    for var in ("SAM2_OUTPUT_ROOT", "SAM2_FRAMES_ROOT",
+                "SAM2_WORM_PATH", "SAM2_CHECKPOINT_DIR"):
+        monkeypatch.delenv(var, raising=False)
+
+    # Force sam2_utils.config to already be imported with its defaults, the same
+    # state it is in by the time a real launcher session reaches apply_profile_env
+    # (machine_checks imports it first, well before do_launch).
+    import importlib
+    from sam2_utils import config
+    importlib.reload(config)
+    assert config.WORM_PATH != tmp_path / "worm"
+
+    launcher.apply_profile_env({
+        "output_root": str(tmp_path / "out"),
+        "frames_root": str(tmp_path / "frames"),
+        "worm_path": str(tmp_path / "worm"),
+        "checkpoint_dir": str(tmp_path / "ckpts"),
+    })
+
+    from sam2_utils import config as cfg_after
+    assert cfg_after.WORM_PATH == tmp_path / "worm"
+    assert cfg_after.OUTPUT_ROOT == tmp_path / "out"
+    assert cfg_after.FRAMES_ROOT == tmp_path / "frames"
+    assert cfg_after.CHECKPOINT_DIR == tmp_path / "ckpts"
+
+
+def test_full_mode_refuses_at_the_decision_point_not_just_the_combo(tmp_path, monkeypatch):
+    """I5's second half: a stale widget state (a saved profile from a machine that
+    could run full mode, reopened on one that cannot) must not be enough to start a
+    session that fails at predictor build. build_launch_kwargs is the decision
+    point do_launch actually calls, so the refusal belongs here, not only in the
+    combo's enabled state.
+    """
+    monkeypatch.setattr(launcher, "torch_available", lambda: True)
+    prof = dict(launcher.DEFAULT_PROFILE, output_root=str(tmp_path), ui_mode="full",
+               checkpoint_dir="", worm_path="", frames_root="")
+    with pytest.raises(ValueError, match="checkpoint"):
+        launcher.build_launch_kwargs(prof)
+
+
+def test_full_mode_is_accepted_when_the_machine_can_actually_run_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "torch_available", lambda: True)
+    ckpt = tmp_path / "ckpts"
+    ckpt.mkdir()
+    prof = dict(launcher.DEFAULT_PROFILE, output_root=str(tmp_path), ui_mode="full",
+               checkpoint_dir=str(ckpt), worm_path="", frames_root="")
+    kw = launcher.build_launch_kwargs(prof)
+    assert kw["ui_mode"] == "full"
