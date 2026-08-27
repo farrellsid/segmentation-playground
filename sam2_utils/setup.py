@@ -13,10 +13,45 @@ from __future__ import annotations
 import os
 import sys
 import urllib.request
+from functools import lru_cache
 from pathlib import Path
 from typing import Tuple, Literal
 
 from . import config
+
+
+# =============================================================================
+# Torch preload
+# =============================================================================
+
+@lru_cache(maxsize=1)
+def torch_problem() -> "str | None":
+    """None when torch imports, else a one-line reason why it does not.
+
+    Call this BEFORE importing Qt (qtpy, napari) in any process that will later need
+    the model. On Windows, Qt ships DLLs that shadow torch's, so a torch imported
+    after Qt fails with ``OSError: [WinError 1114] ... c10.dll`` on a machine where
+    torch is perfectly well installed. Measured on this project's Windows box: torch
+    alone imports fine, ``import qtpy.QtWidgets`` then torch fails, torch then Qt
+    works with CUDA available.
+
+    So this is not only a probe, it is the fix: importing torch first puts it in
+    ``sys.modules``, where the later predictor build reuses it instead of trying an
+    import that can no longer succeed.
+
+    Cached because the answer depends on WHEN it is first asked, and the first call,
+    which the drivers make before any Qt import, is the one that has to stick.
+
+    Returns
+    -------
+    str or None
+        A short ``"TypeName: message"``, or None when torch is usable.
+    """
+    try:
+        import torch  # noqa: F401
+    except Exception as exc:                      # noqa: BLE001 - reported, not raised
+        return f"{type(exc).__name__}: {exc}"
+    return None
 
 
 # =============================================================================

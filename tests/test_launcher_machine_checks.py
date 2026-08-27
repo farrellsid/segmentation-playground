@@ -50,8 +50,11 @@ def _good_profile(tmp_path):
 @pytest.fixture(autouse=True)
 def _torch_present(monkeypatch):
     """Default every test to a machine that HAS torch, so each test states only the
-    one thing it is about."""
-    monkeypatch.setattr(launcher, "torch_available", lambda: True)
+    one thing it is about.
+
+    Patches torch_problem, not torch_available: the checks read the REASON now, and
+    torch_available derives from it, so one seam keeps the two consistent."""
+    monkeypatch.setattr(launcher, "torch_problem", lambda: None)
     monkeypatch.setattr(launcher, "_device_name", lambda: "cuda")
 
 
@@ -69,7 +72,8 @@ def test_a_fully_configured_machine_passes_everything(tmp_path):
 
 
 def test_missing_torch_fails_and_says_how_to_fix_it(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "torch_available", lambda: False)
+    monkeypatch.setattr(launcher, "torch_problem",
+                        lambda: "ModuleNotFoundError: No module named 'torch'")
     checks = launcher.machine_checks(_good_profile(tmp_path))
     torch_check = _named(checks, "torch")
     assert torch_check.ok is False and torch_check.fix
@@ -90,7 +94,8 @@ def test_missing_torch_reports_device_as_unknown_not_a_bug(monkeypatch, tmp_path
     (which called it unconditionally) and passes only once the device check learns
     to ask torch_available() first and skip the call entirely.
     """
-    monkeypatch.setattr(launcher, "torch_available", lambda: False)
+    monkeypatch.setattr(launcher, "torch_problem",
+                        lambda: "ModuleNotFoundError: No module named 'torch'")
 
     def _must_not_be_called():
         raise ModuleNotFoundError("No module named 'torch' (simulating the real "
@@ -174,7 +179,7 @@ def test_one_broken_check_does_not_hide_the_others(monkeypatch, tmp_path):
     list: a reviewer should see everything wrong at once."""
     def _boom():
         raise RuntimeError("torch import exploded")
-    monkeypatch.setattr(launcher, "torch_available", _boom)
+    monkeypatch.setattr(launcher, "torch_problem", _boom)
     checks = launcher.machine_checks(_good_profile(tmp_path))
     assert len(checks) == 5
     assert _named(checks, "torch").ok is False

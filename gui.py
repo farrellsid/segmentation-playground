@@ -2061,6 +2061,18 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
     something in it."""
     if ui_mode not in UI_MODES:
         raise ValueError(f"unknown UI mode {ui_mode!r}; expected one of {UI_MODES}")
+    if ui_mode == UI_MODE_FULL:
+        # Torch BEFORE napari, which imports Qt. On Windows, Qt ships DLLs that shadow
+        # torch's, so a torch first imported after Qt fails with WinError 1114 on
+        # c10.dll even though torch is installed and working. That import used to
+        # happen lazily at the first R/G, which is exactly where it would fail. Review
+        # mode skips this: it never builds a predictor, and a review-only machine has
+        # no torch to load.
+        from sam2_utils import setup as _setup
+        problem = _setup.torch_problem()
+        if problem:
+            print(f"[gui] full mode needs torch and it did not load: {problem}. "
+                  "Re-segmentation (R/G) will not work in this session.")
     import napari
     output_root = Path(output_root) if output_root else config.OUTPUT_ROOT
     if source is not None and neuron is not None:

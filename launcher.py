@@ -40,17 +40,25 @@ DEFAULT_PROFILE = {
 }
 
 
+def torch_problem() -> Optional[str]:
+    """None when torch is usable in this process, else a one-line reason.
+
+    Delegates to :func:`sam2_utils.setup.torch_problem`, which owns the rule and the
+    cache. Kept as a name here so the checks and the tests have one seam to replace.
+    """
+    from sam2_utils import setup
+    return setup.torch_problem()
+
+
 def torch_available() -> bool:
     """True when torch imports, which is what the model actions need.
 
-    Kept as a function rather than a module constant so a test can replace it and
-    so the (slow) import is not paid at launcher start.
+    Kept as a function rather than a module constant so a test can replace it, and so
+    the answer comes from the cached probe rather than from a fresh import attempt
+    made at some arbitrary later moment. WHEN the probe first runs matters: see
+    :func:`sam2_utils.setup.torch_problem` for the Qt DLL ordering this depends on.
     """
-    try:
-        import torch  # noqa: F401
-    except Exception:
-        return False
-    return True
+    return torch_problem() is None
 
 
 @dataclass
@@ -130,12 +138,22 @@ def machine_checks(profile: dict) -> list:
                                        "this is a bug; report it with the message above"))
 
     def _torch():
-        if not torch_available():
+        problem = torch_problem()
+        if problem is None:
+            import torch
+            return MachineCheck("torch", True, f"version {torch.__version__}")
+        if "No module named" in problem:
             return MachineCheck("torch", False, "not installed",
                                 "install the full requirements: py -3 -m pip install -r "
                                 "requirements.txt")
-        import torch
-        return MachineCheck("torch", True, f"version {torch.__version__}")
+        # Installed but not loadable is a different problem and needs a different fix.
+        # Reporting it as "not installed" sent a real user to reinstall a torch that was
+        # already there. The usual cause on Windows is Qt getting imported first: Qt
+        # ships DLLs that shadow torch's, and torch then fails on c10.dll.
+        return MachineCheck("torch", False, f"installed, but it failed to load: {problem}",
+                            "usually means Qt was imported before torch in this process. "
+                            "Start from launcher.py, which loads torch first, and report "
+                            "it if this persists")
 
     def _device():
         # Checked here rather than let _device_name() raise into the generic _check()
@@ -383,6 +401,12 @@ def open_render_window(source: str, neurons) -> None:
 
 def run() -> None:
     """Open the launcher window, then hand off to the review GUI."""
+    # Torch BEFORE Qt, and this line must stay first. On Windows, Qt ships DLLs that
+    # shadow torch's, so a torch imported after qtpy fails with WinError 1114 on
+    # c10.dll on a machine where torch is fine. Asked here, the answer is cached for
+    # the process AND torch is left in sys.modules for the predictor build later.
+    # Measured: qtpy-then-torch fails, torch-then-qtpy works with CUDA available.
+    torch_problem()
     from qtpy.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
                                 QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                 QListWidgetItem, QPushButton, QTextEdit, QVBoxLayout,
