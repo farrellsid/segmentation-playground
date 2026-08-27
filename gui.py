@@ -87,8 +87,8 @@ import pandas as pd
 warnings.filterwarnings(
     "ignore", message="The plugin infrastructure in", category=FutureWarning)
 
-from sam2_utils import (config, alignment, bundle as bundle_mod, review, review_queue,
-                        labels as labels_mod)
+from sam2_utils import (config, alignment, bundle as bundle_mod, chain_meta, review,
+                        review_queue, labels as labels_mod)
 import pipeline
 
 
@@ -1270,7 +1270,17 @@ class ReviewGUI:
         # re-propagation driver rebuilds its CropWindow from state.json and would have
         # re-run the chain in a window its masks were never in.
         chain_dir = self.ctx.output_root / self.neuron / f"chain_{self.chain_idx:02d}"
+        # Inside a bundle the new frames must come with it: run_chain leaves them in the
+        # machine's frames cache and records an absolute path, which validate_bundle
+        # rejects and which stops the bundle opening anywhere else. In an output tree the
+        # cache IS where frames belong, and moving them would break the chains that share
+        # it, so this runs only for a bundle.
+        if bundle_mod.is_bundle(self.ctx.output_root) and state.frames_dir:
+            state.frames_dir = bundle_mod.adopt_chain_frames(chain_dir, state.frames_dir)
         pipeline.save_state(state, chain_dir / "state.json")
+        # meta.json projects mask_space, mask_scale, crop_window and z_range from the
+        # state, and a recrop invalidates all four.
+        chain_meta.refresh_meta(chain_dir, pipeline.state_to_dict(state))
         self.queue.set_status(self.neuron, self.chain_idx, review_queue.CORRECTED,
                               reviewer=self.reviewer)
         print("[gui] recrop complete; reopening the chain in the new window")
