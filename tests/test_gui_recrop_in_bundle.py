@@ -61,6 +61,12 @@ def _harness(monkeypatch, tmp_path, root, chain_dir):
         neuron, chain_idx = "AIAL", 0
         frames_dir = str(view)
         crop_window = new_window
+        # A successful recrop's run_chain fills this during frame prep, after the
+        # anchor phase succeeds. The empty-anchor guard (I6) in _recrop_to_window
+        # checks it before persisting anything, so every "recrop went fine" harness
+        # in this file needs it set; test_an_empty_anchor_recrop_refuses_to_persist
+        # below is the one that leaves it None on purpose.
+        frame_to_z = {0: 1500}
 
     def _run_chain(state, **kwargs):
         state.frames_dir = str(view)
@@ -138,6 +144,75 @@ def test_recrop_refuses_without_the_raw_em(monkeypatch, tmp_path, capsys):
     gui.ReviewGUI._recrop_to_window(self, cw_new, "test")
     assert saved == {}, "nothing may be written when the recrop cannot run"
     assert "raw EM" in capsys.readouterr().out
+
+
+def _harness_empty_anchor(monkeypatch, tmp_path, root, chain_dir):
+    """A ReviewGUI stand-in whose run_chain simulates I6: an empty anchor mask in the
+    new window. orchestrator.run_chain sets crop_window during the anchor phase, then
+    returns early, BEFORE frame prep, when the anchor mask is empty: frame_to_z stays
+    None while crop_window already describes the new (untested) window. masks/ on
+    disk is untouched, still the OLD window's masks."""
+    new_window = {"origin_tif": [10, 10], "size_tif": [2048, 2048],
+                  "crop_scale": 4, "sam_scale": 8}
+    saved = {}
+
+    class _EmptyAnchorState:
+        neuron, chain_idx = "AIAL", 0
+        frames_dir = None
+        frame_to_z = None
+        crop_window = new_window
+
+    def _run_chain(state, **kwargs):
+        pass  # nothing to do: the stand-in state already models run_chain's early return
+
+    monkeypatch.setattr(gui.pipeline, "run_chain", _run_chain)
+    monkeypatch.setattr(gui.pipeline, "ChainState", lambda **kw: _EmptyAnchorState())
+    monkeypatch.setattr(gui.pipeline, "save_state",
+                        lambda state, path: saved.update(called=True))
+    monkeypatch.setattr(gui.pipeline, "state_to_dict",
+                        lambda state: (_ for _ in ()).throw(
+                            AssertionError("state_to_dict must not run when nothing is saved")))
+    monkeypatch.setattr(gui.pipeline, "raw_em_problem", lambda *a, **k: None)
+
+    def _must_not_reopen(*a, **k):
+        raise AssertionError("open_chain must not run when the recrop wrote nothing")
+
+    self = types.SimpleNamespace(
+        ctx=types.SimpleNamespace(output_root=root, image_predictor=None,
+                                  video_predictor=None, annotate_df=None,
+                                  cfg=gui.pipeline.PipelineConfig(),
+                                  ensure_predictors=lambda **kw: None),
+        neuron="AIAL", chain_idx=0, chain={}, _cw=None,
+        queue=types.SimpleNamespace(
+            set_status=lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("queue status must not change when nothing was written"))),
+        reviewer="lucinda",
+        _close_session=lambda: None,
+        open_chain=_must_not_reopen,
+    )
+    cw_new = types.SimpleNamespace(size_tif=[2048, 2048])
+    return self, saved, cw_new
+
+
+def test_an_empty_anchor_recrop_refuses_to_persist(monkeypatch, tmp_path, capsys):
+    """I6: an empty anchor mask in the recropped window must not overwrite the
+    chain's only recorded frame_to_z with None, and must not touch meta.json,
+    disk masks, the review queue, or reopen the chain. The chain stays exactly as
+    it was, with a message naming what happened.
+    """
+    root, chain_dir = _bundle_chain(tmp_path)
+    meta_before = (chain_dir / "meta.json").read_bytes()
+    self, saved, cw_new = _harness_empty_anchor(monkeypatch, tmp_path, root, chain_dir)
+
+    gui.ReviewGUI._recrop_to_window(self, cw_new, "test")
+
+    assert saved == {}, "an empty-anchor recrop must not write state.json"
+    assert (chain_dir / "meta.json").read_bytes() == meta_before, \
+        "meta.json must not be touched when nothing was written"
+    assert not (chain_dir / "state.json").exists(), \
+        "no state.json existed before the recrop; the refusal must not create one"
+    out = capsys.readouterr().out
+    assert "no anchor mask" in out.lower()
 
 
 if __name__ == "__main__":

@@ -496,6 +496,51 @@ def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
     return frames_dir, frame_to_z, anchor_idx
 
 
+def _resolve_chain_frames(state: Optional["pipeline.ChainState"], *, chain: dict, cw,
+                          cfg: "pipeline.PipelineConfig", annotate_df: pd.DataFrame,
+                          neuron: str, chain_idx: int, anchor_only: bool,
+                          context_frames: int, chain_dir: Path
+                          ) -> tuple:
+    """The (frames_dir, frame_to_z, anchor_idx) open_chain actually uses for ``state``.
+
+    This is the caller-side guard, kept separate from _ensure_local_frames so it can
+    be tested on its own: the bug this exists to prevent was in the CONDITION
+    deciding whether to call _ensure_local_frames at all, not in that function
+    itself. An earlier version skipped the call whenever `state.frames_dir` was
+    falsy, on the theory that nothing was recorded, so there was nothing to check.
+    But import_bundle deliberately sets frames_dir to None on every chain a recrop
+    touched, precisely so the stale view (same directory name, old window's frames)
+    is regenerated instead of silently reused (see bundle.merge_geometry). Skipping
+    the call left `frames_dir` at its caller default of None, which review.load_chain
+    then stringifies to the literal text "None" and hands to a JPEG reader, raising
+    FileNotFoundError instead of opening the chain.
+
+    Parameters
+    ----------
+    state : pipeline.ChainState or None
+        The chain's parsed state.json, or None when there is no state.json yet (a
+        chain that was never run). Nothing to resolve in that case.
+    chain, cw, cfg, annotate_df, neuron, chain_idx, anchor_only, context_frames, chain_dir
+        Passed straight through to :func:`_ensure_local_frames`.
+
+    Returns
+    -------
+    tuple
+        ``(frames_dir, frame_to_z, anchor_idx)``, the overrides open_chain passes to
+        :func:`sam2_utils.review.load_chain`. All three are None when there is no
+        state, or the state has no recorded anchor: review.load_chain then falls
+        back to whatever state.json itself carries, unchanged from before this
+        function existed.
+    """
+    if state is None or state.anchor_catmaid_z is None:
+        return None, None, None
+    return _ensure_local_frames(
+        state.frames_dir, state.frame_to_z, state.anchor_frame_idx,
+        chain=chain, cw=cw, cfg=cfg, annotate_df=annotate_df,
+        anchor_catmaid_z=state.anchor_catmaid_z, neuron=neuron, chain_idx=chain_idx,
+        anchor_only=anchor_only, context_frames=context_frames, chain_dir=chain_dir)
+
+
 def _load_frame_stack(frames_dir: str, n_frames: int):
     """Return an array-like (T, H, W, 3) uint8 over the chain's 0-indexed JPEGs.
 
@@ -658,18 +703,17 @@ class ReviewGUI:
 
         # frames_dir is an absolute path baked in at generation time; on a different
         # machine (or after a Narval scratch dir was cleaned up) it may not exist here
-        # any more, regenerate it from the source tifs rather than crash on open.
-        # anchor_only additionally narrows this to just the anchor z regardless of
-        # whether the full recording exists, see _ensure_local_frames.
-        frames_dir_override, frame_to_z_override, anchor_idx_override = None, None, None
-        if (self._state is not None and self._state.frames_dir
-                and self._state.anchor_catmaid_z is not None):
-            frames_dir_override, frame_to_z_override, anchor_idx_override = _ensure_local_frames(
-                self._state.frames_dir, self._state.frame_to_z, self._state.anchor_frame_idx,
-                chain=self.chain, cw=self._cw, cfg=self.ctx.cfg,
-                annotate_df=self.ctx.annotate_df, anchor_catmaid_z=self._state.anchor_catmaid_z,
-                neuron=neuron, chain_idx=chain_idx, anchor_only=self.anchor_only,
-                context_frames=self.context_frames, chain_dir=chain_dir)
+        # any more, regenerate it from the source tifs rather than crash on open. It
+        # can also be None outright: import_bundle clears it on every chain a recrop
+        # touched, exactly so this regenerates instead of reusing the old window's
+        # frames (see _resolve_chain_frames). anchor_only additionally narrows this
+        # to just the anchor z regardless of whether the full recording exists, see
+        # _ensure_local_frames.
+        frames_dir_override, frame_to_z_override, anchor_idx_override = _resolve_chain_frames(
+            self._state, chain=self.chain, cw=self._cw, cfg=self.ctx.cfg,
+            annotate_df=self.ctx.annotate_df, neuron=neuron, chain_idx=chain_idx,
+            anchor_only=self.anchor_only, context_frames=self.context_frames,
+            chain_dir=chain_dir)
 
         # rebuild the overlay from disk (one definition of "how a mask is read").
         # anchor_idx MUST come from the same source as frame_to_z: a narrowed
@@ -1269,6 +1313,23 @@ class ReviewGUI:
             state, image_predictor=self.ctx.image_predictor,
             video_predictor=self.ctx.video_predictor, annotate_df=self.ctx.annotate_df,
             chain=self.chain, override_crop_window=cw_new)
+        # run_chain sets state.crop_window BEFORE the anchor phase and returns early,
+        # with frame_to_z/frames_dir/n_frames still None, when the anchor mask in the
+        # new window comes up empty (see the "empty anchor mask" branch in
+        # orchestrator.run_chain). Persisting that state here would overwrite this
+        # chain's ONLY recorded frame_to_z with None while masks/ on disk still holds
+        # the OLD window's masks: state.json would then describe a window with no
+        # frames at all, review.load_chain would refuse it ("frame_to_z is required
+        # but is absent"), and there is no master copy to recover from inside a
+        # bundle. Refuse instead and leave every on-disk file exactly as it was; a
+        # human-directed recrop that finds nothing to seed from is not silently
+        # worse than not trying.
+        if state.frame_to_z is None:
+            print(f"[gui] recrop {self.neuron} chain {self.chain_idx:02d}: the recrop "
+                  f"produced no anchor mask in {cw_new.size_tif} ({label}); nothing was "
+                  f"written and the chain is unchanged. Try a larger or "
+                  f"better-centred window.")
+            return
         # run_chain does NOT persist state; every caller does its own save (batch.py
         # does it immediately after its own run_chain). Skipping it here left the new
         # masks on disk in cw_new's space while state.json still described the OLD

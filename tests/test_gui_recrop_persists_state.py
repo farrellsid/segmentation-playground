@@ -60,8 +60,17 @@ def _gui_for_recrop(tmp_path, monkeypatch, new_window):
     g.ctx = _Ctx()
 
     def fake_run_chain(state, **kw):
-        """Stand in for the real run: set the window as run_chain does, write nothing else."""
+        """Stand in for the real run: set the window as run_chain does, write nothing else.
+
+        frame_to_z is set here because a real run_chain sets it during frame prep,
+        after the anchor phase succeeds. Leaving it None would make _recrop_to_window's
+        empty-anchor guard (I6) refuse to persist, which is right for a genuinely
+        empty anchor but wrong for this stand-in: these tests are about what gets
+        WRITTEN on a successful recrop, not about the empty-anchor path (covered in
+        test_gui_recrop_in_bundle.py).
+        """
         state.crop_window = kw["override_crop_window"].to_dict()
+        state.frame_to_z = {0: 1500}
         state.status = "done"
         return state
 
@@ -107,6 +116,7 @@ def _cfg_seen_by_run_chain(tmp_path, monkeypatch):
     def capture(state, **kw):
         seen["cfg"] = state.config
         state.crop_window = kw["override_crop_window"].to_dict()
+        state.frame_to_z = {0: 1500}
         state.status = "done"
         return state
 
