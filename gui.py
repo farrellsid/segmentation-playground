@@ -1230,6 +1230,15 @@ class ReviewGUI:
         """Re-run the open chain in ``cw_new`` (an alignment.CropWindow) via the standard
         run path, then reopen it. Shared by grow-recrop and the region picker. Heavy and
         blocking: re-preps the _pcrop frames + re-propagates."""
+        # Both recrop entry points (grow, and the region picker's confirm) funnel through
+        # here, so the guard lives here rather than in each. Recrop re-reads full-res tifs;
+        # without them it fails deep inside a read, minutes in, with nothing naming the
+        # cause.
+        problem = pipeline.raw_em_problem()
+        if problem:
+            print(f"[gui] recrop needs the raw EM tif stack: {problem}. Set 'Raw EM (tif "
+                  f"stack)' in the launcher, then reopen this chain.")
+            return
         from dataclasses import replace
         old = self._cw.size_tif if self._cw is not None else "(_sam)"
         print(f"[gui] recrop {self.neuron} chain {self.chain_idx:02d}: {old} -> "

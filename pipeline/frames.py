@@ -177,6 +177,45 @@ class TifFrameStore(FrameStore):
         return sorted([(k, f) for (k, f) in out if lo <= k <= hi], key=lambda kf: kf[0])
 
 
+def raw_em_problem(worm_path=None) -> Optional[str]:
+    """None when ``worm_path`` looks like the raw EM tif stack, else why it does not.
+
+    The stack is a flat directory of ``..z{file_z}.tif`` files, parsed by
+    :func:`_parse_file_z`. This lives here because this module owns that naming
+    convention; the launcher's preflight and the GUI's recrop guard both call it, so
+    the rule cannot drift between what is reported and what is enforced.
+
+    A directory of unrelated tifs deliberately does NOT pass. That case looks
+    configured and then fails one frame lookup at a time, which is the worst of both
+    worlds: recrop is offered and then dies deep inside a read.
+
+    Parameters
+    ----------
+    worm_path : path-like, optional
+        Defaults to :data:`sam2_utils.config.WORM_PATH`.
+
+    Returns
+    -------
+    str or None
+        A human-readable problem, or None when the path is usable.
+    """
+    if worm_path is None:
+        worm_path = config.WORM_PATH
+    if not str(worm_path).strip():
+        return "raw EM path is not set"
+    path = Path(worm_path)
+    if not path.is_dir():
+        return f"{path} is not a directory"
+    for f in path.glob("*.tif"):
+        try:
+            _parse_file_z(f)
+        except (ValueError, IndexError):
+            continue
+        return None
+    return (f"{path} holds no ..z<number>.tif frames, so it is not the raw EM stack "
+            f"(expected names like 1301____z1300.0.tif)")
+
+
 def load_frame_sam(catmaid_z: int, *, scale: int,
                    frame_store: Optional[FrameStore] = None
                    ) -> tuple[np.ndarray, tuple[int, int]]:
