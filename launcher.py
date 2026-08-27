@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -48,6 +50,155 @@ def torch_available() -> bool:
     except Exception:
         return False
     return True
+
+
+@dataclass
+class MachineCheck:
+    """One preflight verdict, rendered as a line in the window.
+
+    ``fix`` is what to do about it, phrased as the field to fill or the command to
+    run, and is empty when ``ok``. Kept as data rather than printed text so the tests
+    assert on the verdict rather than on wording.
+    """
+    name: str
+    ok: bool
+    detail: str
+    fix: str = ""
+
+
+@lru_cache(maxsize=1)
+def _device_name() -> str:
+    """The device SAM2 would run on: 'cuda', 'mps' or 'cpu'.
+
+    A named module function rather than an inline call so a test can replace it
+    without a GPU, and so the torch import stays inside it. Cached because the mode
+    gate re-runs the checks on every path edit, while the device cannot change within
+    a session, and ``setup_device`` is not free: it initialises CUDA and enters a
+    process-global autocast context.
+    """
+    from sam2_utils import setup
+    return setup.setup_device(verbose=False).type
+
+
+def _writable(path: Path) -> Optional[str]:
+    """None when ``path`` is a directory that can be written to, else why not.
+
+    Proved by writing and deleting a file rather than by reading permission bits,
+    which are unreliable on Windows and say nothing about a full or read-only volume.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".sam2_write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
+def machine_checks(profile: dict) -> list:
+    """What this machine can do, one MachineCheck per requirement.
+
+    Ordered from most fundamental to most specific, which is also the order a reviewer
+    fixes them in. Each check is caught independently: one raising must not hide the
+    rest, the same reason bundle.validate_bundle returns a list of problems instead of
+    raising on the first.
+
+    Parameters
+    ----------
+    profile : dict
+        A profile from :func:`load_profile`. Its ``worm_path``, ``checkpoint_dir`` and
+        ``frames_root`` are read; an empty one falls back to the config default, which
+        is what an unconfigured machine looks like.
+
+    Returns
+    -------
+    list of MachineCheck
+        One verdict per requirement, in fix order.
+    """
+    from pipeline.config import PipelineConfig
+    from sam2_utils import config as cfg_mod
+
+    checks = []
+
+    def _check(name, fn):
+        try:
+            checks.append(fn())
+        except Exception as exc:                      # noqa: BLE001 - reported, not raised
+            checks.append(MachineCheck(name, False, f"check failed: {exc}",
+                                       "this is a bug; report it with the message above"))
+
+    def _torch():
+        if not torch_available():
+            return MachineCheck("torch", False, "not installed",
+                                "install the full requirements: py -3 -m pip install -r "
+                                "requirements.txt")
+        import torch
+        return MachineCheck("torch", True, f"version {torch.__version__}")
+
+    def _device():
+        name = _device_name()
+        if name == "cuda":
+            detail = "cuda, the fast path"
+        elif name == "mps":
+            detail = ("mps (Apple Silicon). Propagation will be slow, and SAM2 on MPS is "
+                      "preliminary upstream, so masks may differ from a CUDA run")
+        else:
+            detail = "cpu. Propagation will be slow; expect minutes per chain"
+        return MachineCheck("device", True, detail)
+
+    def _checkpoint():
+        ckpt_dir = Path(profile.get("checkpoint_dir") or cfg_mod.CHECKPOINT_DIR)
+        problem = _writable(ckpt_dir)
+        if problem:
+            return MachineCheck("checkpoint", False, f"{ckpt_dir}: {problem}",
+                                "point 'Checkpoints' at a folder you can write to")
+        size = PipelineConfig().model_size
+        _url, filename, _model_cfg = cfg_mod.SAM2_CHECKPOINTS[size]
+        if (ckpt_dir / filename).exists():
+            return MachineCheck("checkpoint", True, f"{filename} present in {ckpt_dir}")
+        return MachineCheck("checkpoint", True,
+                            f"{filename} is missing and will download on first use "
+                            f"(about 2.4 GB for {size}) into {ckpt_dir}")
+
+    def _raw_em():
+        from pipeline import raw_em_problem
+        worm = profile.get("worm_path") or ""
+        # Pass "" rather than None when unset: None falls back to config.WORM_PATH, this
+        # repo's Windows default, which would pass on a machine that happens to have it
+        # and report a path the reviewer never chose.
+        problem = raw_em_problem(worm)
+        if problem:
+            return MachineCheck("raw EM", False, problem,
+                                "set 'Raw EM (tif stack)'; needed for recrop only, not "
+                                "for redrawing or re-propagating")
+        return MachineCheck("raw EM", True, f"tif stack at {worm}")
+
+    def _frames():
+        root = Path(profile.get("frames_root") or cfg_mod.FRAMES_ROOT)
+        problem = _writable(root)
+        if problem:
+            return MachineCheck("frames cache", False, f"{root}: {problem}",
+                                "point 'Frames cache' at a folder you can write to")
+        return MachineCheck("frames cache", True, f"writable at {root}")
+
+    _check("torch", _torch)
+    _check("device", _device)
+    _check("checkpoint", _checkpoint)
+    _check("raw EM", _raw_em)
+    _check("frames cache", _frames)
+    return checks
+
+
+def can_run_model(checks: list) -> bool:
+    """Whether full mode is honest on this machine: torch and a usable checkpoint dir.
+
+    The raw EM is deliberately NOT required. Recrop needs it; re-predict and resume
+    propagation do not, and refusing the model outright over a missing tif stack would
+    take away the two controls that still work.
+    """
+    needed = {"torch", "checkpoint"}
+    return all(c.ok for c in checks if c.name in needed)
 
 
 def load_profile(path: Optional[Path] = None) -> dict:
@@ -235,15 +386,37 @@ def run() -> None:
     mode_combo = QComboBox()
     mode_combo.addItem("Redraw only (no model)", "review")
     mode_combo.addItem("Enable SAM2/SAM3 reprop", "full")
-    has_torch = torch_available()
-    if not has_torch:
-        mode_combo.model().item(1).setEnabled(False)
-        mode_combo.setToolTip("Reprop needs torch, which is not installed on this machine.")
-    # Fall back to review when the saved profile asks for full on a machine that
-    # cannot run it. Without the has_torch term the combo would show the disabled
-    # reprop item as the selected one, offering a choice this machine cannot honour.
+
+    def _machine_profile():
+        return {**profile,
+                "frames_root": frames_edit.text().strip(),
+                "worm_path": worm_edit.text().strip(),
+                "checkpoint_dir": ckpt_edit.text().strip()}
+
+    def refresh_mode_gate(*_):
+        """Enable full mode only when this machine can honestly run it.
+
+        Torch alone is not enough: a machine with torch and no checkpoint used to be
+        offered the reprop controls and failed minutes later, at predictor build.
+        """
+        checks = machine_checks(_machine_profile())
+        ok = can_run_model(checks)
+        mode_combo.model().item(1).setEnabled(ok)
+        if not ok:
+            missing = ", ".join(c.name for c in checks
+                                if not c.ok and c.name in ("torch", "checkpoint"))
+            mode_combo.setToolTip(f"Reprop needs {missing} on this machine.")
+            # Fall back to review when the saved profile asks for full on a machine that
+            # cannot run it. Without this the combo would show the disabled reprop item
+            # as the selected one, offering a choice this machine cannot honour.
+            mode_combo.setCurrentIndex(0)
+        else:
+            mode_combo.setToolTip("")
+        return checks
+
     want_full = profile.get("ui_mode", "review") == "full"
-    mode_combo.setCurrentIndex(1 if (want_full and has_torch) else 0)
+    mode_combo.setCurrentIndex(1 if (want_full and can_run_model(
+        machine_checks(_machine_profile()))) else 0)
     remember = QCheckBox("Remember these settings")
     remember.setChecked(True)
     opts.addWidget(QLabel("Reviewer:"))
@@ -260,6 +433,19 @@ def run() -> None:
     layout.addWidget(launch_btn)
     render_btn = QPushButton("Render video + mesh")
     layout.addWidget(render_btn)
+    check_btn = QPushButton("Check this machine")
+    layout.addWidget(check_btn)
+
+    def do_check(*_):
+        """Report every machine check into the summary pane, fixes included."""
+        lines = []
+        for c in machine_checks(_machine_profile()):
+            mark = "ok  " if c.ok else "NO  "
+            lines.append(f"{mark}{c.name}: {c.detail}")
+            if c.fix:
+                lines.append(f"      fix: {c.fix}")
+        summary.setPlainText("\n".join(lines))
+        refresh_mode_gate()
 
     def refresh(*_):
         root = Path(path_edit.text().strip() or ".")
@@ -315,7 +501,13 @@ def run() -> None:
     path_edit.editingFinished.connect(refresh)
     launch_btn.clicked.connect(do_launch)
     render_btn.clicked.connect(do_render)
+    check_btn.clicked.connect(do_check)
+    # The machine rows re-gate the mode combo, but deliberately do NOT call refresh():
+    # which neurons are listed depends on the picked tree, not on where the raw EM is.
+    for edit in (worm_edit, frames_edit, ckpt_edit):
+        edit.editingFinished.connect(refresh_mode_gate)
     refresh()
+    refresh_mode_gate()
 
     win.resize(640, 760)
     win.show()
