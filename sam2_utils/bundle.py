@@ -78,6 +78,65 @@ def is_recorded_absolute(recorded) -> bool:
     return text.startswith(("/", "\\")) or Path(text).is_absolute()
 
 
+def is_bundle(root) -> bool:
+    """Whether ``root`` is a review bundle rather than a plain output tree.
+
+    The manifest is the marker. Callers used to spell this inline, and the two
+    behaviours that depend on it (frames stay relative, geometry comes home) are too
+    important to be decided by a copy of an expression.
+    """
+    return (Path(root) / BUNDLE_MANIFEST).exists()
+
+
+def adopt_chain_frames(chain_dir, frames_dir, *, relative: str = "frames") -> str:
+    """Move a freshly prepared frame view into a bundle chain dir, returning its
+    relative name.
+
+    A recrop prepares frames in the machine's frames cache and records an absolute
+    path. Inside a bundle that breaks two things at once: :func:`validate_bundle`
+    rejects an absolute ``frames_dir``, and the bundle stops opening on any other
+    machine. Moving the view in and recording it relative keeps the bundle
+    self-contained.
+
+    Moves rather than copies: the source is a cache ``prepare_chain_crop_frames``
+    rebuilds fresh anyway, and a duplicated tier-2 chain's frames are real disk on a
+    laptop.
+
+    Parameters
+    ----------
+    chain_dir : Path
+        The bundle's chain directory.
+    frames_dir : path-like
+        The prepared view to adopt.
+    relative : str, optional
+        The name to give it inside the chain directory.
+
+    Returns
+    -------
+    str
+        ``relative``, ready to store as the state's ``frames_dir``.
+
+    Raises
+    ------
+    ValueError
+        If the source holds no prepared frames. Replacing a chain's frames with an
+        empty directory would leave the bundle unopenable, which is worse than a
+        failed recrop.
+    """
+    import shutil
+
+    chain_dir, frames_dir = Path(chain_dir), Path(frames_dir)
+    if not sorted(frames_dir.glob("*.jpg")):
+        raise ValueError(f"{frames_dir} holds no prepared frames; refusing to replace "
+                         f"{chain_dir / relative} with an empty view")
+    dest = chain_dir / relative
+    if dest.exists() and frames_dir.resolve() == dest.resolve():
+        return relative
+    shutil.rmtree(dest, ignore_errors=True)
+    shutil.move(str(frames_dir), str(dest))
+    return relative
+
+
 def resolve_frames_dir(recorded, chain_dir):
     """Resolve a chain's recorded ``frames_dir`` to a usable path.
 

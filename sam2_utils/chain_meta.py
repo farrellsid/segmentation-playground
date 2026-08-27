@@ -182,3 +182,37 @@ def read_meta(chain_dir: Path) -> dict:
     meta = json.loads(path.read_text(encoding="utf-8"))
     validate_meta(meta)
     return meta
+
+
+def refresh_meta(chain_dir: Path, state: dict) -> Optional[Path]:
+    """Rewrite ``<chain_dir>/meta.json`` for a chain whose geometry just changed.
+
+    A recrop changes ``mask_space``, ``mask_scale``, ``crop_window`` and ``z_range``,
+    every one of which this record projects from ``state.json``. Identity and
+    provenance are carried over from the existing record, so this never needs the
+    registry and can never invent a new neuron id.
+
+    Parameters
+    ----------
+    chain_dir : Path
+        The chain directory.
+    state : dict
+        The chain's new ``state.json``, already parsed.
+
+    Returns
+    -------
+    Path or None
+        The written path, or None when the chain has no ``meta.json``. A plain output
+        tree does not always carry one, and there is nothing to keep in sync there.
+    """
+    chain_dir = Path(chain_dir)
+    if not (chain_dir / META_FILENAME).exists():
+        return None
+    old = read_meta(chain_dir)
+    prov = old.get("provenance", {}) or {}
+    meta = build_meta(state, neuron_id=old["neuron_id"],
+                      source_tree=prov.get("source_tree", ""),
+                      backend=prov.get("backend", "sam2"),
+                      reprop_variant=prov.get("reprop_variant"),
+                      chain_dir=chain_dir)
+    return write_meta(chain_dir, meta)

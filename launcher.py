@@ -295,7 +295,7 @@ def _summary_text(root: Path) -> str:
     # Frames ARE required here: this is the picker a reviewer is about to open a
     # chain from, so a clone whose frames were never placed should say so now
     # rather than fail confusingly on the first chain.
-    problems = bundle.validate_bundle(root) if (root / bundle.BUNDLE_MANIFEST).exists() else []
+    problems = bundle.validate_bundle(root) if bundle.is_bundle(root) else []
     progress = bundle.review_progress(root)
     if not progress:
         return f"No chains found under {root}"
