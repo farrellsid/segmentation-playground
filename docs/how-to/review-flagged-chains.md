@@ -35,6 +35,23 @@ The first time you trigger a re-segmentation (`R`/`G`), the SAM2 models load (a 
 seconds + GPU memory). Everything before that, browsing, scrubbing, labeling,
 painting, needs **no GPU**.
 
+### Machine settings (recrop and SAM2)
+
+The launcher's **This machine** group holds the three paths the model needs, none of
+which travel in a bundle:
+
+- **Raw EM (tif stack)**: the full-resolution `..z<number>.tif` frames. Recrop re-reads
+  them to cut a new window, so recrop is the only thing that needs this.
+- **Frames cache**: where prepared JPEG frames are written. Needs to be writable and
+  roomy; a tier-2 chain's frames are unique to its window and are not shared.
+- **Checkpoints**: where the SAM2 weights live or land. If the checkpoint is absent it
+  downloads on first use, about 2.4 GB for the `large` model.
+
+**Check this machine** reports each one, plus whether torch is installed and which
+device SAM2 would run on. On Apple Silicon that is `mps`, which works but is slow, and
+which upstream still calls preliminary, so masks can differ slightly from a CUDA run.
+Reprop stays disabled until torch and a usable checkpoint folder are both present.
+
 ---
 
 ## 2. The window
@@ -189,6 +206,13 @@ If a tier-2 chain's crop still clips the cell (the membrane runs off the edge of
   full `_sam` frame with a blue rectangle at the current window. Drag and resize it to the
   region you want (anywhere on the frame, so you can re-centre, not just grow), then
   **confirm recrop**. **cancel recrop** leaves the chain unchanged.
+
+**Recropping inside a review bundle.** This works, and the bundle stays a bundle: the
+new frames are moved into the chain's own `frames/` folder and recorded relative, so it
+still opens on any machine. When you send the bundle back, `import_bundle` notices the
+new crop window and carries it home with the masks, then clears the master tree's
+recorded frames so they are re-prepared in the right window. It reports every chain
+whose window changed, since that is a bigger event than a mask edit.
 
 Either way the re-run re-prepares the cropped frames, re-seeds the anchor, re-propagates,
 and rewrites `masks/` + `qc.csv` + `state.json`, then reopens the chain so you see the

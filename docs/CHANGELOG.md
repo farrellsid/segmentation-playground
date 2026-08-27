@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-08-27, a second reviewer's machine, and a recrop that survives the round trip](#r-2026-08-27-machine-setup-recrop)
 - [2026-08-26, the GUI re-predict now gets the cleanup the batch already had](#r-2026-08-26-gui-image-cleanup)
 - [2026-08-26, a video and a Blender mesh from a corrected bundle](#r-2026-08-26-review-render)
 - [2026-08-25, GUI recrop silently threw away the window the reviewer drew](#r-2026-08-25-gui-recrop-fallback)
@@ -59,6 +60,47 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-08-27-machine-setup-recrop"></a>
+## 2026-08-27, a second reviewer's machine, and a recrop that survives the round trip
+
+A review bundle opens on a machine that has none of this project's data, and it does that
+well. What never travelled is everything the model needs: the raw EM tif stack that recrop
+re-reads, the frames cache it writes to, and the checkpoint. All three were env vars only a
+shell could set, so recrop was unreachable on a reviewer's own machine, and full mode
+unlocked on a bare `import torch`, which meant a laptop with torch and no checkpoint
+offered the reprop controls and failed minutes later at predictor build.
+
+The launcher now records all three and runs a preflight that says what is missing and how
+to fix it, including which device SAM2 would actually use. On Apple Silicon that is MPS,
+which works, is slow, and is preliminary upstream, so a reviewer comparing her masks
+against the batch's deserves to be told. A missing checkpoint is reported as a pass with
+its download size, because `ensure_checkpoint` downloads rather than failing, and the raw
+EM does not gate the model at all: recrop needs it, re-predict and resume propagation do
+not.
+
+**The part that was not asked for.** Recrop rewrites a chain's geometry, and geometry is
+exactly what the round trip did not carry. `import_bundle` moves masks and qc.csv and
+deliberately never copies state.json, because it holds a bundle-relative frames_dir. A
+recrop in a bundle therefore came home as masks alone, into a master tree whose state.json
+still described the old window, and every consumer placed the new pixels at the old offsets
+with nothing to signal it. The same failure `_recrop_to_window`'s own comments warn about,
+one level out.
+
+Sharper still: `prepare_chain_crop_frames` namespaces its view directory by neuron, chain
+and crop scale, so a new window at the same scale reuses the same directory name. The
+master's recorded frames_dir would still exist, still holding the old window's frames.
+Nothing would be missing, and the GUI would draw the new masks on the old pixels. So the
+import clears it, and a cleared frames_dir became a state the GUI has to handle rather than
+crash on.
+
+Two decisions worth keeping. **No schema bump**: the bundles already delivered are version
+1, and gating the geometry merge on a version would silently drop a recrop made in a bundle
+a reviewer already holds. Import compares geometry per chain instead. **Geometry merges,
+`config` never does**: state.json embeds the whole PipelineConfig, including output_root and
+frames_root, so copying it back would write a reviewer's Mac paths into the master tree. The
+allowlist is the mechanism that prevents that, which is why it is a named constant with a
+test that asserts its exact contents.
 
 <a id="r-2026-08-26-gui-image-cleanup"></a>
 ## 2026-08-26, the GUI re-predict now gets the cleanup the batch already had
