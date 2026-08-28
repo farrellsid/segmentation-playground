@@ -487,6 +487,12 @@ def run() -> None:
     mode_combo = QComboBox()
     mode_combo.addItem("Redraw only (no model)", "review")
     mode_combo.addItem("Enable SAM2/SAM3 reprop", "full")
+    # Recrop only, and deliberately NOT gated below: it stays selectable whatever the
+    # preflight says. Recrop re-runs the chain and so still needs a predictor to
+    # succeed, but the gate belongs at the recrop, which reports what is missing, not
+    # at the door of the whole session. Index 2 on purpose: the gate addresses the full
+    # item as item(1), so appending keeps that stable.
+    mode_combo.addItem("Recrop only (ungated)", "recrop")
 
     def _machine_profile():
         return {**profile,

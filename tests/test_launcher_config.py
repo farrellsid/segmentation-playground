@@ -183,3 +183,21 @@ def test_full_mode_is_accepted_when_the_machine_can_actually_run_it(tmp_path, mo
                checkpoint_dir=str(ckpt), worm_path="", frames_root="")
     kw = launcher.build_launch_kwargs(prof)
     assert kw["ui_mode"] == "full"
+
+
+def test_recrop_mode_is_not_gated_on_torch(tmp_path, monkeypatch):
+    """The point of recrop mode: reach the crop-window controls on a machine the
+    launcher would otherwise refuse. Recrop still needs a predictor to RUN, and says so
+    when it cannot build one, but the launcher must not refuse the session up front."""
+    monkeypatch.setattr(launcher, "torch_problem",
+                        lambda: "ModuleNotFoundError: No module named 'torch'")
+    prof = dict(launcher.DEFAULT_PROFILE, output_root=str(tmp_path), ui_mode="recrop")
+    assert launcher.build_launch_kwargs(prof)["ui_mode"] == "recrop"
+
+
+def test_full_mode_is_still_gated_on_torch(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "torch_problem",
+                        lambda: "ModuleNotFoundError: No module named 'torch'")
+    prof = dict(launcher.DEFAULT_PROFILE, output_root=str(tmp_path), ui_mode="full")
+    with pytest.raises(ValueError):
+        launcher.build_launch_kwargs(prof)

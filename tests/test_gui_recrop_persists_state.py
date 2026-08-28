@@ -74,6 +74,14 @@ def _gui_for_recrop(tmp_path, monkeypatch, new_window):
         state.status = "done"
         return state
 
+    # The raw EM guard consults the real config.WORM_PATH, so without this stub these
+    # tests pass or fail depending on whether an external drive happens to be mounted.
+    # Found for real: the drive dropped off mid-session and all four failed, having
+    # passed every run before it. run_chain is stubbed here, so no tif is ever read;
+    # what is under test is the bookkeeping around the re-run, not the EM.
+    monkeypatch.setattr(pipeline, "raw_em_problem", lambda *a, **k: None)
+    monkeypatch.setattr(gui.pipeline, "raw_em_problem", lambda *a, **k: None,
+                        raising=False)
     monkeypatch.setattr(pipeline, "run_chain", fake_run_chain)
     monkeypatch.setattr(gui.pipeline, "run_chain", fake_run_chain, raising=False)
     monkeypatch.setattr(g, "_close_session", lambda: None)

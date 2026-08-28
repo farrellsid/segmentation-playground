@@ -108,14 +108,26 @@ _MODE_CHOICES = [_MODE_FLAGGED, _MODE_EVERYTHING]
 # lists; these decide WHICH CONTROLS exist at all. A reviewer with no GPU cannot use
 # the model controls, and leaving them on screen only invites a wasted click.
 UI_MODE_REVIEW = "review"
+UI_MODE_RECROP = "recrop"
 UI_MODE_FULL = "full"
-UI_MODES = (UI_MODE_REVIEW, UI_MODE_FULL)
+UI_MODES = (UI_MODE_REVIEW, UI_MODE_RECROP, UI_MODE_FULL)
 
-#: Widget groups, in dock order.
-PANELS = ("navigation", "drawing", "model", "verdict")
+#: Widget groups, in dock order. "model" is the prompt surface (points, box, re-predict,
+#: resume); "recrop" is the crop-window surface (grow, pick region, confirm, cancel).
+#: They are separate panels because they are separately reachable: recrop mode shows the
+#: second without the first.
+PANELS = ("navigation", "drawing", "model", "recrop", "verdict")
 
-#: Keys bound to actions that need a SAM2/SAM3 predictor.
-MODEL_KEYS = frozenset({"p", "n", "b", "r", "g", "c", "f"})
+#: Keys for the prompt surface: they edit or consume SAM2 prompts.
+PROMPT_KEYS = frozenset({"p", "n", "b", "r", "g"})
+
+#: Keys for the crop-window surface.
+RECROP_KEYS = frozenset({"c", "f"})
+
+#: Keys bound to actions that need a SAM2/SAM3 predictor. Recrop needs one too (it
+#: re-runs the chain), so this stays the union; what differs per mode is which half is
+#: REACHABLE, not which half is free of the model.
+MODEL_KEYS = PROMPT_KEYS | RECROP_KEYS
 
 #: Every key the GUI binds in full mode.
 ALL_KEYS = frozenset({".", ",", "p", "n", "b", "l", "r", "g", "s", "c", "f",
@@ -139,7 +151,9 @@ def panels_for_mode(mode: str) -> tuple:
         raise ValueError(f"unknown UI mode {mode!r}; expected one of {UI_MODES}")
     if mode == UI_MODE_FULL:
         return PANELS
-    return tuple(p for p in PANELS if p != "model")
+    if mode == UI_MODE_RECROP:
+        return tuple(p for p in PANELS if p != "model")
+    return tuple(p for p in PANELS if p not in ("model", "recrop"))
 
 
 def keys_for_mode(mode: str) -> frozenset:
@@ -158,7 +172,11 @@ def keys_for_mode(mode: str) -> frozenset:
     """
     if mode not in UI_MODES:
         raise ValueError(f"unknown UI mode {mode!r}; expected one of {UI_MODES}")
-    return ALL_KEYS if mode == UI_MODE_FULL else ALL_KEYS - MODEL_KEYS
+    if mode == UI_MODE_FULL:
+        return ALL_KEYS
+    if mode == UI_MODE_RECROP:
+        return ALL_KEYS - PROMPT_KEYS
+    return ALL_KEYS - MODEL_KEYS
 
 # Cleanup of the image-phase re-predict. SAM2's raw mask on an EM frame comes back
 # with detached specks and fuzz outside the cell and a frayed, netty boundary; the batch
@@ -1757,6 +1775,20 @@ class ReviewGUI:
         self._clean_smooth_spin = SpinBox(label="smooth (px)", value=CLEANUP_SMOOTH_RADIUS,
                                           min=0, max=16, step=1)
 
+        return [Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
+                Label(value=", correct, "), rerun, resume,
+                self._clean_mode, self._clean_island_spin, self._clean_smooth_spin]
+
+    def _build_recrop_panel(self) -> list:
+        """The crop-window surface, separate from the prompt surface above.
+
+        Split out so recrop mode can show it alone. Recrop still re-runs the chain and
+        therefore still needs a predictor; what this split buys is reaching it without
+        the launcher gating the whole session on the model, and without the prompt
+        controls on screen. Always called, so `self._grow_spin` exists in every mode.
+        """
+        from magicgui.widgets import PushButton, Label, SpinBox
+
         # tier-2 recrop: grow this chain's crop window by N _tif px/side and re-run it
         # (for a window that auto-sized too small). Only meaningful on a tier-2 chain.
         self._grow_spin = SpinBox(label="grow crop (tif px)", value=512, min=0, max=8192, step=64)
@@ -1770,10 +1802,7 @@ class ReviewGUI:
         cancel_recrop = PushButton(text="✗ cancel recrop")
         cancel_recrop.changed.connect(self.cancel_recrop)
 
-        return [Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
-                Label(value=", correct, "), rerun, resume,
-                self._clean_mode, self._clean_island_spin, self._clean_smooth_spin,
-                Label(value=", recrop, "), self._grow_spin, recrop,
+        return [Label(value=", recrop, "), self._grow_spin, recrop,
                 pick_region, confirm_recrop, cancel_recrop]
 
     def _build_verdict_panel(self) -> list:
@@ -1802,6 +1831,7 @@ class ReviewGUI:
             "navigation": self._build_navigation_panel(),
             "drawing": self._build_drawing_panel(),
             "model": self._build_model_panel(),
+            "recrop": self._build_recrop_panel(),
             "verdict": self._build_verdict_panel(),
         }
         widgets = []
@@ -2061,18 +2091,20 @@ def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
     something in it."""
     if ui_mode not in UI_MODES:
         raise ValueError(f"unknown UI mode {ui_mode!r}; expected one of {UI_MODES}")
-    if ui_mode == UI_MODE_FULL:
+    if ui_mode in (UI_MODE_FULL, UI_MODE_RECROP):
         # Torch BEFORE napari, which imports Qt. On Windows, Qt ships DLLs that shadow
         # torch's, so a torch first imported after Qt fails with WinError 1114 on
         # c10.dll even though torch is installed and working. That import used to
-        # happen lazily at the first R/G, which is exactly where it would fail. Review
-        # mode skips this: it never builds a predictor, and a review-only machine has
-        # no torch to load.
+        # happen lazily at the first R/G/C, which is exactly where it would fail.
+        # Recrop mode needs this as much as full mode: recrop re-runs the chain, so it
+        # builds a predictor too. Review mode skips it: it never builds one, and a
+        # review-only machine has no torch to load.
         from sam2_utils import setup as _setup
         problem = _setup.torch_problem()
         if problem:
-            print(f"[gui] full mode needs torch and it did not load: {problem}. "
-                  "Re-segmentation (R/G) will not work in this session.")
+            action = "recrop (C/F)" if ui_mode == UI_MODE_RECROP else "re-segmentation (R/G/C)"
+            print(f"[gui] {ui_mode} mode needs torch and it did not load: {problem}. "
+                  f"{action} will fail when you run it; everything else still works.")
     import napari
     output_root = Path(output_root) if output_root else config.OUTPUT_ROOT
     if source is not None and neuron is not None:

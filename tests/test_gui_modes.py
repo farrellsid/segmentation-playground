@@ -19,18 +19,17 @@ import pytest
 import gui
 
 
-def test_modes_are_the_two_expected():
-    assert gui.UI_MODES == (gui.UI_MODE_REVIEW, gui.UI_MODE_FULL)
+def test_modes_are_the_three_expected():
+    assert gui.UI_MODES == (gui.UI_MODE_REVIEW, gui.UI_MODE_RECROP, gui.UI_MODE_FULL)
 
 
 def test_full_mode_includes_every_panel():
     assert gui.panels_for_mode(gui.UI_MODE_FULL) == gui.PANELS
 
 
-def test_review_mode_drops_only_the_model_panel():
+def test_review_mode_drops_every_model_panel():
     panels = gui.panels_for_mode(gui.UI_MODE_REVIEW)
-    assert "model" not in panels
-    assert set(panels) == set(gui.PANELS) - {"model"}
+    assert set(panels) == set(gui.PANELS) - {"model", "recrop"}
 
 
 def test_review_mode_keeps_drawing_and_verdict():
@@ -64,6 +63,34 @@ def test_unknown_mode_is_rejected():
 
 def test_model_keys_are_the_documented_seven():
     assert gui.MODEL_KEYS == frozenset({"p", "n", "b", "r", "g", "c", "f"})
+
+
+def test_prompt_and_recrop_keys_partition_the_model_keys():
+    """The split is what makes a recrop-only mode possible: it must lose nothing and
+    overlap nowhere, or a key ends up bound in no mode or in the wrong one."""
+    assert gui.PROMPT_KEYS | gui.RECROP_KEYS == gui.MODEL_KEYS
+    assert gui.PROMPT_KEYS & gui.RECROP_KEYS == frozenset()
+
+
+def test_recrop_mode_keeps_the_recrop_panel_and_drops_the_prompt_panel():
+    """Recrop mode exists for a machine that should reach recrop without the launcher
+    gating it on torch. Re-predict and resume stay out: they are the prompt surface."""
+    panels = gui.panels_for_mode(gui.UI_MODE_RECROP)
+    assert "recrop" in panels and "model" not in panels
+    assert "drawing" in panels and "verdict" in panels and "navigation" in panels
+
+
+def test_recrop_mode_binds_the_recrop_keys_only():
+    keys = gui.keys_for_mode(gui.UI_MODE_RECROP)
+    assert gui.RECROP_KEYS <= keys, "C and F are the whole point of this mode"
+    assert keys & gui.PROMPT_KEYS == frozenset()
+    assert keys == gui.ALL_KEYS - gui.PROMPT_KEYS
+
+
+def test_recrop_mode_keeps_the_drawing_and_verdict_keys():
+    keys = gui.keys_for_mode(gui.UI_MODE_RECROP)
+    for k in ("l", "s", "z", "w", "o", "a", "x"):
+        assert k in keys
 
 
 # ---------------------------------------------------------------------------
