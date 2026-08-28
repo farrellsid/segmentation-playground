@@ -80,7 +80,12 @@ class TestReporting:
         monkeypatch.setattr(launcher, "torch_problem",
                             lambda: "ModuleNotFoundError: No module named 'torch'")
         check = [c for c in launcher.machine_checks({}) if c.name == "torch"][0]
-        assert check.ok is False and check.detail == "not installed"
+        assert check.ok is False
+        # Not an exact string: the detail also names the interpreter now (see
+        # TestDiagnosingTheWrongInterpreter). What must hold is that a genuinely absent
+        # torch does NOT get reported as the installed-but-unloadable case.
+        assert "not importable" in check.detail
+        assert "failed to load" not in check.detail
         assert "pip install" in check.fix
 
     def test_an_installed_but_unloadable_torch_does_not_say_not_installed(
@@ -109,3 +114,26 @@ class TestReporting:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+class TestDiagnosingTheWrongInterpreter:
+    """The common real cause of "torch: not installed" is not a missing torch, it is
+    torch installed into a DIFFERENT interpreter than the one running the launcher.
+    The reviewer's documented setup makes that likely: her review venv is deliberately
+    torch-free, so any torch she adds has to land in the same one she launches with."""
+
+    def test_the_install_fix_is_runnable_on_this_platform(self, monkeypatch):
+        """It used to say `py -3 ...`, the Windows launcher, which does not exist on
+        macOS, so the advice printed on her machine could not be run at all."""
+        monkeypatch.setattr(launcher, "torch_problem",
+                            lambda: "ModuleNotFoundError: No module named 'torch'")
+        check = [c for c in launcher.machine_checks({}) if c.name == "torch"][0]
+        assert "py -3" not in check.fix
+        assert sys.executable in check.fix
+
+    def test_a_missing_torch_names_the_interpreter_it_is_missing_from(self, monkeypatch):
+        monkeypatch.setattr(launcher, "torch_problem",
+                            lambda: "ModuleNotFoundError: No module named 'torch'")
+        check = [c for c in launcher.machine_checks({}) if c.name == "torch"][0]
+        assert sys.executable in check.detail, \
+            "without this, 'not installed' cannot be told apart from 'installed elsewhere'"

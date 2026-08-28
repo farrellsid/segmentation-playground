@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -143,9 +144,18 @@ def machine_checks(profile: dict) -> list:
             import torch
             return MachineCheck("torch", True, f"version {torch.__version__}")
         if "No module named" in problem:
-            return MachineCheck("torch", False, "not installed",
-                                "install the full requirements: py -3 -m pip install -r "
-                                "requirements.txt")
+            # Name the interpreter. "not installed" and "installed into a different
+            # environment" produce the identical import error, and the second is the
+            # likelier one here: the review install is deliberately torch-free, so a
+            # torch added afterwards has to land in the SAME interpreter that runs this.
+            # The command is built from sys.executable rather than hardcoded, because
+            # `py -3` is the Windows launcher and does not exist on macOS, where this
+            # advice was unrunnable.
+            return MachineCheck("torch", False,
+                                f"not importable by {sys.executable}",
+                                f"if torch is installed elsewhere, start the launcher from "
+                                f"that environment instead. To install it here: "
+                                f"\"{sys.executable}\" -m pip install -r requirements.txt")
         # Installed but not loadable is a different problem and needs a different fix.
         # Reporting it as "not installed" sent a real user to reinstall a torch that was
         # already there. The usual cause on Windows is Qt getting imported first: Qt
@@ -163,8 +173,8 @@ def machine_checks(profile: dict) -> list:
         # ok=False.
         if not torch_available():
             return MachineCheck("device", True,
-                                "unknown: torch is not installed, so the device this "
-                                "machine would run on cannot be probed yet")
+                                "unknown: torch is not importable here, so the device "
+                                "this machine would run on cannot be probed yet")
         name = _device_name()
         if name == "cuda":
             detail = "cuda, the fast path"
