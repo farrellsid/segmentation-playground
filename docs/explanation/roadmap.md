@@ -482,6 +482,43 @@ own grid of points as prompts, just not a human-placed one.
 - **Per-slice naming doesn't communicate image mode on its own**, worth a rename or a consistent
   first-use tie-in. Cosmetic, not researched, not scoped.
 
+- **Recrop re-runs the chain with the GUI's config, not the chain's own** (2026-08-28, CONFIRMED
+  against real data, not a hypothesis). `gui._recrop_to_window` builds a fresh `PipelineConfig`
+  from `ReviewContext`'s defaults and never reads the chain's recorded `state.json["config"]`.
+  Checked a chain in `AIA_for_lucinda`: it was produced with `backend: sam3` and
+  `seed_negatives: True`, and a recrop re-runs it with `backend: sam2` and `seed_negatives: False`.
+  So every recrop silently downgrades the backend and drops the negative prompts, and a chain from
+  a mask-seed tree would lose mask seeding too. Nothing in the GUI shows this. The fix is to
+  inherit the chain's own MODEL settings, and it needs an allowlist rather than a wholesale copy,
+  for the same reason `bundle.GEOMETRY_FIELDS` is one: `state.json["config"]` also carries
+  `output_root` and `frames_root`, which are the running machine's paths. Worth fixing before more
+  recropping happens, since each one costs quality invisibly.
+- **Recrop should not have to re-propagate the whole chain.** Today it does: `run_chain` re-seeds
+  the anchor and re-tracks every frame, which is both the slow part and the part that triggers the
+  config downgrade above. In practice the complaint that drives a recrop is usually that a few EDGE
+  frames are clipped, not that the whole chain is wrong. Two directions worth scoping: re-frame the
+  view and keep the existing masks (needs a geometric remap from the old `_pcrop` window to the new
+  one, which is resampling and carries the same silent-error risk as the nm/px and z-compaction bugs
+  already found in this area), or re-run only the affected frame range and splice. Either would also
+  make a model-free recrop possible for a reviewer with no torch, which is currently impossible
+  because recrop IS a SAM2 re-run.
+- **The full-frame recrop picker gives the human too little context.** Picking a new window on the
+  full `_sam` frame is disorienting: the view shows the frame and the current window, but not the
+  skeleton nodes, the neighbouring chains, or where the mask sits in z. Adding that context is a
+  small, self-contained GUI change and would reduce the number of recrops that need a second try.
+- **Try other single-image models for seed-frame verification.** SAM3 is the current best for the
+  anchor, but the anchor is a single-image segmentation problem, which is a crowded field with
+  strong recent entries. Worth a spot-check campaign in the same shape as the micro_sam and CellSAM
+  ones: pick a handful, run them on the same anchors, compare against the existing gate rather than
+  by eye. Cheap to test, and the anchor sets the ceiling for everything downstream.
+- **Auto-segmentation to generate the seed nodes themselves.** The nodes are currently annotated by
+  hand, which is the main human cost in the whole pipeline, and the lab wants this explored. Noting
+  it rather than scoping it: the hard parts are visible from here, and they are the same ones that
+  make dense reconstruction hard. Branching, identity assignment across z, and knowing which
+  detected object is which neuron are all unsolved here, and a node in the wrong place is worse than
+  no node because it seeds a confident wrong chain. Related to the existing FFN and node-informed
+  agglomeration work rather than a fresh start.
+
 Four other ideas from that meeting were researched the same day and already carry a real verdict or
 a queue slot, so they live in §5b now instead of being duplicated here: box prompting for per-slice
 (item 15), predictor-construction-time tuning (item 14), per-frame negative-prompt propagation
