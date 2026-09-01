@@ -50,6 +50,15 @@ def _new_view(tmp_path):
     return d
 
 
+class _RecropState:
+    """What run_chain hands back after a successful recrop, for the config test above."""
+    neuron, chain_idx = "AIAL", 0
+    frames_dir = None
+    crop_window = {"origin_tif": [10, 10], "size_tif": [2048, 2048],
+                   "crop_scale": 4, "sam_scale": 8}
+    frame_to_z = {0: 1500}
+
+
 def _harness(monkeypatch, tmp_path, root, chain_dir):
     """A ReviewGUI stand-in carrying only what _recrop_to_window touches."""
     view = _new_view(tmp_path)
@@ -88,11 +97,17 @@ def _harness(monkeypatch, tmp_path, root, chain_dir):
     self = types.SimpleNamespace(
         ctx=types.SimpleNamespace(output_root=root, image_predictor=None,
                                   video_predictor=None, annotate_df=None,
-                                  cfg=gui.pipeline.PipelineConfig(),
+                                  # ReviewContext sets these on its own cfg, so a
+                                  # stand-in that leaves them None is not faithful.
+                                  cfg=gui.pipeline.PipelineConfig(
+                                      output_root=root,
+                                      frames_root=tmp_path / "frames_cache"),
                                   ensure_predictors=lambda **kw: None),
         neuron="AIAL", chain_idx=0, chain={}, _cw=None,
         queue=types.SimpleNamespace(set_status=lambda *a, **k: None),
         reviewer="lucinda",
+        _state=None,      # a real ReviewGUI always has this; None means
+                          # no recorded config, so the base config is used
         _close_session=lambda: None,
         open_chain=lambda *a, **k: None,
     )
@@ -146,6 +161,30 @@ def test_recrop_refuses_without_the_raw_em(monkeypatch, tmp_path, capsys):
     assert "raw EM" in capsys.readouterr().out
 
 
+def test_the_recrop_reruns_with_the_chains_own_model_settings(monkeypatch, tmp_path):
+    """The chain, not the GUI, decides how it is segmented.
+
+    _recrop_to_window used to build a fresh PipelineConfig from ReviewContext's defaults,
+    so a chain produced with backend "sam3" and negative prompts came back as "sam2"
+    without them, silently, every time it was recropped. Measured on a real chain in
+    AIA_for_lucinda before this was fixed.
+    """
+    root, chain_dir = _bundle_chain(tmp_path)
+    self, saved, view, cw_new = _harness(monkeypatch, tmp_path, root, chain_dir)
+    seen = {}
+    monkeypatch.setattr(gui.pipeline, "ChainState",
+                        lambda **kw: seen.update(cfg=kw.get("config")) or _RecropState())
+    self._state = types.SimpleNamespace(config=gui.pipeline.PipelineConfig(
+        backend="sam3", seed_negatives=True, seed_mask=True,
+        output_root=pathlib.Path("/scratch/somewhere/else")))
+    gui.ReviewGUI._recrop_to_window(self, cw_new, "test")
+    cfg = seen["cfg"]
+    assert cfg.backend == "sam3", "the recrop silently downgraded the backend"
+    assert cfg.seed_negatives is True and cfg.seed_mask is True
+    assert cfg.output_root == root, "paths must come from this machine, not the state.json"
+    assert cfg.chain_crop is True and cfg.chain_crop_fallback is False,         "the recrop's own overrides must still win"
+
+
 def _harness_empty_anchor(monkeypatch, tmp_path, root, chain_dir):
     """A ReviewGUI stand-in whose run_chain simulates I6: an empty anchor mask in the
     new window. orchestrator.run_chain sets crop_window during the anchor phase, then
@@ -187,6 +226,8 @@ def _harness_empty_anchor(monkeypatch, tmp_path, root, chain_dir):
             set_status=lambda *a, **k: (_ for _ in ()).throw(
                 AssertionError("queue status must not change when nothing was written"))),
         reviewer="lucinda",
+        _state=None,      # a real ReviewGUI always has this; None means
+                          # no recorded config, so the base config is used
         _close_session=lambda: None,
         open_chain=_must_not_reopen,
     )

@@ -1307,7 +1307,6 @@ class ReviewGUI:
             print(f"[gui] recrop needs the raw EM tif stack: {problem}. Set 'Raw EM (tif "
                   f"stack)' in the launcher, then reopen this chain.")
             return
-        from dataclasses import replace
         old = self._cw.size_tif if self._cw is not None else "(_sam)"
         print(f"[gui] recrop {self.neuron} chain {self.chain_idx:02d}: {old} -> "
               f"{cw_new.size_tif} _tif ({label}), re-running the chain (this is slow)...")
@@ -1323,8 +1322,16 @@ class ReviewGUI:
         # crop it replaced, so the valve was not even winning on its own measure. It also
         # left them non-tier-2, which makes grow-recrop refuse them afterwards.
         # A genuinely bad anchor is still visible: an empty mask flags the chain as before.
-        cfg = replace(self.ctx.cfg, chain_crop=True, chain_crop_from_mask=False,
-                      chain_crop_fallback=False)
+        # Re-run the chain the way the CHAIN was made, not the way this GUI happens to be
+        # configured. ReviewContext's defaults are backend "sam2" with no negatives, so
+        # building a fresh config here silently downgraded every sam3 chain and dropped its
+        # negative prompts, invisibly, on every recrop. Measured on a real chain in
+        # AIA_for_lucinda. config_for_rerun keeps the chain's settings and takes only this
+        # machine's paths, since a state.json can name cluster directories.
+        recorded = self._state.config if self._state is not None else None
+        cfg = pipeline.config_for_rerun(
+            recorded, base=self.ctx.cfg,
+            chain_crop=True, chain_crop_from_mask=False, chain_crop_fallback=False)
         state = pipeline.ChainState(neuron=self.neuron, chain_idx=self.chain_idx, config=cfg)
         self._close_session()                  # the old _pcrop session is stale
         pipeline.run_chain(

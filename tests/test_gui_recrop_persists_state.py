@@ -84,6 +84,12 @@ def _gui_for_recrop(tmp_path, monkeypatch, new_window):
                         raising=False)
     monkeypatch.setattr(pipeline, "run_chain", fake_run_chain)
     monkeypatch.setattr(gui.pipeline, "run_chain", fake_run_chain, raising=False)
+    # A real ReviewGUI carries _state (the chain's loaded state.json), and
+    # _recrop_to_window reads its config so the re-run reproduces how the chain was
+    # segmented rather than the GUI's defaults. None here means "no recorded config",
+    # which is the pre-existing behaviour these tests were written against.
+    if not hasattr(g, "_state"):
+        g._state = None
     monkeypatch.setattr(g, "_close_session", lambda: None)
     monkeypatch.setattr(g, "open_chain", lambda *a, **k: None)
     return g
