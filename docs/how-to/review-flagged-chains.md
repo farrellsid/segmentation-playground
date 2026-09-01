@@ -45,7 +45,7 @@ which travel in a bundle:
 - **Frames cache**: where prepared JPEG frames are written. Needs to be writable and
   roomy; a tier-2 chain's frames are unique to its window and are not shared.
 - **Checkpoints**: where the SAM2 weights live or land. If the checkpoint is absent it
-  downloads on first use, about 2.4 GB for the `large` model.
+  downloads on first use, about 860 MB for the `large` model.
 
 **Check this machine** reports each one, plus whether torch is installed and which
 device SAM2 would run on. On Apple Silicon that is `mps`, which works but is slow, and

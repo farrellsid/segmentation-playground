@@ -205,7 +205,7 @@ def machine_checks(profile: dict) -> list:
             return MachineCheck("checkpoint", True, f"{filename} present in {ckpt_dir}")
         return MachineCheck("checkpoint", True,
                             f"{filename} is missing and will download on first use "
-                            f"(about 2.4 GB for {size}) into {ckpt_dir}")
+                            f"(about 860 MB for {size}) into {ckpt_dir}")
 
     def _raw_em():
         from pipeline import raw_em_problem

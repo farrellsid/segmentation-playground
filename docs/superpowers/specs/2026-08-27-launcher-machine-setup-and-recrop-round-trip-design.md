@@ -197,7 +197,7 @@ prevents it, so it is stated as a list and tested as one.
 are real disk on a laptop.
 
 **The preflight does not download.** It reports a missing checkpoint as a pass with a
-size warning. Kicking off a 2.4 GB download from a settings check is a surprise, and
+size warning. Kicking off an 860 MB download from a settings check is a surprise, and
 `ensure_checkpoint` already downloads at first genuine use.
 
 ## Error handling
