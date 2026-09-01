@@ -14,6 +14,7 @@ import pandas as pd
 from sam2_utils import alignment
 
 from . import predict as predict_mod
+from .frames import clean_frame_sidecars
 from .predict import build_prompts, centreline_by_z, image_predict, mask_to_low_res_logits
 from .state import Prompts
 
@@ -115,6 +116,14 @@ class PropagationSession:
                  offload_video_to_cpu: bool = True):
         self.vp = video_predictor
         self.obj_id = obj_id
+        # SAM2's loader parses every *.jpg stem as an int, so a single macOS AppleDouble
+        # sidecar ("._00036.jpg", written automatically on any exFAT or NTFS drive) aborts
+        # init_state below with a ValueError that names neither the file nor the cause.
+        # Clean first: the sidecars are metadata, and macOS makes new ones when it wants.
+        removed = clean_frame_sidecars(frames_dir)
+        if removed:
+            print(f"[propagate] removed {removed} macOS sidecar file(s) from {frames_dir}; "
+                  f"SAM2's frame loader cannot parse them")
         # offload_video_to_cpu keeps VRAM bounded for long (~340-frame) chains.
         self.inference_state = video_predictor.init_state(
             video_path=frames_dir,                 # already a str (see prepare_video_frames)

@@ -90,7 +90,9 @@ def _objs_at(video_segments, idx):
 
 def _frame_indices(video_segments, frames_dir):
     """Propagated frame indices that also have a JPEG on disk, sorted."""
-    have = {int(p.stem) for p in Path(frames_dir).glob("*.jpg")}
+    # isdigit(), not a bare int(): a macOS AppleDouble sidecar ("._00036.jpg") sits
+    # beside every real frame on an exFAT or NTFS drive, and int() on its stem raises.
+    have = {int(p.stem) for p in Path(frames_dir).glob("*.jpg") if p.stem.isdigit()}
     idxs = sorted(i for i in video_segments if i in have)
     return idxs
 

@@ -177,6 +177,62 @@ class TifFrameStore(FrameStore):
         return sorted([(k, f) for (k, f) in out if lo <= k <= hi], key=lambda kf: kf[0])
 
 
+#: macOS writes an AppleDouble sidecar beside each real file whenever it touches a
+#: filesystem with no resource forks, which is every external drive formatted exFAT or
+#: NTFS. The sidecar carries Finder metadata for its sibling, never image data, and macOS
+#: recreates it on demand, so deleting one loses nothing.
+APPLEDOUBLE_PREFIX = "._"
+
+
+def clean_frame_sidecars(frames_dir) -> int:
+    """Delete AppleDouble sidecars from a prepared frames directory, returning how many.
+
+    SAM2's video loader globs every ``*.jpg`` in the directory and parses each stem as an
+    int (``sam2/utils/misc.py``), so one ``._00036.jpg`` aborts ``init_state`` with
+    ``ValueError: invalid literal for int() with base 10: '._00036'`` and takes the GUI
+    down with it. Reported from a real review session with the bundle on a LaCie drive.
+    The upstream loader is not ours to change, so the directory has to be clean before it
+    is handed over.
+
+    Only the ``._`` prefix is matched. ``.DS_Store`` and other dotfiles are left alone:
+    they do not break the loader, and deleting files nobody asked about is not this
+    function's business.
+
+    Parameters
+    ----------
+    frames_dir : path-like
+        A prepared frames directory. A missing one is not an error, since this runs on the
+        way into a propagation and must not invent a failure ahead of the real one.
+
+    Returns
+    -------
+    int
+        How many sidecars were removed.
+
+    Raises
+    ------
+    RuntimeError
+        If a sidecar cannot be deleted, naming ``dot_clean``. Better than letting the
+        cryptic upstream ValueError happen a moment later.
+    """
+    d = Path(frames_dir)
+    if not d.is_dir():
+        return 0
+    removed, stuck = 0, []
+    for f in list(d.glob(f"{APPLEDOUBLE_PREFIX}*")):
+        try:
+            f.unlink()
+            removed += 1
+        except OSError as exc:
+            stuck.append(f"{f.name}: {exc}")
+    if stuck:
+        raise RuntimeError(
+            f"{d} holds macOS sidecar files that could not be removed, and SAM2's frame "
+            f"loader cannot parse them: {'; '.join(stuck[:3])}. Run `dot_clean \"{d}\"` "
+            f"in a terminal, or copy the frames to a local folder.")
+    return removed
+
+
 def raw_em_problem(worm_path=None) -> Optional[str]:
     """None when ``worm_path`` looks like the raw EM tif stack, else why it does not.
 
