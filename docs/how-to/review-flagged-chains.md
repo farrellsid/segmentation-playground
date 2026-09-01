@@ -47,6 +47,10 @@ which travel in a bundle:
 - **Checkpoints**: where the SAM2 weights live or land. If the checkpoint is absent it
   downloads on first use, about 860 MB for the `large` model.
 
+Setting these up on a reviewer's own machine, including the checkpoint and the torch
+install, is written out step by step in
+[set-up-sam2-on-a-review-machine.md](set-up-sam2-on-a-review-machine.md).
+
 **Check this machine** reports each one, plus whether torch is installed and which
 device SAM2 would run on. On Apple Silicon that is `mps`, which works but is slow, and
 which upstream still calls preliminary, so masks can differ slightly from a CUDA run.
