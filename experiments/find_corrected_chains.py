@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -48,6 +49,19 @@ def _mask_at_z_full(tree: Path, neuron: str, chain_idx: int, z: int,
     return full
 
 
+@lru_cache(maxsize=None)
+def _full_hw_at(anchor_z: int) -> tuple[int, int]:
+    """The full-res (H, W) at ``anchor_z``, read once per z rather than once per chain.
+
+    Only the SHAPE is wanted, but the read costs a whole 81 MB tif (measured 1.6 to 3.5 s
+    on the review drive), and chains share anchor z values heavily: 513 chains across the
+    2026-08 review trees resolve to 248 distinct z, so caching halves the run. Pure per z,
+    since load_frame_sam reads the same file every time.
+    """
+    _em, full_hw = pipeline.load_frame_sam(int(anchor_z), scale=SCALE)
+    return full_hw
+
+
 def find_corrected_chains(source: Path, working: Path, neurons: list[str]) -> list[tuple[str, int, int]]:
     """[(neuron, chain_idx, anchor_z), ...] for every chain whose anchor mask differs
     between `source` and `working`. The anchor z always comes from the WORKING
@@ -67,7 +81,7 @@ def find_corrected_chains(source: Path, working: Path, neurons: list[str]) -> li
             anchor_z = json.loads(sj.read_text()).get("anchor_catmaid_z")
             if anchor_z is None:
                 continue
-            _em, full_hw = pipeline.load_frame_sam(int(anchor_z), scale=SCALE)
+            full_hw = _full_hw_at(int(anchor_z))
             work_mask = _mask_at_z_full(working, neuron, ci, anchor_z, full_hw)
             src_mask = _mask_at_z_full(source, neuron, ci, anchor_z, full_hw)
             if not np.array_equal(work_mask, src_mask):
