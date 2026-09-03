@@ -223,6 +223,80 @@ def summarize_z_consistency(transitions: list[dict], *, low_iou_threshold: float
     }
 
 
+def directional_disagreement(
+    fwd: dict[int, tuple[np.ndarray, int, int]],
+    back: dict[int, tuple[np.ndarray, int, int]],
+) -> list[dict]:
+    """Per-z agreement between two INDEPENDENT directional tracings of the same chain:
+    a forward-only sweep seeded at the chain's own start frame, and a backward-only
+    sweep seeded at the chain's own end frame (see pipeline.propagate.propagate_directional).
+    Unlike z_transitions (adjacent z within ONE tracing), this compares two DIFFERENT
+    tracings at the SAME z, the RoboEM-style training-free error signal (roadmap.md §4.2):
+    keep only where forward and backward tracings agree.
+
+    fwd / back: {z: (mask, x0, y0)} in the shared _sam-grid coordinate frame, same shape
+    z_transitions takes (from pipeline.chain_masks_in_sam). Only z's present in BOTH dicts
+    are scored: a z near the fwd seed's own start or the back seed's own start is, by
+    construction, only reachable from one direction and has nothing to compare against.
+
+    A z where either mask is empty gets iou=None, centroid_drift_px=None: dropout is a
+    separate existing signal (score_chain's own empty/dropout_rate), not an agreement
+    reading, same convention z_transitions uses."""
+    shared = sorted(set(fwd) & set(back))
+    out: list[dict] = []
+    for z in shared:
+        mask_a, x0_a, y0_a = fwd[z]
+        mask_b, x0_b, y0_b = back[z]
+        rec = {"z": int(z), "iou": None, "centroid_drift_px": None}
+        if not mask_a.any() or not mask_b.any():
+            out.append(rec)
+            continue
+        h_a, w_a = mask_a.shape[:2]
+        h_b, w_b = mask_b.shape[:2]
+        x_min = min(x0_a, x0_b)
+        y_min = min(y0_a, y0_b)
+        x_max = max(x0_a + w_a, x0_b + w_b)
+        y_max = max(y0_a + h_a, y0_b + h_b)
+        canvas_a = np.zeros((y_max - y_min, x_max - x_min), dtype=bool)
+        canvas_b = np.zeros((y_max - y_min, x_max - x_min), dtype=bool)
+        canvas_a[y0_a - y_min:y0_a - y_min + h_a, x0_a - x_min:x0_a - x_min + w_a] = mask_a
+        canvas_b[y0_b - y_min:y0_b - y_min + h_b, x0_b - x_min:x0_b - x_min + w_b] = mask_b
+        intersection = int((canvas_a & canvas_b).sum())
+        union = int((canvas_a | canvas_b).sum())
+        rec["iou"] = intersection / union if union > 0 else 0.0
+
+        ys_a, xs_a = np.where(mask_a)
+        ys_b, xs_b = np.where(mask_b)
+        cx_a, cy_a = float(xs_a.mean()) + x0_a, float(ys_a.mean()) + y0_a
+        cx_b, cy_b = float(xs_b.mean()) + x0_b, float(ys_b.mean()) + y0_b
+        rec["centroid_drift_px"] = float(np.hypot(cx_b - cx_a, cy_b - cy_a))
+        out.append(rec)
+    return out
+
+
+def summarize_directional_disagreement(records: list[dict], *,
+                                       low_iou_threshold: float = 0.5) -> dict:
+    """Aggregate directional_disagreement records (one chain's, or a run's concatenated).
+
+    n_dropout_z counts z's where either tracing was empty separately from the IoU/drift
+    means, mirroring summarize_z_consistency's dropout handling. frac_low_agreement is
+    the fraction of SCORED z's below low_iou_threshold, the direct "how often would the
+    RoboEM keep-only-where-they-agree rule have flagged this chain" reading."""
+    n = len(records)
+    dropout = [r for r in records if r["iou"] is None]
+    scored = [r for r in records if r["iou"] is not None]
+    return {
+        "n_z": n,
+        "n_dropout_z": len(dropout),
+        "mean_disagreement_iou": float(np.mean([r["iou"] for r in scored])) if scored else None,
+        "mean_centroid_drift_px": (
+            float(np.mean([r["centroid_drift_px"] for r in scored])) if scored else None),
+        "frac_low_agreement": (
+            sum(1 for r in scored if r["iou"] < low_iou_threshold) / len(scored)
+        ) if scored else None,
+    }
+
+
 def summarize(per: pd.DataFrame) -> dict:
     """Aggregate a per-frame merge-metric DataFrame into the summary dict.
 
