@@ -359,6 +359,44 @@ def propagate_from_verified_masks(video_predictor, frames_dir: str,
         session.close()
 
 
+def propagate_directional(video_predictor, frames_dir: str, prompts: Prompts,
+                          seed_frame_idx: int, *, obj_id: int, reverse: bool,
+                          seed_negatives: bool = False, seed_box: bool = True,
+                          seed_points: bool = True,
+                          subtimings: Optional[dict] = None
+                          ) -> tuple[dict[int, dict[int, np.ndarray]], dict[int, float], dict[int, float]]:
+    """Seed ONE frame, propagate in ONE direction only, no return sweep. The building
+    block for an independent directional-disagreement pilot (see
+    experiments/directional_disagreement_pilot.py and eval.merge_metric.
+    directional_disagreement): call this once with seed_frame_idx=0, reverse=False (a
+    forward-only tracing seeded at the chain's own start) and once with
+    seed_frame_idx=n_frames-1, reverse=True (a backward-only tracing seeded at the
+    chain's own end), so the two calls' outputs are two INDEPENDENT tracings of the
+    whole chain, unlike propagate()'s single-mid-anchor run_bidirectional(), which
+    seeds once and sweeps both directions from the SAME frame, covering each frame
+    exactly once (verified against the installed sam2_video_predictor.py: reverse=False
+    covers [start, num_frames-1], reverse=True covers [0, start], strictly disjoint
+    except at start itself), never producing two masks to compare.
+
+    Returns the same shape as propagate(): (video_segments, frame_conf, pred_iou).
+    """
+    _t = perf_counter()
+    session = PropagationSession(video_predictor, frames_dir, obj_id=obj_id)
+    if subtimings is not None:
+        subtimings["jpeg_load"] = perf_counter() - _t
+    try:
+        session.seed(prompts, seed_frame_idx, seed_box=seed_box,
+                     seed_points=seed_points, seed_negatives=seed_negatives)
+        _t = perf_counter()
+        for _ in session.propagate(reverse=reverse):
+            pass
+        if subtimings is not None:
+            subtimings["propagate_only"] = perf_counter() - _t
+        return session.video_segments, session.frame_conf, session.pred_iou
+    finally:
+        session.close()
+
+
 def _node_id_at(annotate_df: pd.DataFrame, catmaid_z: int, x_tif: float, y_tif: float):
     """The node_id backing a real (non-interpolated) centreline point, or None.
 
