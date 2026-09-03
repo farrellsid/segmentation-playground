@@ -132,8 +132,32 @@ def main(argv=None):
     t2 = perf_counter()
     print(f"[dirdis] timing: forward={t1 - t0:.1f}s backward={t2 - t1:.1f}s total={t2 - t0:.1f}s")
 
-    fwd_by_z = {frame_to_z[fi]: (seg[1], 0, 0) for fi, seg in fwd_segs.items() if 1 in seg}
-    back_by_z = {frame_to_z[fi]: (seg[1], 0, 0) for fi, seg in back_segs.items() if 1 in seg}
+    # SAM2 yields (1, H, W); squeeze the channel axis (same convention pipeline.masks
+    # already documents: "SAM2 yields (1, H, W); squeeze the channel axis, else
+    # binary_opening on the singleton axis empties it" -- the same singleton-axis trap
+    # applies to directional_disagreement's canvas-paste, not just morphology).
+    def _squeeze(m: np.ndarray) -> np.ndarray:
+        return m[0] if m.ndim == 3 else m
+
+    fwd_by_z = {frame_to_z[fi]: (_squeeze(seg[1]), 0, 0)
+               for fi, seg in fwd_segs.items() if 1 in seg}
+    back_by_z = {frame_to_z[fi]: (_squeeze(seg[1]), 0, 0)
+                for fi, seg in back_segs.items() if 1 in seg}
+
+    # Diagnostic: area + centroid at the two seed z's, to distinguish "the seed itself
+    # is bad" from "propagation drifted after a good seed". fwd's OWN seed frame is
+    # start_z (should be a normal single-point segmentation there); back's own seed
+    # frame is end_z. Compared at the SAME z on both sides so any difference is a real
+    # location/size mismatch, not just "the cell moved along z".
+    for label, z in (("start_z", start_z), ("end_z", end_z)):
+        fm = fwd_by_z.get(z, (None,))[0]
+        bm = back_by_z.get(z, (None,))[0]
+        fa = int(fm.sum()) if fm is not None else None
+        ba = int(bm.sum()) if bm is not None else None
+        fc = tuple(np.array(np.where(fm)).mean(axis=1).round(1)) if fm is not None and fm.any() else None
+        bc = tuple(np.array(np.where(bm)).mean(axis=1).round(1)) if bm is not None and bm.any() else None
+        print(f"[dirdis][debug] {label}={z}: fwd area={fa} centroid={fc} | "
+             f"back area={ba} centroid={bc}")
 
     records = directional_disagreement(fwd_by_z, back_by_z)
     summary = summarize_directional_disagreement(records, low_iou_threshold=args.low_iou_threshold)
