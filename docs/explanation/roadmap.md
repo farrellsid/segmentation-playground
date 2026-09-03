@@ -135,8 +135,40 @@ expect lower absolute numbers.
 > one on improving the segmentation itself. Both confirmed the broad shape below and sharpened it in a
 > few load-bearing ways, folded into the subsections and the staged plan:
 > - **Forward/backward propagation consistency is the best-attested training-free error detector**
->   (RoboEM cut tracing errors from ~22-24% to 1-4% by keeping only where the two passes agree). We
->   already propagate bidirectionally, so this is the cheapest QC upgrade available (§4.2, Stage 1).
+>   (RoboEM cut tracing errors from ~22-24% to 1-4% by keeping only where the two passes agree).
+>   **Correction (2026-09-03): this is NOT free, contrary to how this section originally read.**
+>   Checked directly against the installed `sam2_video_predictor.py`: our existing
+>   `run_bidirectional()` seeds ONCE at the mid-anchor and sweeps forward and back from that SAME
+>   frame, so `reverse=False` covers `[anchor, end]` and `reverse=True` covers `[0, anchor]`,
+>   strictly disjoint ranges. Every frame gets exactly ONE propagated mask today, never two, so
+>   there is nothing to compare "for free". A genuine RoboEM-style disagreement score needs two
+>   INDEPENDENT full sweeps, one seeded at the chain's own START frame (forward-only) and one at
+>   its own END frame (backward-only), a real ~2x compute cost. Built and piloted on 2 real chains
+>   (`experiments/directional_disagreement_pilot.py`, `eval.merge_metric.directional_disagreement`
+>   / `summarize_directional_disagreement`, `pipeline.propagate.propagate_directional`), point-only
+>   centreline seeds at each endpoint (no box, matching `segment_per_slice`'s own per-frame
+>   construction): **AIYL chain_00** (40 frames) scored `mean_disagreement_iou=0.001`,
+>   `frac_low_agreement=1.0`, but the seed-quality diagnostic traced this to a confound, not real
+>   propagation drift: the forward seed at its own conditioning frame (z=1589) landed on the RIGHT
+>   location (centroid within ~19px of the tree's own saved production mask there) but area 1,059px
+>   vs production's 66,334px, a ~63x underfill from a single point-only prompt, and that tiny mask
+>   persisted the whole chain, so near-zero IoU against anything correctly sized was close to
+>   guaranteed regardless of propagation quality. **AIYR chain_00** (55 frames) scored
+>   `mean_disagreement_iou=0.857`, `frac_low_agreement=0.127`, both endpoint seeds close to their
+>   own production reference in area and centroid, and it still shows real, measurable drift: the
+>   backward tracing's mask at the far (start) end moved from a good, on-target seed to a
+>   noticeably different area/centroid by the time it arrived, exactly the RoboEM effect this
+>   section predicts, just smaller than AIYL's confounded number and concentrated near one end
+>   rather than uniform. Two real, honest takeaways: (1) point-only endpoint seeding is
+>   inconsistent (one good seed, one severely underfilled, in the same 2-chain sample), so a
+>   production version of this signal likely needs a box or mask seed at each endpoint, not a bare
+>   point, before the disagreement score can be trusted as a clean drift measurement rather than a
+>   seed-quality measurement; (2) even given that confound, the signal clearly differentiates a
+>   healthy chain from a troubled one (12.7% vs 100% of frames flagged), which is itself real
+>   evidence the underlying idea has signal. Full per-z CSVs:
+>   `docs/figures/directional_disagreement/{AIYL,AIYR}_chain00.csv`. Not yet wired into `batch.py`
+>   or any default QC path, this section's status is "piloted, promising, needs a better-seeded
+>   follow-up before a wiring decision", not "done".
 > - **Any SAM2 finetune must be neurite-targeted.** An EM finetune trained on *organelles* measurably
 >   *degrades* neurite segmentation (micro_sam, Archit et al. 2024); a neurite specialist improves it.
 >   This is now a hard constraint on Stage 2, not a footnote (§4.7).
@@ -526,6 +558,47 @@ a queue slot, so they live in §5b now instead of being duplicated here: box pro
 and deprioritized). Two more from the same meeting, the spill/overfill investigation and
 MitoNet/NucleoNet as an underfill filter, turned out to restate existing queue items rather than add
 anything new, see items 16 and 17.
+
+**2026-09-03, chat session: non-SAM per-frame alternatives, statistical multi-seed fusion, and
+closing the correction loop.**
+
+- **nnU-Net as a boundary-mask seed source, a different kind of candidate than every SAM-family
+  alternative surveyed in [[microsam-cellsam-zeroshot-baselines]].** Idea: train nnU-Net as a
+  boundary/membrane predictor, take the connected component containing the node as the seed mask,
+  feed it into propagation through the same mask-seed path [[reprop-comparison-report-underfill-finding]]
+  already proved out. Unlike CellSAM/micro_sam/FGNet/uMatch, nnU-Net is fully-supervised and
+  self-configuring, not zero-shot/promptable, so it needs a real training corpus first, not a
+  drop-in checkpoint swap. Real caution, not hypothetical: mEMbrain is a UNet-family boundary
+  predictor already tried on this exact dataset, and it produced blurry boundaries that conceal
+  true cell shape ([[membrain-unet-blurry-detail]]), the same failure mode this risks. Gated on
+  data: a rough, TO-VERIFY floor of ~15-30+ fully corrected neuron trees before a training run is
+  worthwhile; [[manual-verify-progress]]'s tree count is the running counter. Full detail:
+  [[nnunet-boundary-mask-seed-idea]].
+- **Statistical label fusion (STAPLE / majority voting) as a concrete mechanism for the existing
+  multi-seed / over-segmentation consensus idea (§4.3).** Rather than a hard union/intersection,
+  treat N candidate masks (forward-prop, backward-prop, per-slice, alternate seeds) as noisy raters
+  and fuse with STAPLE (Warfield et al., IEEE TMI 2004) for a weighted consensus plus a confidence
+  map. Two real costs: SAM propagation runs are not independent raters, they share the same model
+  and are likely to fail together on the same hard frames, which undermines STAPLE's independence
+  assumption; and N-way propagation stacks on the already-flagged 2.2-2.5x SAM3 compute premium
+  (§5b item 9). Cheapest real pilot: fuse the forward and backward passes we already run (2x cost,
+  not Nx) before committing to a wider ensemble.
+- **The same forward/backward disagreement is arguably a better error-EVALUATION signal than a
+  mask-fusion input, and it's already this doc's own §4.2 top pick** ("training-free, do first",
+  RoboEM-backed, near-zero cost since both directions already run). Today's conversation
+  re-derived it independently and extended it with a concrete downstream use: feed "these two
+  disagree here" as the trigger for the online re-anchoring / neighbour-seed idea (§4.3, §5b item
+  under Phase 1.5), replacing the shaky fixed-threshold-on-a-comparative-metric problem that was
+  blocking that idea. **Open technical unknown, must check before building:** does
+  `add_new_points_or_box`/`add_new_mask` mid-chain actually reset SAM2's memory bank going
+  forward, or does the old (poisoned) memory persist and contaminate the fresh propagation
+  regardless? Verify against the installed `sam2_video_predictor.py` source before designing
+  around it (same open question already flagged in [[hybrid-propagation-perslice-metric-seed]]
+  caveat 2). Also tempered by the distance-drift finding (same memory, item I): even a clean seed
+  only buys the next handful of frames, so this would likely need repeated re-anchors over a long
+  bad stretch, not a single recovery jump. Mechanically the same "carry a fix forward through
+  memory" trick as the correction-propagation GUI idea above, just applied inside the automated
+  pass instead of the human review loop.
 
 ---
 
