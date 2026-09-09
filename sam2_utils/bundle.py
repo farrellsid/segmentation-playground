@@ -223,8 +223,19 @@ def index_chains(output_root: Path, neurons: Optional[List[str]] = None) -> List
     """
     output_root = Path(output_root)
     wanted = set(neurons) if neurons else None
+    # Scoped to the wanted neurons' own directories when given, rather than
+    # globbing the whole tree and filtering after: on a large merged tree (a
+    # symlink forest, potentially hundreds of neurons) an unscoped scan reads
+    # every chain of every neuron just to keep a handful, and one bad/unreadable
+    # file under a neuron nobody asked for kills an export that has nothing to
+    # do with it. sorted(wanted) so output order does not depend on set iteration.
+    if wanted is not None:
+        globs = (state_path for neuron in sorted(wanted)
+                for state_path in sorted((output_root / neuron).glob("chain_*/state.json")))
+    else:
+        globs = sorted(output_root.glob("*/chain_*/state.json"))
     out: List[dict] = []
-    for state_path in sorted(output_root.glob("*/chain_*/state.json")):
+    for state_path in globs:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         name = state.get("neuron", state_path.parent.parent.name)
         if wanted is not None and name not in wanted:
