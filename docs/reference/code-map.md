@@ -20,7 +20,8 @@ as few files as possible.
 | Neuron ids (the permanent cell_name to id mapping) | `sam2_utils/registry.py`, `data/neuron_registry.csv` | Ids are frozen, never reassigned. See [ADR 0018](../adr/0018-frozen-neuron-id-registry.md). |
 | A chain's portable identity + geometry record | `sam2_utils/chain_meta.py` | `meta.json`, readable without importing `pipeline` (no torch). |
 | Review bundle logic (index, manifest, validate) | `sam2_utils/bundle.py` | `bundle.json` schema, chain indexing, the round-trip validation both scripts below call. |
-| Building or merging a review bundle | `export_bundle.py`, `import_bundle.py` | See [../how-to/review-on-a-mac.md](../how-to/review-on-a-mac.md). |
+| Building a review bundle to send out | `export_bundle.py` | See [../how-to/export-a-lucinda-bundle.md](../how-to/export-a-lucinda-bundle.md). |
+| Merging a returned bundle's corrections back | `import_bundle.py` | See [../how-to/review-on-a-mac.md](../how-to/review-on-a-mac.md) ("When you are done"). |
 | The review launcher window and its profile | `launcher.py` | Picks the bundle, the neurons, and the mode; settings persist in `~/.sam2review/profile.json`. |
 | Which GUI controls a UI mode shows | `gui.py`, `panels_for_mode` / `keys_for_mode` | `review` mode hides the 10 of 28 controls (7 of 17 keys) that need a predictor. |
 | The work queue or review-status ledger the GUI reads and writes | `sam2_utils/review_queue.py` | Owns `_review.csv`, separate from the batch's `_manifest.csv`. |

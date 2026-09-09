@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-09-09, eight Lucinda bundles, a full-tree scan nobody meant to run, and a chain that could not be found](#r-2026-09-09-lucinda-bundles-index-chains)
 - [2026-08-27, a second reviewer's machine, and a recrop that survives the round trip](#r-2026-08-27-machine-setup-recrop)
 - [2026-08-26, the GUI re-predict now gets the cleanup the batch already had](#r-2026-08-26-gui-image-cleanup)
 - [2026-08-26, a video and a Blender mesh from a corrected bundle](#r-2026-08-26-review-render)
@@ -60,6 +61,59 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-09-09-lucinda-bundles-index-chains"></a>
+## 2026-09-09, eight Lucinda bundles, a full-tree scan nobody meant to run, and a chain that could not be found
+
+Building the first Lucinda bundles for AIM, AVH, FLP, RIB, RIH, RIM, RIP and RMH (the
+2026-09 reprop batch, 326 corrected chains overlaid on the whole-neuron base trees) surfaced
+three real bugs, none of them in the reprop itself.
+
+**`bundle.index_chains` globbed the whole tree, not the neurons it was asked for.** The base
+tree is a 129-neuron symlink forest. Every export, regardless of `--neurons`, read every
+state.json under `output_root` and filtered to the wanted names afterward, so two exports
+(AIM, AVH) succeeded while five others (FLP, RIB, RIM, RIP, RMH) died on an `OSError` from a
+file that had nothing to do with the neuron being exported. A targeted read of every
+`RIBL/chain_*/state.json` in isolation succeeded cleanly, which is what gave this away: the
+failure was elsewhere in the tree, not in the neuron the log blamed. Fixed by scoping the
+glob to `output_root/<neuron>/chain_*/state.json` for each wanted name when `neurons` is
+given (`sam2_utils/bundle.py`, see `test_bundle_index_chains_scoped_glob.py`). This also
+makes a scoped export much faster: no more reading thousands of unrelated chains to
+keep a handful.
+
+**RIH has no local base tree.** Its own `PROVENANCE.txt` names
+`target_tier2_s1forced_neg_sam3_merged` as the source, but that merged tree does not carry
+RIH locally (confirmed by listing it directly), so `--output-root` pointed there fails with
+"no chains found." RIH's real base is `manual_verify_RIH` itself; export from that instead,
+still with the reprop tree as `--overlay`.
+
+**A drive disconnect can leave a bundle claiming success while incomplete.** The laptop went
+to sleep mid-export, and the AIM bundle's log printed `wrote 41 chain(s)` while only 8 of
+the 41 `state.json` files, and no `bundle.json`, actually existed on the external drive
+afterward. Writes were still in the OS cache when the drive dropped. Lesson generalized into
+[export-a-lucinda-bundle.md](how-to/export-a-lucinda-bundle.md): always call
+`bundle.validate_bundle()` and count real files after an export, never trust the log's
+success line alone, and do not run one of these exports across a laptop sleep.
+
+**Lucinda's real crash, reproduced and fixed.** Opening AIZL chain_03 crashed with
+`TypeError: 'NoneType' object is not subscriptable` deep inside
+`prepare_chain_crop_frames`. Traced to `ReviewContext.find_chain` returning `None` (a real,
+tested state for a chain outside a session's chains.json/neuron scope, not a bug in it) and
+`gui.open_chain` letting that `None` flow three calls deeper before anything checked it. The
+underlying cause of why her session diverged is still open (her copy of `chains.json` did
+not include AIZL, and the currently correct local bundle at
+`F:\Lucinda_Review\bundles\AIZ\` has all 65 AIZL chains, so whatever she has is stale or was
+never rebuilt through `export_bundle.py`), but `open_chain` now raises a `LookupError`
+naming the neuron and chain right where the mismatch is known, instead of crashing three
+calls later with no useful message.
+
+**The pixel-offset Lucinda diagnosed by hand, confirmed and fixed at the source.**
+`CropWindow.around_box` computed `x0/y0/x1/y1` from a padded, clipped box with no snapping to
+the `crop_scale` grid. An odd origin or odd width silently lost up to `crop_scale - 1` px on
+the write-back through `crop_hw`'s rounding (her real example: width 1913 at scale 2 rounds
+to 956, which is 1912 going back, not 1913). Fixed by snapping the near edge down and the
+far edge up to the nearest multiple of `crop_scale` before the final image-bounds clip.
+Affects future crops only; nothing already on disk needs correction.
 
 <a id="r-2026-08-27-machine-setup-recrop"></a>
 ## 2026-08-27, a second reviewer's machine, and a recrop that survives the round trip
