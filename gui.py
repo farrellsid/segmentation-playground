@@ -700,6 +700,20 @@ class ReviewGUI:
         self._close_session()
         self.neuron, self.chain_idx = neuron, chain_idx
         self.chain = self.ctx.find_chain(neuron, chain_idx)
+        if self.chain is None:
+            # find_chain returning None is a real, tested state (a neuron this
+            # session's chains.json/scope does not have), not a bug in it: see
+            # test_gui_neuron_filter.py. But letting a None chain flow into frame
+            # regeneration crashes three calls later with a bare "'NoneType' object
+            # is not subscriptable" deep in prepare_chain_crop_frames, useless for
+            # telling a scope mismatch apart from any other failure. The chain DIR
+            # existing (checked above) while find_chain fails means chains.json
+            # itself is missing this chain or this session was scoped without it.
+            raise LookupError(
+                f"{neuron} chain_{chain_idx:02d} has a directory at {chain_dir} but "
+                f"is not in this session's chain list. Likely causes: this "
+                f"session's data/chains.json does not include {neuron}, or the "
+                f"launcher scoped this session to a neuron subset that excludes it.")
 
         # the chain's serialized state carries the ORIGINAL seed (prompts.points_sam
         # / labels / box_sam), loaded so we can pre-populate the prompts layer with
