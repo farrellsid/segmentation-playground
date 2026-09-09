@@ -229,6 +229,26 @@ def test_cropwindow_around_box_clips_at_corner():
     assert cw.origin_tif == (0.0, 0.0)
 
 
+def test_cropwindow_around_box_snaps_to_scale_grid():
+    # Lucinda's real case: an odd origin (101) and odd width (1913) at crop_scale=2.
+    # Unsnapped, crop_hw rounds w/2 = 956.5 -> 956, so writing back (956*2=1912) drops
+    # the box's last tif pixel, and the odd origin means each mask pixel straddles a
+    # tif pixel pair that does not start on an even boundary either. Snapping origin
+    # down and the far edge up to the crop_scale grid makes both exactly reversible.
+    cw = alignment.CropWindow.around_box(
+        (101.0, 200.0, 2014.0, 1000.0), pad_tif=0,
+        image_hw_tif=(9230, 9216), crop_scale=2, sam_scale=8)
+    x0, y0 = cw.origin_tif
+    w, h = cw.size_tif
+    assert x0 % cw.crop_scale == 0
+    assert y0 % cw.crop_scale == 0
+    assert w % cw.crop_scale == 0
+    assert h % cw.crop_scale == 0
+    # never shrinks below the box that was asked for
+    assert x0 <= 101.0 and x0 + w >= 2014.0
+    assert y0 <= 200.0 and y0 + h >= 1000.0
+
+
 def test_cropwindow_sam_to_crop_matches_tif_path():
     # sam_to_crop == tif_to_crop(xy_sam * sam_scale): the tier-2 prompt/skeleton map.
     cw = alignment.CropWindow.around_box(
