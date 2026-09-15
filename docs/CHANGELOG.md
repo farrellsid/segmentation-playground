@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-09-15, a tracking sheet had typos, so a reprop batch shipped 123 chains short](#r-2026-09-15-reprop-protocol)
 - [2026-09-09, eight Lucinda bundles, a full-tree scan nobody meant to run, and a chain that could not be found](#r-2026-09-09-lucinda-bundles-index-chains)
 - [2026-08-27, a second reviewer's machine, and a recrop that survives the round trip](#r-2026-08-27-machine-setup-recrop)
 - [2026-08-26, the GUI re-predict now gets the cleanup the batch already had](#r-2026-08-26-gui-image-cleanup)
@@ -61,6 +62,32 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-09-15-reprop-protocol"></a>
+## 2026-09-15, a tracking sheet had typos, so a reprop batch shipped 123 chains short
+
+The 2026-09-09 reprop batch decided which chains to include by intersecting a data-driven
+pixel diff with `SegmentationNotes.csv`'s "Initial Corrected" column. The sheet marked AIMR,
+RIBR, RMHR and AVHL as not yet corrected, so all four were dropped, and the AIM, RIB and RMH
+bundles shipped to Lucinda with only one side of their neuron pair.
+
+The sheet was wrong. Re-run against the actual metadata, the same `find_corrected_chains.py`
+pixel diff already used for every other side, all four had real corrected chains: AIMR 39,
+RIBR 38, RMHR 38, AVHL 8, 123 total, three of the four counts matching exactly what an
+earlier, separately-abandoned manifest (the 429-chain one from 2026-09-02) already had for
+them. The sheet is a human's coordination note, written by hand, and can be wrong; the pixel
+diff is a direct read of what is actually on disk.
+
+New protocol, written up in
+[repropagation-round-protocol.md](how-to/repropagation-round-protocol.md): decide what to
+repropagate from the metadata, never a tracking sheet; verify the reprop output is complete
+and unbroken before treating a job as done, the same discipline
+[export-a-lucinda-bundle.md](how-to/export-a-lucinda-bundle.md) already required at the
+bundle-export stage; and never ship a bundle covering only one side of a neuron pair,
+since that shape of gap is the direct symptom of skipping step 1.
+
+A part-2 manifest and upload bundle for the 123 missing chains were built and pushed the
+same day; the reprop job itself is pending Narval submission as of this writing.
 
 <a id="r-2026-09-09-lucinda-bundles-index-chains"></a>
 ## 2026-09-09, eight Lucinda bundles, a full-tree scan nobody meant to run, and a chain that could not be found

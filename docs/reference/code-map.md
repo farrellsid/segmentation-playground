@@ -20,7 +20,8 @@ as few files as possible.
 | Neuron ids (the permanent cell_name to id mapping) | `sam2_utils/registry.py`, `data/neuron_registry.csv` | Ids are frozen, never reassigned. See [ADR 0018](../adr/0018-frozen-neuron-id-registry.md). |
 | A chain's portable identity + geometry record | `sam2_utils/chain_meta.py` | `meta.json`, readable without importing `pipeline` (no torch). |
 | Review bundle logic (index, manifest, validate) | `sam2_utils/bundle.py` | `bundle.json` schema, chain indexing, the round-trip validation both scripts below call. |
-| Building a review bundle to send out | `export_bundle.py` | See [../how-to/export-a-lucinda-bundle.md](../how-to/export-a-lucinda-bundle.md). |
+| Deciding which chains need a re-propagation round, running it, sending it out | `experiments/find_corrected_chains.py`, `cluster/run_reprop_corrected_seed.sh`, `export_bundle.py` | See [../how-to/repropagation-round-protocol.md](../how-to/repropagation-round-protocol.md), the full round-trip protocol. |
+| Building a review bundle to send out (already know what to include) | `export_bundle.py` | See [../how-to/export-a-lucinda-bundle.md](../how-to/export-a-lucinda-bundle.md). |
 | Merging a returned bundle's corrections back | `import_bundle.py` | See [../how-to/review-on-a-mac.md](../how-to/review-on-a-mac.md) ("When you are done"). |
 | The review launcher window and its profile | `launcher.py` | Picks the bundle, the neurons, and the mode; settings persist in `~/.sam2review/profile.json`. |
 | Which GUI controls a UI mode shows | `gui.py`, `panels_for_mode` / `keys_for_mode` | `review` mode hides the 10 of 28 controls (7 of 17 keys) that need a predictor. |

@@ -2,7 +2,10 @@
 
 For the sender's side: building a bundle with `export_bundle.py` and getting it to her. For
 what she does with it, see [review-on-a-mac.md](review-on-a-mac.md). For where bundles live
-and how they travel, see `F:\Lucinda_Review\START_HERE.md` (not in git, drive only).
+and how they travel, see `F:\Lucinda_Review\START_HERE.md` (not in git, drive only). For the
+full round-trip protocol this fits into, deciding which chains to repropagate in the first
+place and verifying the reprop output before it ever reaches this stage, see
+[repropagation-round-protocol.md](repropagation-round-protocol.md).
 
 ## Picking `--output-root`
 
@@ -73,6 +76,12 @@ load, a separate real failure mode from the sleep issue above (see the
 earlier incident this was first found in).
 
 ## Sending it
+
+**Before zipping, confirm both sides of every neuron pair are actually in the bundle.** See
+[repropagation-round-protocol.md](repropagation-round-protocol.md)'s step 3. A bundle
+covering only one side of a pair is very likely a symptom of skipping step 1 (a tracking
+sheet or assumption, rather than the real metadata, decided what to include), not a genuine
+one-sided neuron.
 
 Zip the bundle folder (plain name, e.g. `AIM.zip`, not `AIM_for_lucinda.zip`, the old
 git-based naming) and upload it to the Drive folder linked from
