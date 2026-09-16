@@ -27,6 +27,32 @@ AVHL as not yet corrected. All four had real corrections on disk (39, 38, 38, an
 excluded from the prior round purely because the sheet was trusted over the metadata. The
 sheet is a convenience for humans to coordinate; the pixel diff is the source of truth.
 
+## Submitting: chain the tar step to the array job, do not submit twice
+
+Submitting the reprop array, waiting for it to clear the queue, and only then submitting the
+tar/stage step by hand means watching a job you cannot predict the runtime of. Chain them
+instead with Slurm's own dependency mechanism, in one paste:
+
+```bash
+JOBID=$(sbatch --array=0-<N-1>%8 \
+    --export=ALL,WORKING_TREE=<path>,OUT_MASK=<path>,OUT_BOX=<path>,\
+MANIFEST=cluster/corrected_chains_<label>.csv,VARIANT=mask \
+    cluster/run_reprop_corrected_seed.sh | awk '{print $NF}')
+echo "reprop array job id: $JOBID"
+
+sbatch --dependency=afterany:$JOBID \
+    --job-name=tar-reprop --account=def-mzhen --cpus-per-task=1 --mem=4G --time=00:30:00 \
+    --output=/home/fsid/tar-reprop-%j.out \
+    --wrap="tar -czhf <out>.tar.gz -C /scratch/fsid <OUT_MASK basename> && ls -lh <out>.tar.gz"
+```
+
+`awk '{print $NF}'` pulls the numeric id off `sbatch`'s own `Submitted batch job <id>` line,
+so there is nothing to copy by hand. `afterany`, not `afterok`: the tar step should run and
+be inspectable even if some individual chains in the array failed, matching
+`stage_download.sh`'s own reasoning for the same choice. The tar job sits `PD` (dependency
+not yet satisfied) in the queue and starts itself the moment the array finishes; nothing
+needs to be watched or resubmitted.
+
 ## 2. Verify the reprop output is complete and unbroken
 
 Do not treat a Narval array job as done because `sacct` shows every task COMPLETED. Check
