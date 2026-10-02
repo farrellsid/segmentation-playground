@@ -50,11 +50,15 @@ frames_root/
   chain_views/
     <neuron>_chain<idx>_s<scale>/
       00000.jpg ...           # 0-indexed links into the cache, per chain
+    <neuron>_chain<idx>_pcrop_s<crop_scale>/
+      00000.jpg ...           # tier-2: the chain's own crop, decoded fresh (no shared cache)
+      _prep_meta.json         # what was prepared (z_range, window, frame_to_z); lets an
+                               # identical later call skip the rebuild instead of redoing it
 ```
 
 The decode cache means overlapping chains pay the large imread-and-resize once across the dataset,
 not once per chain. The per-chain views are links (hard-link on Windows, since the cache and views
-share a volume).
+share a volume). Tier-2 views have no shared cache since each chain's crop window is unique. The `_prep_meta.json` sidecar records what was built (z-range, window, anchor), so a repeat call with identical inputs is a no-op instead of a rebuild.
 
 ## The review bundle
 

@@ -390,6 +390,51 @@ def remap_mask_to_window(mask, *, src_origin_tif, src_size_tif,
     return out
 
 
+_PREP_META_NAME = "_prep_meta.json"
+
+
+def _load_matching_prep(view_dir: Path, *, z_range: tuple[int, int], window: dict,
+                        anchor_catmaid_z: int
+                        ) -> Optional[tuple[str, dict[int, int], int, int]]:
+    """None unless ``view_dir`` already holds a complete, matching prepared view.
+
+    Compares the recorded z_range/window/anchor_catmaid_z against what is being
+    asked for now, and checks every frame file the sidecar claims is written is
+    actually on disk, so a half-built directory (crashed mid-prepare, no sidecar
+    or a stale one) is never mistaken for a cache hit."""
+    meta_path = view_dir / _PREP_META_NAME
+    if not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if (list(meta.get("z_range", ())) != list(z_range)
+            or meta.get("window") != window
+            or int(meta.get("anchor_catmaid_z", -1)) != int(anchor_catmaid_z)):
+        return None
+    n_frames = int(meta["n_frames"])
+    if not all((view_dir / f"{i:05d}.jpg").exists() for i in range(n_frames)):
+        return None
+    frame_to_z = {int(k): int(v) for k, v in meta["frame_to_z"].items()}
+    return str(view_dir), frame_to_z, int(meta["anchor_frame_idx"]), n_frames
+
+
+def _write_prep_meta(view_dir: Path, *, z_range: tuple[int, int], window: dict,
+                     anchor_catmaid_z: int, n_frames: int, anchor_frame_idx: int,
+                     frame_to_z: dict[int, int]) -> None:
+    """Record what was just written to ``view_dir``, last, via a temp-file
+    rename, so a reader never observes a sidecar whose frames are not all
+    actually on disk yet (a crash mid-write leaves no sidecar at all)."""
+    meta = {"z_range": list(z_range), "window": window,
+            "anchor_catmaid_z": int(anchor_catmaid_z), "n_frames": int(n_frames),
+            "anchor_frame_idx": int(anchor_frame_idx),
+            "frame_to_z": {str(k): int(v) for k, v in frame_to_z.items()}}
+    tmp_path = view_dir / (_PREP_META_NAME + ".tmp")
+    tmp_path.write_text(json.dumps(meta))
+    tmp_path.replace(view_dir / _PREP_META_NAME)
+
+
 def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
                               cw: "alignment.CropWindow", *,
                               frames_root: Optional[Path],
@@ -408,12 +453,18 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     cache (every chain's window is unique), which makes ``z_range`` (see
     ``prepare_video_frames``'s docstring, same override, e.g.
     ``(anchor_catmaid_z, anchor_catmaid_z)`` for just the anchor) even more worth
-    using here: there is no shared cache to fall back on, every z this prepares gets
-    decoded fresh, every time. The per-frame read goes through
-    ``_read_tif_window``: a windowed memmap slice that pages in only the
-    window's rows instead of decoding the whole ~85 MB frame, which is where this
-    function's wall-time lived. View dir is namespaced by neuron+chain+crop_scale and
-    rebuilt fresh. Returns (view_dir str, frame_to_z, anchor_frame_idx, n_frames).
+    using here. The per-frame read goes through ``_read_tif_window``: a windowed
+    memmap slice that pages in only the window's rows instead of decoding the
+    whole ~85 MB frame, which is where this function's wall-time lived.
+
+    View dir is namespaced by neuron+chain+crop_scale. A call whose
+    (z_range, window, anchor_catmaid_z) exactly matches a sidecar already
+    recorded there (``_prep_meta.json``) is a pure cache hit: nothing is read or
+    written, the recorded result is returned as-is. This is what lets the
+    review GUI's background prefetch (see gui.py's ``_prefetch_next``) do a
+    chain's crop ahead of time and have the real, synchronous open reuse it
+    instead of redoing the work. Any other call rebuilds the view from scratch,
+    exactly as before. Returns (view_dir str, frame_to_z, anchor_frame_idx, n_frames).
     """
     import cv2
     import shutil
@@ -440,6 +491,13 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
     frames_root = Path(frames_root)
     view_dir = (frames_root / "chain_views"
                 / f"{neuron}_chain{chain_idx:02d}_pcrop_s{cw.crop_scale}")
+
+    window = cw.to_dict()
+    cached = _load_matching_prep(view_dir, z_range=(start_z, end_z), window=window,
+                                 anchor_catmaid_z=anchor_catmaid_z)
+    if cached is not None:
+        return cached
+
     if view_dir.exists():
         shutil.rmtree(view_dir)
     view_dir.mkdir(parents=True)
@@ -459,4 +517,7 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
         raise AssertionError(
             f"anchor key={anchor_key} not in z-range [{start_z}, {end_z}]"
         )
+    _write_prep_meta(view_dir, z_range=(start_z, end_z), window=window,
+                     anchor_catmaid_z=anchor_catmaid_z, n_frames=len(subset),
+                     anchor_frame_idx=anchor_frame_idx, frame_to_z=frame_to_z)
     return str(view_dir), frame_to_z, anchor_frame_idx, len(subset)
