@@ -75,6 +75,8 @@ def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
     instead of once per chain. (`key` == file_z for the tif store, == slice z for the
     GT png store; the cache name scheme is unchanged for the target worm.)
     """
+    import threading
+
     import cv2
     from tqdm import tqdm
 
@@ -91,13 +93,35 @@ def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
         # gui.py's background prefetch thread (_prefetch_next) can now call this
         # concurrently with the GUI thread on an overlapping z-range, a direct imwrite to
         # the final name would let a reader's exists() check see a partially-written file,
-        # or leave a truncated frame behind forever if the process exits mid-write. The tmp
-        # name uses a ".part" infix rather than a ".tmp" suffix because cv2.imwrite picks
-        # its codec from the final extension and does not recognize ".jpg.tmp".
+        # or leave a truncated frame behind forever if the process exits mid-write.
+        #
+        # The temp name is unique PER CALL (thread id + key), not just per key: two
+        # different chains with overlapping z-ranges have different _prep_locks keys, so
+        # this function is NOT serialized across them, and both can find z{key}.jpg
+        # missing and start writing at the same time. A temp name shared by key alone
+        # would let one writer's in-progress file be exposed by the other's rename
+        # (POSIX) or make the losing rename raise (Windows sharing violation). With a
+        # unique temp file per writer, the two writes never touch the same inode; a
+        # losing rename is then just two writers racing to create the same, byte-identical
+        # destination (both decoded the same source frame), so it's treated as a benign
+        # no-op rather than an error. The ".part" infix (not a ".tmp" suffix) is required
+        # because cv2.imwrite picks its codec from the final extension and does not
+        # recognize ".jpg.tmp".
         dst = cache_dir / f"z{key}.jpg"
-        tmp = cache_dir / f"z{key}.part.jpg"
-        cv2.imwrite(str(tmp), img)
-        tmp.replace(dst)
+        tmp = cache_dir / f"z{key}.{threading.get_ident()}.part.jpg"
+        ok = cv2.imwrite(str(tmp), img)
+        if not ok:
+            raise IOError(f"cv2.imwrite failed to encode frame for z={key} -> {tmp}")
+        try:
+            tmp.replace(dst)
+        except OSError:
+            if dst.exists():
+                # another writer (a different, overlapping-z chain) already produced
+                # z{key}.jpg from the same source frame; our copy is redundant, not wrong.
+                tmp.unlink(missing_ok=True)
+            else:
+                tmp.unlink(missing_ok=True)   # don't leave an orphan .part.jpg behind
+                raise
 
 
 def _link_frame(src: Path, dst: Path) -> None:
