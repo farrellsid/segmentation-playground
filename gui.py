@@ -734,7 +734,7 @@ class ReviewGUI:
         # crop-aware QC. The displayed EM/mask/prompts are ALL _pcrop already (frames_dir
         # points at the crop view, masks are crop-sized), so a click is a _pcrop coord and
         # re-predict/resume need no transform: only skeleton/QC/hires consult the window.
-        self.chain, self._state, self._cw = _load_chain_state_and_cw(
+        self.chain, state, cw = _load_chain_state_and_cw(
             self.ctx, neuron, chain_idx, chain_dir)
         if self.chain is None:
             # find_chain returning None is a real, tested state (a neuron this
@@ -750,6 +750,7 @@ class ReviewGUI:
                 f"is not in this session's chain list. Likely causes: this "
                 f"session's data/chains.json does not include {neuron}, or the "
                 f"launcher scoped this session to a neuron subset that excludes it.")
+        self._state, self._cw = state, cw
         if self._cw is not None:
             print(f"[gui] tier-2 crop chain: _pcrop window {self._cw.size_tif} "
                   f"@ crop_scale {self._cw.crop_scale}")

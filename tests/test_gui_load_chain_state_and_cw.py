@@ -16,6 +16,8 @@ import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+import pytest
+
 import gui
 
 
@@ -78,6 +80,51 @@ def test_chain_in_session_but_no_state_json_yet(tmp_path):
 
     assert chain is not None
     assert state is None and cw is None
+
+
+def test_open_chain_preserves_state_and_cw_on_failed_lookup(tmp_path):
+    """Regression test: when open_chain fails due to a chain not being in this
+    session's scope, self._state and self._cw must NOT be cleared to None (they
+    should stay at whatever the previous successful open_chain set them to).
+    Before the fix, the tuple unpacking happened before the None check, wiping
+    them unconditionally."""
+    root = tmp_path / "tree"
+    chain_dir = root / "AIZL" / "chain_03"
+    chain_dir.mkdir(parents=True)
+    (chain_dir / "state.json").write_text(json.dumps({
+        "neuron": "AIZL", "chain_idx": 3, "status": "done",
+        "anchor_catmaid_z": 1524, "anchor_frame_idx": 0,
+        "frames_dir": str(tmp_path / "does_not_exist"),
+        "frame_to_z": {"0": 1524}, "n_frames": 1,
+        "crop_window": {"origin_tif": [3888.0, 6216.0], "size_tif": [1168, 1328],
+                        "crop_scale": 2, "sam_scale": 8},
+    }), encoding="utf-8")
+
+    # Pre-seed with sentinel objects (simulating a previous successful open_chain)
+    sentinel_state = types.SimpleNamespace(anchor_catmaid_z=9999)
+    sentinel_cw = types.SimpleNamespace(size_tif=[99, 99], crop_scale=99)
+
+    fake_self = types.SimpleNamespace(
+        ctx=types.SimpleNamespace(
+            output_root=root,
+            find_chain=lambda neuron, idx: None,   # not in this session
+            annotate_df=None,
+            cfg=types.SimpleNamespace(frames_root=tmp_path / "frames_cache"),
+        ),
+        _close_session=lambda: None,
+        anchor_only=False,
+        context_frames=0,
+        _state=sentinel_state,
+        _cw=sentinel_cw,
+    )
+
+    # open_chain should raise but NOT modify _state or _cw
+    with pytest.raises(LookupError, match="AIZL"):
+        gui.ReviewGUI.open_chain(fake_self, "AIZL", 3)
+
+    # _state and _cw should still be the sentinel objects, not None
+    assert fake_self._state is sentinel_state
+    assert fake_self._cw is sentinel_cw
 
 
 if __name__ == "__main__":
