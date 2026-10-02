@@ -86,7 +86,18 @@ def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
     for key, src_path in tqdm(missing, desc="caching JPEG frames", unit="frame"):
         img = cv2.imread(str(src_path))          # BGR, fine for grayscale EM (tif or png)
         img = _downscale_image(img, scale)       # match image-mode coord space
-        cv2.imwrite(str(cache_dir / f"z{key}.jpg"), img)
+        # write via a temp file + atomic rename (same pattern as prepare_chain_crop_frames'
+        # sidecar): this cache is SHARED across all chains keyed by z+scale, and since
+        # gui.py's background prefetch thread (_prefetch_next) can now call this
+        # concurrently with the GUI thread on an overlapping z-range, a direct imwrite to
+        # the final name would let a reader's exists() check see a partially-written file,
+        # or leave a truncated frame behind forever if the process exits mid-write. The tmp
+        # name uses a ".part" infix rather than a ".tmp" suffix because cv2.imwrite picks
+        # its codec from the final extension and does not recognize ".jpg.tmp".
+        dst = cache_dir / f"z{key}.jpg"
+        tmp = cache_dir / f"z{key}.part.jpg"
+        cv2.imwrite(str(tmp), img)
+        tmp.replace(dst)
 
 
 def _link_frame(src: Path, dst: Path) -> None:
