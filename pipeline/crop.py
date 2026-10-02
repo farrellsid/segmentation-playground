@@ -407,17 +407,26 @@ def _load_matching_prep(view_dir: Path, *, z_range: tuple[int, int], window: dic
         return None
     try:
         meta = json.loads(meta_path.read_text())
-    except (OSError, ValueError):
+        if (list(meta.get("z_range", ())) != list(z_range)
+                or meta.get("window") != window
+                or int(meta.get("anchor_catmaid_z", -1)) != int(anchor_catmaid_z)):
+            return None
+        n_frames = int(meta["n_frames"])
+        if not all((view_dir / f"{i:05d}.jpg").exists() for i in range(n_frames)):
+            return None
+        frame_to_z = {int(k): int(v) for k, v in meta["frame_to_z"].items()}
+        anchor_frame_idx = int(meta["anchor_frame_idx"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        # a sidecar that parses as valid JSON but is missing an expected key
+        # (n_frames / anchor_frame_idx / frame_to_z), or has one in the wrong shape
+        # (e.g. frame_to_z not a dict, so .items() raises AttributeError, not
+        # TypeError), must degrade to "not a cache hit" like every other malformed-
+        # sidecar case above, not crash the caller. prepare_chain_crop_frames also
+        # runs in the batch/orchestrator path on Narval, where that caller is a
+        # batch job, not an interactive session: a KeyError here would abort the
+        # whole batch over one bad sidecar instead of just rebuilding that chain.
         return None
-    if (list(meta.get("z_range", ())) != list(z_range)
-            or meta.get("window") != window
-            or int(meta.get("anchor_catmaid_z", -1)) != int(anchor_catmaid_z)):
-        return None
-    n_frames = int(meta["n_frames"])
-    if not all((view_dir / f"{i:05d}.jpg").exists() for i in range(n_frames)):
-        return None
-    frame_to_z = {int(k): int(v) for k, v in meta["frame_to_z"].items()}
-    return str(view_dir), frame_to_z, int(meta["anchor_frame_idx"]), n_frames
+    return str(view_dir), frame_to_z, anchor_frame_idx, n_frames
 
 
 def _write_prep_meta(view_dir: Path, *, z_range: tuple[int, int], window: dict,

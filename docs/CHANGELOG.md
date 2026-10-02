@@ -82,6 +82,13 @@ open next, using the session's own `--anchor-only`/`--context-frames` settings. 
 directory at once. No new flag: this is always on, and a mistargeted or failed prefetch is
 silently harmless.
 
+The prefetch thread can also decode into `pipeline/frames.py`'s shared, non-tier-2 JPEG
+cache (used by legacy `_sam` chains), which is keyed by z and scale rather than by chain, so
+two different chains with overlapping z-ranges can now race to produce the same frame. That
+cache writes through a per-writer, uniquely named temp file before an atomic rename instead
+of straight to the final name, so a losing or interrupted write can no longer corrupt or
+orphan a frame other chains depend on.
+
 Full design in
 [next-chain-frame-prefetch-design.md](superpowers/specs/2026-10-01-next-chain-frame-prefetch-design.md).
 

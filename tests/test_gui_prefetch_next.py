@@ -91,6 +91,31 @@ def test_prefetch_swallows_errors_from_the_background_thread(monkeypatch, tmp_pa
     assert "background prefetch" in out and "AIAL" in out
 
 
+def test_prefetch_setup_failure_does_not_escape_into_open_chain(monkeypatch, tmp_path, capsys):
+    """_peek_chain calls self.queue.refresh() under the hood, which can raise on
+    real disk flakiness this repo has hit before. open_chain has already fully
+    succeeded by the time _prefetch_next runs (it's the last line of open_chain),
+    so a failure here must degrade to "no prefetch this time," never escape
+    _prefetch_next and fail a chain that already opened fine. No thread should
+    even be started: the failure is in the setup step, before one would spawn."""
+    def _must_not_be_called(*a, **k):
+        raise AssertionError("no thread should be started when _peek_chain itself raises")
+    monkeypatch.setattr(gui.threading, "Thread", _must_not_be_called)
+
+    def _raising_peek(direction):
+        raise RuntimeError("simulated queue.refresh() disk flakiness")
+
+    fake_self = types.SimpleNamespace(
+        _peek_chain=_raising_peek,
+        ctx=types.SimpleNamespace(output_root=tmp_path, cfg="CFG", annotate_df="DF"),
+        anchor_only=True, context_frames=2, _prep_locks={})
+
+    gui.ReviewGUI._prefetch_next(fake_self)   # must not raise
+
+    out = capsys.readouterr().out
+    assert "background prefetch" in out
+
+
 def test_prefetch_reuses_the_same_lock_object_for_the_same_chain(monkeypatch, tmp_path):
     monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
     monkeypatch.setattr(gui, "_load_chain_state_and_cw",

@@ -487,7 +487,21 @@ def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
     else:
         resolved = (resolve_frames_dir(recorded_frames_dir, chain_dir) if chain_dir
                     else Path(recorded_frames_dir))
-    have_recorded = resolved is not None and (resolved / "00000.jpg").exists()
+    # Before background prefetch existed, a view directory either existed complete
+    # or not at all (prep only ever ran synchronously, to completion, on the GUI
+    # thread). Now a directory can hold 00000.jpg without holding every recorded
+    # frame: a daemon prefetch thread killed mid-build leaves a partial directory,
+    # and an --anchor-only session narrows a chain's view down to just its anchor
+    # +/- context frames, including for a chain it never opened itself (the
+    # prefetched next chain) -- if that same chain is later opened in a FULL
+    # session, checking only index 0 would wrongly report the narrow set as the
+    # complete recorded frame_to_z (e.g. 88 entries), producing wrong/missing
+    # frames or an index error. Also checking the LAST recorded index catches a
+    # truncated directory without a full stat-every-frame loop.
+    n_recorded = len(recorded_frame_to_z) if recorded_frame_to_z else 0
+    have_recorded = (resolved is not None and n_recorded > 0
+                     and (resolved / "00000.jpg").exists()
+                     and (resolved / f"{n_recorded - 1:05d}.jpg").exists())
     if have_recorded and not anchor_only:
         return str(resolved), recorded_frame_to_z, recorded_anchor_idx
 
@@ -853,11 +867,21 @@ class ReviewGUI:
         open_chain). A target that errors, or that you never actually open,
         is harmless: caught and logged here, never raised into the GUI, and
         an unread prepared view is simply left on disk for next time."""
-        target = self._peek_chain(+1)
-        if target is None:
+        try:
+            # _peek_chain can refresh self.queue from disk (self.queue.refresh()),
+            # which can raise on real disk flakiness this repo has hit before (see
+            # pipeline/frames.py's load_frame_sam retry hardening). open_chain has
+            # already fully succeeded by the time this runs, so a failure here must
+            # degrade to "no prefetch this time," never surface as a crash of a
+            # chain that already opened fine.
+            target = self._peek_chain(+1)
+            if target is None:
+                return
+            neuron, chain_idx = target
+            chain_dir = self.ctx.output_root / neuron / f"chain_{chain_idx:02d}"
+        except Exception as e:
+            print(f"[gui] background prefetch setup failed: {e}")
             return
-        neuron, chain_idx = target
-        chain_dir = self.ctx.output_root / neuron / f"chain_{chain_idx:02d}"
 
         def _run() -> None:
             try:
