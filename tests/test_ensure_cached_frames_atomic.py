@@ -165,26 +165,65 @@ def test_two_racing_writers_for_the_same_key_each_get_a_unique_temp_name(tmp_pat
 
 def test_a_losing_rename_is_swallowed_when_another_writer_already_landed_the_file(
         tmp_path, monkeypatch):
-    """Classification branch 1: tmp.replace(dst) raises, but dst already exists (some
-    other writer -- a different, overlapping-z chain -- won the race first). This must
-    be treated as a benign, redundant loss: no exception, own temp file cleaned up."""
+    """Classification branch 1: tmp.replace(dst) raises, but another writer's own
+    replace landed dst in the gap between this call's exists() check and its own
+    replace attempt. This must be treated as a benign, redundant loss: no exception,
+    own temp file cleaned up, winner's bytes left alone.
+
+    dst must NOT exist before `_ensure_cached_frames` is called here: the function's
+    own up-front `missing` filter checks `exists()` first and returns early if the
+    key is already cached, which would make this test pass without ever reaching
+    cv2.imwrite, the patched replace, or the except-branch at all (exactly the gap a
+    prior version of this test had -- it pre-created dst, so every assertion passed
+    trivially even with the benign-swallow branch deleted entirely). Instead, the
+    patched `Path.replace` stand-in itself creates dst (with different, "winning"
+    bytes) and THEN raises, modeling the real race: both writers' exists() checks
+    both saw "missing", and the other writer's replace happened to land first, in
+    the narrow window just before this writer's own replace call."""
     src = tmp_path / "src" / "z100.tif"
     _write_fixture_image(src)
     cache_dir = tmp_path / "frames_cache_s1"
     cache_dir.mkdir(parents=True)
     dst = cache_dir / "z100.jpg"
-    dst.write_bytes(b"already written by the winning writer")   # simulate the winner
+    assert not dst.exists(), "dst must still be missing when _ensure_cached_frames starts"
 
-    def _failing_replace(self, target):
+    def _replace_that_loses_the_race(self, target):
+        pathlib.Path(target).write_bytes(b"already written by the winning writer")
         raise PermissionError("simulated Windows sharing violation on the losing rename")
 
-    monkeypatch.setattr(pathlib.Path, "replace", _failing_replace)
+    monkeypatch.setattr(pathlib.Path, "replace", _replace_that_loses_the_race)
 
     _ensure_cached_frames([(100, src)], cache_dir, scale=1)   # must NOT raise
 
     assert dst.read_bytes() == b"already written by the winning writer", (
-        "the winner's file must be left alone")
+        "the winner's file must be left alone, not overwritten by the loser")
     assert list(cache_dir.glob("*.part.jpg")) == [], "the loser's own temp file must be cleaned up"
+
+
+def test_an_imwrite_failure_is_also_swallowed_when_another_writer_already_landed_the_file(
+        tmp_path, monkeypatch):
+    """Same classification branch as above, exercised via the OTHER failure site:
+    cv2.imwrite itself is what fails (a silent `False` return here) after another
+    writer's full write+rename already landed dst, rather than the rename failing.
+    Must still be swallowed, not re-raised, since the cache ends up correctly
+    populated by the winner either way."""
+    src = tmp_path / "src" / "z100.tif"
+    _write_fixture_image(src)
+    cache_dir = tmp_path / "frames_cache_s1"
+    cache_dir.mkdir(parents=True)
+    dst = cache_dir / "z100.jpg"
+    assert not dst.exists()
+
+    def _imwrite_that_loses_the_race(path, img):
+        dst.write_bytes(b"already written by the winning writer")
+        return False   # silent encode failure -> _ensure_cached_frames raises IOError internally
+
+    monkeypatch.setattr(cv2, "imwrite", _imwrite_that_loses_the_race)
+
+    _ensure_cached_frames([(100, src)], cache_dir, scale=1)   # must NOT raise
+
+    assert dst.read_bytes() == b"already written by the winning writer"
+    assert list(cache_dir.glob("*.part.jpg")) == []
 
 
 def test_a_losing_rename_still_raises_when_the_destination_was_never_written(
