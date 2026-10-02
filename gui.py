@@ -514,6 +514,31 @@ def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
     return frames_dir, frame_to_z, anchor_idx
 
 
+def _load_chain_state_and_cw(ctx: "ReviewContext", neuron: str, chain_idx: int,
+                             chain_dir: Path
+                             ) -> tuple[Optional[dict], Optional["pipeline.ChainState"],
+                                        Optional["alignment.CropWindow"]]:
+    """(chain dict, parsed state.json, tier-2 CropWindow or None) for (neuron,
+    chain_idx): the lookup open_chain and the background prefetch (_prefetch_next)
+    both need before they can resolve frames.
+
+    ``chain`` is None exactly when this session's chain list does not have
+    (neuron, chain_idx) (see open_chain's LookupError for why that matters:
+    a scope mismatch, not a missing file). That check happens FIRST and short-
+    circuits before state.json is ever read, so a malformed state.json next to
+    a chain outside this session's scope still surfaces as "not in this
+    session," not as a JSON error."""
+    chain = ctx.find_chain(neuron, chain_idx)
+    if chain is None:
+        return None, None, None
+    sp = chain_dir / "state.json"
+    state = pipeline.load_state(sp) if sp.exists() else None
+    cw = None
+    if state is not None and getattr(state, "crop_window", None):
+        cw = alignment.CropWindow.from_dict(state.crop_window)
+    return chain, state, cw
+
+
 def _resolve_chain_frames(state: Optional["pipeline.ChainState"], *, chain: dict, cw,
                           cfg: "pipeline.PipelineConfig", annotate_df: pd.DataFrame,
                           neuron: str, chain_idx: int, anchor_only: bool,
@@ -699,7 +724,18 @@ class ReviewGUI:
 
         self._close_session()
         self.neuron, self.chain_idx = neuron, chain_idx
-        self.chain = self.ctx.find_chain(neuron, chain_idx)
+        # the chain's serialized state carries the ORIGINAL seed (prompts.points_sam
+        # / labels / box_sam), loaded so we can pre-populate the prompts layer with
+        # it rather than starting empty (else "re-run image phase" has no positive
+        # point). Also reused by _anchor_dict. Loaded BEFORE review.load_chain (not
+        # after, as before) because frames_dir may need regenerating first, see below.
+        # tier-2 chains were propagated/saved in a per-chain crop space (_pcrop). The
+        # CropWindow (persisted in state.json) is what maps _tif skeleton nodes + drives
+        # crop-aware QC. The displayed EM/mask/prompts are ALL _pcrop already (frames_dir
+        # points at the crop view, masks are crop-sized), so a click is a _pcrop coord and
+        # re-predict/resume need no transform: only skeleton/QC/hires consult the window.
+        self.chain, self._state, self._cw = _load_chain_state_and_cw(
+            self.ctx, neuron, chain_idx, chain_dir)
         if self.chain is None:
             # find_chain returning None is a real, tested state (a neuron this
             # session's chains.json/scope does not have), not a bug in it: see
@@ -714,22 +750,7 @@ class ReviewGUI:
                 f"is not in this session's chain list. Likely causes: this "
                 f"session's data/chains.json does not include {neuron}, or the "
                 f"launcher scoped this session to a neuron subset that excludes it.")
-
-        # the chain's serialized state carries the ORIGINAL seed (prompts.points_sam
-        # / labels / box_sam), loaded so we can pre-populate the prompts layer with
-        # it rather than starting empty (else "re-run image phase" has no positive
-        # point). Also reused by _anchor_dict. Loaded BEFORE review.load_chain (not
-        # after, as before) because frames_dir may need regenerating first, see below.
-        sp = chain_dir / "state.json"
-        self._state = pipeline.load_state(sp) if sp.exists() else None
-        # tier-2 chains were propagated/saved in a per-chain crop space (_pcrop). The
-        # CropWindow (persisted in state.json) is what maps _tif skeleton nodes + drives
-        # crop-aware QC. The displayed EM/mask/prompts are ALL _pcrop already (frames_dir
-        # points at the crop view, masks are crop-sized), so a click is a _pcrop coord and
-        # re-predict/resume need no transform: only skeleton/QC/hires consult the window.
-        self._cw = None
-        if self._state is not None and getattr(self._state, "crop_window", None):
-            self._cw = alignment.CropWindow.from_dict(self._state.crop_window)
+        if self._cw is not None:
             print(f"[gui] tier-2 crop chain: _pcrop window {self._cw.size_tif} "
                   f"@ crop_scale {self._cw.crop_scale}")
 
@@ -1546,6 +1567,27 @@ class ReviewGUI:
     def open_prev_in_queue(self, *_) -> None:
         self._step_chain(-1)
 
+    def _peek_chain(self, direction: int) -> Optional[tuple[str, int]]:
+        """The (neuron, chain_idx) `_step_chain(direction)` would open right now,
+        without opening it or touching any GUI state. None when there is nothing
+        to step to: an empty queue, or the only chain in the list is the one
+        already open. Refreshes the queue first, same as _step_chain always did,
+        so it reflects the current review state (claims/dispositions since the
+        last refresh). Used by _step_chain itself and by the background
+        prefetch (_prefetch_next), so both ask the identical question."""
+        self.queue.refresh()
+        chains = self._mode_chains()                        # mode-aware (see _mode_chains)
+        if not chains:
+            return None
+        cur = (self.neuron, self.chain_idx)
+        if cur in chains:
+            i = (chains.index(cur) + direction) % len(chains)
+        else:
+            i = 0 if direction > 0 else len(chains) - 1
+        if chains[i] == cur and len(chains) == 1:
+            return None
+        return chains[i]
+
     def _step_chain(self, direction: int) -> None:
         """Cycle to the next/prev CHAIN that still needs a human (different chain, vs
         next/prev *flagged FRAME*, which moves between frames within the open chain).
@@ -1557,21 +1599,17 @@ class ReviewGUI:
         excluding those made the queue look empty as soon as you'd visited each once.
         Only terminal dispositions (approved / rejected / corrected) drop a chain out
         of the flagged list. Wraps around, relative to the chain currently open."""
-        self.queue.refresh()
-        chains = self._mode_chains()                        # mode-aware (see _mode_chains)
+        target = self._peek_chain(direction)
+        if target is not None:
+            self.open_chain(*target)
+            return
+        chains = self._mode_chains()        # queue was already refreshed by _peek_chain
         if not chains:
             print("[gui] no chains to cycle "
                   f"({self._mode_combo.value}); switch mode or refresh")
-            return
-        cur = (self.neuron, self.chain_idx)
-        if cur in chains:
-            i = (chains.index(cur) + direction) % len(chains)
         else:
-            i = 0 if direction > 0 else len(chains) - 1
-        if chains[i] == cur and len(chains) == 1:
+            cur = (self.neuron, self.chain_idx)
             print(f"[gui] {cur[0]} chain {cur[1]:02d} is the only chain in this list")
-            return
-        self.open_chain(*chains[i])
 
     # =====================================================================
     # Label logging
