@@ -23,6 +23,7 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-10-01, the review GUI starts cropping your next chain before you ask for it](#r-2026-10-01-next-chain-prefetch)
 - [2026-09-15, a tracking sheet had typos, so a reprop batch shipped 123 chains short](#r-2026-09-15-reprop-protocol)
 - [2026-09-09, eight Lucinda bundles, a full-tree scan nobody meant to run, and a chain that could not be found](#r-2026-09-09-lucinda-bundles-index-chains)
 - [2026-08-27, a second reviewer's machine, and a recrop that survives the round trip](#r-2026-08-27-machine-setup-recrop)
@@ -62,6 +63,27 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-10-01-next-chain-prefetch"></a>
+## 2026-10-01, the review GUI starts cropping your next chain before you ask for it
+
+Opening the next chain in `--anchor-only` review always blocked on re-cropping that chain's
+frames, even for a window as small as the anchor plus two frames of context. The real cost
+was `prepare_chain_crop_frames`: a tier-2 chain has no cross-chain decode cache, and the
+function rebuilt its view directory from scratch on every call, even when an identical one
+had just been built.
+
+Two changes. `prepare_chain_crop_frames` now writes a small sidecar recording what it
+actually built (z-range, crop window, anchor), and skips the rebuild entirely when a later
+call asks for the exact same thing. On top of that, `gui.py`'s `open_chain` now fires a
+background thread, once a chain finishes loading, that prepares whatever `next CHAIN` would
+open next, using the session's own `--anchor-only`/`--context-frames` settings. A lock per
+`(neuron, chain_idx)` keeps that thread and a later real open from writing the same
+directory at once. No new flag: this is always on, and a mistargeted or failed prefetch is
+silently harmless.
+
+Full design in
+[next-chain-frame-prefetch-design.md](superpowers/specs/2026-10-01-next-chain-frame-prefetch-design.md).
 
 <a id="r-2026-09-15-reprop-protocol"></a>
 ## 2026-09-15, a tracking sheet had typos, so a reprop batch shipped 123 chains short

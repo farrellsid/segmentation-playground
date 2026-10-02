@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -711,6 +712,11 @@ class ReviewGUI:
         self._populating = False         # re-entrancy guard for the neuron->chain cascade
         self._recrop_picking = False     # True while the full-frame recrop region picker is open
         self._recrop_full_hw = None      # (H, W) _tif of the frame shown in the picker
+        # one Lock per (neuron, chain_idx) ever opened or prefetched this session, so
+        # open_chain and a background _prefetch_next thread can never write the same
+        # chain's view directory at once (see _prefetch_next). dict.setdefault on a
+        # plain (str, int) key is atomic under the GIL, so this needs no lock of its own.
+        self._prep_locks: dict[tuple[str, int], threading.Lock] = {}
 
         self._build_widgets()
         self._bind_keys()
@@ -763,11 +769,13 @@ class ReviewGUI:
         # frames (see _resolve_chain_frames). anchor_only additionally narrows this
         # to just the anchor z regardless of whether the full recording exists, see
         # _ensure_local_frames.
-        frames_dir_override, frame_to_z_override, anchor_idx_override = _resolve_chain_frames(
-            self._state, chain=self.chain, cw=self._cw, cfg=self.ctx.cfg,
-            annotate_df=self.ctx.annotate_df, neuron=neuron, chain_idx=chain_idx,
-            anchor_only=self.anchor_only, context_frames=self.context_frames,
-            chain_dir=chain_dir)
+        lock = self._prep_locks.setdefault((neuron, chain_idx), threading.Lock())
+        with lock:
+            frames_dir_override, frame_to_z_override, anchor_idx_override = _resolve_chain_frames(
+                self._state, chain=self.chain, cw=self._cw, cfg=self.ctx.cfg,
+                annotate_df=self.ctx.annotate_df, neuron=neuron, chain_idx=chain_idx,
+                anchor_only=self.anchor_only, context_frames=self.context_frames,
+                chain_dir=chain_dir)
 
         # rebuild the overlay from disk (one definition of "how a mask is read").
         # anchor_idx MUST come from the same source as frame_to_z: a narrowed
@@ -835,6 +843,40 @@ class ReviewGUI:
         self._refresh_info()
         print(f"[gui] opened {neuron} chain {chain_idx:02d}: {t} frames, "
               f"{len(self.data.triage_frames)} queued, anchor frame {self.data.anchor_idx}")
+        self._prefetch_next()
+
+    def _prefetch_next(self) -> None:
+        """Fire a background preparation of the chain `next CHAIN` would open
+        right now, so by the time you press it the frame crop/decode is
+        already done. Depth 1: this only ever looks one hop ahead, re-armed
+        every time a chain finishes loading (called at the end of
+        open_chain). A target that errors, or that you never actually open,
+        is harmless: caught and logged here, never raised into the GUI, and
+        an unread prepared view is simply left on disk for next time."""
+        target = self._peek_chain(+1)
+        if target is None:
+            return
+        neuron, chain_idx = target
+        chain_dir = self.ctx.output_root / neuron / f"chain_{chain_idx:02d}"
+
+        def _run() -> None:
+            try:
+                chain, state, cw = _load_chain_state_and_cw(
+                    self.ctx, neuron, chain_idx, chain_dir)
+                if chain is None or state is None:
+                    return   # never run yet, or outside this session's scope: nothing to do
+                lock = self._prep_locks.setdefault((neuron, chain_idx), threading.Lock())
+                with lock:
+                    _resolve_chain_frames(
+                        state, chain=chain, cw=cw, cfg=self.ctx.cfg,
+                        annotate_df=self.ctx.annotate_df, neuron=neuron, chain_idx=chain_idx,
+                        anchor_only=self.anchor_only, context_frames=self.context_frames,
+                        chain_dir=chain_dir)
+            except Exception as e:
+                print(f"[gui] background prefetch of {neuron} chain_{chain_idx:02d} "
+                      f"failed: {e}")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # -- layer builders --------------------------------------------------------
     def _new_prompts_layer(self, scale=(1.0, 1.0, 1.0)):
