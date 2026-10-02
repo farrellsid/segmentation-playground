@@ -484,10 +484,6 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
         ]
         start_z, end_z = min(chain_z), max(chain_z)
 
-    fs = frame_store or TifFrameStore()
-    anchor_key = fs.key_of_z(anchor_catmaid_z)
-    subset = fs.files_in_z_range(start_z, end_z)     # [(key, src_path), ...] sorted by key
-
     frames_root = Path(frames_root)
     view_dir = (frames_root / "chain_views"
                 / f"{neuron}_chain{chain_idx:02d}_pcrop_s{cw.crop_scale}")
@@ -497,6 +493,10 @@ def prepare_chain_crop_frames(chain: dict, annotate_df: pd.DataFrame,
                                  anchor_catmaid_z=anchor_catmaid_z)
     if cached is not None:
         return cached
+
+    fs = frame_store or TifFrameStore()
+    anchor_key = fs.key_of_z(anchor_catmaid_z)
+    subset = fs.files_in_z_range(start_z, end_z)     # [(key, src_path), ...] sorted by key
 
     if view_dir.exists():
         shutil.rmtree(view_dir)

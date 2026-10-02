@@ -64,13 +64,27 @@ def _count_imwrite(monkeypatch):
     return calls
 
 
+def _count_files_in_z_range(monkeypatch):
+    calls = {"n": 0}
+    orig_method = _FakeFrameStore.files_in_z_range
+
+    def _counting_files_in_z_range(self, z0, z1):
+        calls["n"] += 1
+        return orig_method(self, z0, z1)
+
+    monkeypatch.setattr(_FakeFrameStore, "files_in_z_range", _counting_files_in_z_range)
+    return calls
+
+
 def test_second_call_with_identical_inputs_makes_no_imwrite_calls(tmp_path, monkeypatch):
     first = _prepare(tmp_path)
 
-    calls = _count_imwrite(monkeypatch)
+    calls_imwrite = _count_imwrite(monkeypatch)
+    calls_glob = _count_files_in_z_range(monkeypatch)
     second = _prepare(tmp_path)
 
-    assert calls["n"] == 0, "a matching second call must be a pure cache hit"
+    assert calls_imwrite["n"] == 0, "a matching second call must be a pure cache hit: zero imwrite calls"
+    assert calls_glob["n"] == 0, "a matching second call must skip the glob: zero files_in_z_range calls"
     assert second == first
 
 
