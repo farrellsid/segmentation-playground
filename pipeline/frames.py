@@ -75,6 +75,7 @@ def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
     instead of once per chain. (`key` == file_z for the tif store, == slice z for the
     GT png store; the cache name scheme is unchanged for the target worm.)
     """
+    import os
     import threading
 
     import cv2
@@ -95,29 +96,39 @@ def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
         # the final name would let a reader's exists() check see a partially-written file,
         # or leave a truncated frame behind forever if the process exits mid-write.
         #
-        # The temp name is unique PER CALL (thread id + key), not just per key: two
+        # The temp name is unique PER CALL (pid + thread id), not just per key: two
         # different chains with overlapping z-ranges have different _prep_locks keys, so
         # this function is NOT serialized across them, and both can find z{key}.jpg
         # missing and start writing at the same time. A temp name shared by key alone
         # would let one writer's in-progress file be exposed by the other's rename
         # (POSIX) or make the losing rename raise (Windows sharing violation). With a
         # unique temp file per writer, the two writes never touch the same inode; a
-        # losing rename is then just two writers racing to create the same, byte-identical
-        # destination (both decoded the same source frame), so it's treated as a benign
-        # no-op rather than an error. The ".part" infix (not a ".tmp" suffix) is required
+        # losing write/rename is then just two writers racing to produce the same,
+        # byte-identical destination (both decoded the same source frame), so it's a
+        # benign no-op when the destination is already there, not an error. (pid is
+        # included too, not just the thread id, since a bare thread id is only unique
+        # within one process; this feature only ever races within one GUI process, but
+        # the extra margin is free.) The ".part" infix (not a ".tmp" suffix) is required
         # because cv2.imwrite picks its codec from the final extension and does not
         # recognize ".jpg.tmp".
         dst = cache_dir / f"z{key}.jpg"
-        tmp = cache_dir / f"z{key}.{threading.get_ident()}.part.jpg"
-        ok = cv2.imwrite(str(tmp), img)
-        if not ok:
-            raise IOError(f"cv2.imwrite failed to encode frame for z={key} -> {tmp}")
+        tmp = cache_dir / f"z{key}.{os.getpid()}.{threading.get_ident()}.part.jpg"
         try:
+            # the write (cv2.imwrite, which can raise cv2.error -- NOT an OSError
+            # subclass -- or just return False on a silent encode failure) and the
+            # rename share one cleanup path below: either failure can leave `tmp`
+            # behind, and either one is harmless exactly when some writer's attempt
+            # already landed `dst`. Caught broadly (not just OSError/cv2.error) so no
+            # failure mode of either step can skip the "don't orphan `tmp`" cleanup.
+            ok = cv2.imwrite(str(tmp), img)
+            if not ok:
+                raise IOError(f"cv2.imwrite failed to encode frame for z={key} -> {tmp}")
             tmp.replace(dst)
-        except OSError:
+        except Exception:
             if dst.exists():
                 # another writer (a different, overlapping-z chain) already produced
-                # z{key}.jpg from the same source frame; our copy is redundant, not wrong.
+                # z{key}.jpg from the same source frame; our own failure is then
+                # redundant, not wrong.
                 tmp.unlink(missing_ok=True)
             else:
                 tmp.unlink(missing_ok=True)   # don't leave an orphan .part.jpg behind
