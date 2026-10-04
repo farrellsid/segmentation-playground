@@ -78,13 +78,18 @@ as one multi-color object on a per-neuron crop canvas. See
 Opens several corrected neurons together in one napari window, each as its own
 toggleable Labels layer, composited per z-slice in the shared real-world coordinate
 space. Reuses `render_review.neuron_volume` for the per-neuron remap/crop; does not
-resolve overlaps between neurons into one canonical label. See
-[../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md](../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md).
+resolve overlaps between neurons into one canonical label. With `--mesh`, also builds
+each neuron's 3D surface (reusing `sam2_utils.meshing.volume_to_mesh`) as its own
+toggleable Surface layer in the same window. See
+[../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md](../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md)
+and
+[../superpowers/specs/2026-10-04-multi-neuron-3d-mesh-view-design.md](../superpowers/specs/2026-10-04-multi-neuron-3d-mesh-view-design.md).
 
 | Flag | Effect |
 |------|--------|
 | `--tree <dir>` | Bundle folder or output tree root to read neurons from (same per-chain layout either way). |
 | `--neurons <names>` | Comma-separated neuron names to open together, e.g. `AVAL,AVAR,RIBL`. |
+| `--mesh` | Also build and show each neuron's 3D mesh. Slower than the 2D-only default, mesh generation is real compute per neuron. |
 
 ## eval.score_batch
 
