@@ -1,9 +1,10 @@
-"""build_layer_specs / build_mesh_specs: per-neuron napari layer specs from a
-tree or bundle root, 2D labelmap and 3D mesh respectively.
+"""build_layer_specs / build_mesh_specs / save_package / load_package: per-neuron
+napari layer specs from a tree, bundle, or saved package, 2D labelmap, 3D mesh,
+and the VAST-style package round-trip respectively.
 
 Pure, no napari import, following the same split gui.py already uses: the logic
-(_peek_chain there, these two functions here) is tested directly; the real
-napari wiring around it is not.
+(_peek_chain there, these functions here) is tested directly; the real napari
+wiring around it is not.
 
     py -3 -m pytest tests/test_view_neurons.py
 """
@@ -18,6 +19,7 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import view_neurons
+from eval.groundtruth import _read_label_png
 
 
 def _fake_neuron_volume(volumes):
@@ -36,6 +38,43 @@ def _asymmetric_box_volume():
     vol = np.zeros((6, 8, 10), dtype=np.uint8)
     vol[1:3, 1:5, 1:7] = 1
     return vol
+
+
+def _two_specs(*, overlap: bool = False):
+    """Two small, hand-built layer specs in the exact shape build_layer_specs()
+    returns, for testing save_package/load_package without needing a real tree
+    or neuron_volume() at all. With overlap=True, the second neuron's volume
+    occupies the exact same block as the first's, so the overlap policy
+    (last-in-list wins) is directly testable. With overlap=False, the second
+    neuron is offset two voxels along Z and one along X: both have z-depth 2,
+    so z=0..1 is AIAL-only and z=2..3 is AIAR-only, no shared z-slice; the
+    1-voxel X offset also makes the union canvas one voxel wider than either
+    neuron's own 3-voxel block, so AIAL's own z=0 slice has a real background
+    column at the far edge, not just foreground wall to wall. That's what lets
+    test_saved_png_is_readable_by_the_existing_vast_gt_reader genuinely check
+    both "background is 0" and "AIAL's id is present" on one real slice,
+    instead of a slice that happens to have no background pixel at all."""
+    spacing = (50.0, 128.0, 128.0)
+    vol_a = np.ones((2, 3, 3), dtype=np.uint16)
+    data_a = vol_a * np.uint16(1)
+    spec_a = {"name": "AIAL", "data": data_a,
+             "translate": (0.0, 0.0, 0.0), "scale": spacing}
+
+    vol_b = np.ones((2, 3, 3), dtype=np.uint16)
+    data_b = vol_b * np.uint16(2)
+    if overlap:
+        # same origin as AIAL, same shape, so every voxel overlaps
+        spec_b = {"name": "AIAR", "data": data_b,
+                 "translate": (0.0, 0.0, 0.0), "scale": spacing}
+    else:
+        # z: offset by 2 voxels (real-world 2*50=100nm), so AIAL occupies
+        # z=0..1 and AIAR occupies z=2..3, no shared z-slice.
+        # x: offset by 1 voxel (real-world 1*128=128nm), so the union canvas
+        # is 4 voxels wide in x while each neuron's own block is only 3,
+        # leaving a real background column in every slice.
+        spec_b = {"name": "AIAR", "data": data_b,
+                 "translate": (100.0, 0.0, 128.0), "scale": spacing}
+    return [spec_a, spec_b]
 
 
 def test_assigns_distinct_ids_in_selection_order(monkeypatch):
@@ -165,6 +204,86 @@ def test_a_neuron_with_no_masks_is_skipped_not_an_empty_mesh(monkeypatch):
 
     assert [s["name"] for s in specs] == ["AIAL mesh"], (
         "a neuron with no masks must be skipped entirely, not added as an empty mesh")
+
+
+def test_save_and_load_package_round_trips_names_and_placement(tmp_path):
+    specs = _two_specs()
+
+    out_dir = view_neurons.save_package(
+        specs, tmp_path / "pkg", built_from={"tree": "fake-root", "neurons": ["AIAL", "AIAR"]})
+    loaded = view_neurons.load_package(out_dir)
+
+    assert [s["name"] for s in loaded] == ["AIAL", "AIAR"]
+    for spec in loaded:
+        assert spec["scale"] == (50.0, 128.0, 128.0)
+        assert np.unique(spec["data"]).tolist()[0] == 0, "background must still be 0"
+
+
+def test_loaded_data_matches_each_neurons_own_id_and_shape(tmp_path):
+    specs = _two_specs()
+
+    out_dir = view_neurons.save_package(specs, tmp_path / "pkg", built_from={})
+    loaded = view_neurons.load_package(out_dir)
+
+    aial = next(s for s in loaded if s["name"] == "AIAL")
+    aiar = next(s for s in loaded if s["name"] == "AIAR")
+    assert set(np.unique(aial["data"]).tolist()) == {0, 1}
+    assert set(np.unique(aiar["data"]).tolist()) == {0, 2}
+    # both neurons' layers share the package's one full shape
+    assert aial["data"].shape == aiar["data"].shape
+
+
+def test_overlap_uses_the_later_spec_in_the_list(tmp_path):
+    specs = _two_specs(overlap=True)
+
+    out_dir = view_neurons.save_package(specs, tmp_path / "pkg", built_from={})
+    loaded = view_neurons.load_package(out_dir)
+
+    aial = next(s for s in loaded if s["name"] == "AIAL")
+    aiar = next(s for s in loaded if s["name"] == "AIAR")
+    # Both specs occupied the exact same voxels. AIAR was second in the input
+    # list, so it must have won every one of them: AIAL's reconstructed layer
+    # has nothing left (id 1 never appears), AIAR's has the full block (id 2
+    # everywhere the original block was).
+    assert not np.any(aial["data"] == 1), "AIAL must have lost every overlapping voxel"
+    assert np.sum(aiar["data"] == 2) == 2 * 3 * 3, "AIAR must have kept the whole block"
+
+
+def test_saved_png_is_readable_by_the_existing_vast_gt_reader(tmp_path):
+    specs = _two_specs()
+    out_dir = view_neurons.save_package(specs, tmp_path / "pkg", built_from={})
+
+    # Real interop check, not just round-tripping through our own loader: this
+    # repo's existing VAST-GT reader (eval/groundtruth.py, unrelated feature,
+    # unmodified) must be able to read a package PNG directly.
+    arr = _read_label_png(out_dir / "labels" / "000000.png")
+    assert arr.dtype == np.uint16
+    assert set(np.unique(arr).tolist()) == {0, 1}, (
+        "z-slice 0 should hold only background (0) and AIAL's id (1), "
+        "AIAR starts one slice later in this fixture's un-overlapped layout")
+
+
+def test_main_rejects_package_combined_with_tree(monkeypatch, tmp_path):
+    (tmp_path / "manifest.json").write_text("{}")
+    monkeypatch.setattr(sys, "argv", [
+        "view_neurons.py", "--package", str(tmp_path),
+        "--tree", "fake-root", "--neurons", "AIAL"])
+    with pytest.raises(SystemExit, match="cannot be combined with --tree"):
+        view_neurons.main()
+
+
+def test_main_rejects_package_combined_with_mesh(monkeypatch, tmp_path):
+    (tmp_path / "manifest.json").write_text("{}")
+    monkeypatch.setattr(sys, "argv", [
+        "view_neurons.py", "--package", str(tmp_path), "--mesh"])
+    with pytest.raises(SystemExit, match="cannot be combined with --mesh"):
+        view_neurons.main()
+
+
+def test_main_requires_package_or_tree_and_neurons(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["view_neurons.py"])
+    with pytest.raises(SystemExit, match="need either --package"):
+        view_neurons.main()
 
 
 if __name__ == "__main__":
