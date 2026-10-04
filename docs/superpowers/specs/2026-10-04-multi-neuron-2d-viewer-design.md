@@ -31,10 +31,17 @@ a bundle automatically, that stays a manual step the user already knows how to d
 every chain of a neuron, remaps tier-2 `_pcrop` and legacy `_sam` masks onto the shared `_sam`
 pixel grid via `pipeline.chain_masks_in_sam`, crops to that neuron's own bounding box to keep
 memory bounded, preserves real z-gaps instead of silently compacting them (mask dropout is a real,
-measured failure mode elsewhere in this pipeline), and returns `(vol, spacing)` with `spacing`
-already real-world nanometers (`SPACING_SAM8_NM`). That spacing is exactly what the contact-mapping
-method will eventually need for a meaningful radius check, so no new coordinate work is needed
-here, it already exists. This design calls that function as-is, with no changes to it.
+measured failure mode elsewhere in this pipeline), and returns `spacing` already in real-world
+nanometers (`SPACING_SAM8_NM`). That spacing is exactly what the contact-mapping method will
+eventually need for a meaningful radius check, so no new coordinate work is needed here, it already
+exists.
+
+One real gap, found during planning: `neuron_volume()` computes the cropped volume's origin
+(`z_min, y0, x0` in the shared grid) internally, but only ever returned `(vol, spacing)`, discarding
+it. This design needs that origin too, to place each neuron correctly via napari's `translate`. The
+function is extended to return `(vol, origin, spacing)` instead of reimplementing the same remap and
+cropping logic a second time elsewhere, a small, mechanical change (its one real caller and its
+existing test file's tuple-unpacking sites), not a rewrite.
 
 ## Multi-neuron compositing: separate translated layers, no merge
 
