@@ -93,7 +93,10 @@ def neuron_volume(root, neuron: str, *, max_voxels: int = 400_000_000):
 
     Cropping is what keeps this laptop-sized. The full `_sam` grid across a long
     neuron runs to hundreds of MB, while the neuron's own bounding box is a small
-    fraction of that. Returns ``(vol, spacing)`` with ``vol`` as ``(z, y, x)`` uint8.
+    fraction of that. Returns ``(vol, origin, spacing)``: ``vol`` as ``(z, y, x)``
+    uint8, ``origin`` as the ``(z, y, x)`` voxel offset of ``vol``'s ``[0, 0, 0]``
+    corner in the shared `_sam`/z coordinate space (``(0, 0, 0)`` when ``vol`` is
+    empty, since there is nothing to place).
     """
     root = Path(root)
     blocks = []
@@ -116,7 +119,7 @@ def neuron_volume(root, neuron: str, *, max_voxels: int = 400_000_000):
             blocks.append((int(z), mask[iy0:iy1, ix0:ix1],
                            int(x0) + ix0, int(y0) + iy0))
     if not blocks:
-        return np.zeros((0, 0, 0), dtype=np.uint8), SPACING_SAM8_NM
+        return np.zeros((0, 0, 0), dtype=np.uint8), (0, 0, 0), SPACING_SAM8_NM
 
     # The volume spans every z from the minimum to the maximum present, not just the
     # z values that happen to survive the `mask.any()` filter above. Compacting past
@@ -145,13 +148,13 @@ def neuron_volume(root, neuron: str, *, max_voxels: int = 400_000_000):
         h, w = mask.shape
         sy, sx = by - y0, bx - x0
         vol[z - z_min, sy:sy + h, sx:sx + w] |= mask.astype(np.uint8)
-    return vol, SPACING_SAM8_NM
+    return vol, (z_min, y0, x0), SPACING_SAM8_NM
 
 
 def neuron_mesh(root, neuron: str, out_path, *, preset: str = "faithful",
                 max_voxels: int = 400_000_000):
     """Write one PLY for ``neuron``. Returns the path, or None if it has no masks."""
-    vol, spacing = neuron_volume(root, neuron, max_voxels=max_voxels)
+    vol, _origin, spacing = neuron_volume(root, neuron, max_voxels=max_voxels)
     if not vol.size or not vol.any():
         print(f"[render] {neuron}: no masks, skipping mesh")
         return None

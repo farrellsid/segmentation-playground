@@ -100,7 +100,7 @@ class TestNeuronVolume:
     def test_composites_every_chain_onto_one_grid(self, tmp_path, monkeypatch):
         root, placements = _tree_with_two_chains(tmp_path)
         _patch_masks(monkeypatch, placements)
-        vol, spacing = render_review.neuron_volume(root, "AIBL")
+        vol, _origin, spacing = render_review.neuron_volume(root, "AIBL")
         assert vol.ndim == 3
         assert vol.sum() > 0
         # 4 z values across both chains
@@ -110,7 +110,7 @@ class TestNeuronVolume:
                                                                     monkeypatch):
         root, placements = _tree_with_two_chains(tmp_path)
         _patch_masks(monkeypatch, placements)
-        vol, _ = render_review.neuron_volume(root, "AIBL")
+        vol, _origin, _ = render_review.neuron_volume(root, "AIBL")
         # masks span x 101..144 and y 201..214, so the bbox is tens of px, not 1152
         assert vol.shape[1] < 100 and vol.shape[2] < 100, (
             f"volume is {vol.shape}, which is the full grid rather than the bbox")
@@ -118,7 +118,7 @@ class TestNeuronVolume:
     def test_spacing_is_z_finer_than_xy(self, tmp_path, monkeypatch):
         root, placements = _tree_with_two_chains(tmp_path)
         _patch_masks(monkeypatch, placements)
-        _vol, spacing = render_review.neuron_volume(root, "AIBL")
+        _vol, _origin, spacing = render_review.neuron_volume(root, "AIBL")
         assert spacing == (50.0, 128.0, 128.0)
         assert spacing[0] < spacing[1], "z must be the finer axis at scale 8"
 
@@ -132,8 +132,9 @@ class TestNeuronVolume:
     def test_mask_lands_at_the_correct_coordinates(self, tmp_path, monkeypatch):
         root, placements = _tree_with_known_placement(tmp_path)
         _patch_masks(monkeypatch, placements)
-        vol, _ = render_review.neuron_volume(root, "AIBL")
-        # bbox origin is the min over both blocks: x0=50, y0=280
+        vol, origin, _spacing = render_review.neuron_volume(root, "AIBL")
+        # bbox origin is the min over both blocks: z=2000, x0=50, y0=280
+        assert origin == (2000, 280, 50), f"expected origin (2000, 280, 50), got {origin}"
         # chain 0 (4x10 at x0=50,y0=300) lands at rows 20:24, cols 0:10
         assert vol[0, 20, 0] == 1, "chain 0 top-left corner must be set"
         assert vol[0, 23, 9] == 1, "chain 0 bottom-right corner must be set"
@@ -149,7 +150,7 @@ class TestNeuronVolume:
                                                                      monkeypatch):
         root, placements = _tree_with_z_gap(tmp_path)
         _patch_masks(monkeypatch, placements)
-        vol, _ = render_review.neuron_volume(root, "AIBL")
+        vol, _origin, _ = render_review.neuron_volume(root, "AIBL")
         # z values are 1500, 1501, 1510: full span is 11 planes, not the 3 that are
         # actually occupied. Compacting them would silently pull 1510 next to 1501.
         assert vol.shape[0] == 11, (
@@ -219,7 +220,7 @@ class TestBboxUsesMaskContent:
                                                                  monkeypatch):
         root, placements = self._legacy_and_crop_chains(tmp_path)
         _patch_masks(monkeypatch, placements)
-        vol, _spacing = render_review.neuron_volume(root, "AUAL")
+        vol, _origin, _spacing = render_review.neuron_volume(root, "AUAL")
         assert vol.shape[1] < 200 and vol.shape[2] < 200, (
             f"volume is {vol.shape}: the legacy chain's whole-frame array sized the "
             f"bbox instead of its 20x40 of actual content")
@@ -229,7 +230,7 @@ class TestBboxUsesMaskContent:
         """Shrinking the bbox must not drop or move the mask it was sized from."""
         root, placements = self._legacy_and_crop_chains(tmp_path)
         _patch_masks(monkeypatch, placements)
-        vol, _spacing = render_review.neuron_volume(root, "AUAL")
+        vol, _origin, _spacing = render_review.neuron_volume(root, "AUAL")
         assert vol.sum() > 0
         # both chains contribute, on their own z planes
         assert vol.shape[0] == 2
