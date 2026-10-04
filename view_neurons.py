@@ -2,7 +2,9 @@
 
 One napari Labels layer per neuron, each positioned by its own translate/scale
 so they land correctly in the shared real-world (nanometre) coordinate space,
-reusing render_review.neuron_volume unmodified for the per-neuron remap/crop.
+reusing render_review.neuron_volume for the per-neuron remap/crop (extended, not
+rewritten, to also return each neuron's bounding-box origin, see
+render_review.py's own docstring).
 Overlapping neurons are shown blended by napari's own layer compositing; this
 tool does not resolve overlaps into one canonical label (see
 docs/superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md).

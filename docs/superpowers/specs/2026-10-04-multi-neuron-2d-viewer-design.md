@@ -25,7 +25,7 @@ folder directly or a master tree that already had `import_bundle.py` run against
 identical layout, so neither is a hard requirement of this tool. Nothing here downloads or imports
 a bundle automatically, that stays a manual step the user already knows how to do.
 
-## Reusing `neuron_volume()` unmodified
+## Reusing `neuron_volume()`
 
 `render_review.py`'s existing `neuron_volume(root, neuron)` already does the hard part: it walks
 every chain of a neuron, remaps tier-2 `_pcrop` and legacy `_sam` masks onto the shared `_sam`
@@ -48,8 +48,10 @@ existing test file's tuple-unpacking sites), not a rewrite.
 `neuron_volume()` returns each neuron's volume already positioned in the same global `_sam`/z
 coordinate system, just locally cropped to its own bounding box. Rather than pasting every
 selected neuron into one shared dense array, each neuron becomes its own napari `Labels` layer,
-placed in the viewer via napari's `translate` parameter (that neuron's own `z0, y0, x0` origin).
-napari composites overlapping layers on its own. This avoids building and holding a monolithic
+placed in the viewer via napari's `translate` parameter (that neuron's own `z0, y0, x0` origin,
+converted to real-world nanometers via `spacing`, not the raw voxel offset, see Multi-neuron
+compositing below for why). napari composites overlapping layers on its own. This avoids building
+and holding a monolithic
 multi-neuron array in memory, and it is what makes per-neuron toggling a native feature instead of
 something this tool has to implement.
 
