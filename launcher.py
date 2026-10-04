@@ -228,12 +228,12 @@ def machine_checks(profile: dict) -> list:
         root_str = (profile.get("frames_root") or "").strip()
         if not root_str:
             return MachineCheck("frames cache", False, "not set",
-                                "point 'Frames cache' at a folder you can write to")
+                                "point 'Data root' at a folder you can write to")
         root = Path(root_str)
         problem = _writable(root)
         if problem:
             return MachineCheck("frames cache", False, f"{root}: {problem}",
-                                "point 'Frames cache' at a folder you can write to")
+                                "point 'Data root' at a folder you can write to")
         return MachineCheck("frames cache", True, f"writable at {root}")
 
     _check("torch", _torch)
@@ -652,8 +652,12 @@ def run() -> None:
         open_render_window(path_edit.text().strip(), ticked())
 
     def do_view(*_):
+        neurons = ticked()
+        if not neurons:
+            status.setText("Tick at least one neuron to view")
+            return
         try:
-            open_neuron_viewer(path_edit.text().strip(), ticked(), mesh=mesh_checkbox.isChecked())
+            open_neuron_viewer(path_edit.text().strip(), neurons, mesh=mesh_checkbox.isChecked())
         except SystemExit as exc:
             status.setText(str(exc))
 

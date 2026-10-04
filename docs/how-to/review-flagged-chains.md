@@ -42,8 +42,9 @@ which travel in a bundle:
 
 - **Raw EM (tif stack)**: the full-resolution `..z<number>.tif` frames. Recrop re-reads
   them to cut a new window, so recrop is the only thing that needs this.
-- **Frames cache**: where prepared JPEG frames are written. Needs to be writable and
-  roomy; a tier-2 chain's frames are unique to its window and are not shared.
+- **Data root (frames cache + scratch)**: where prepared JPEG frames are written, plus
+  other working/scratch data. Needs to be writable and roomy; a tier-2 chain's frames
+  are unique to its window and are not shared.
 - **Checkpoints**: where the SAM2 weights live or land. If the checkpoint is absent it
   downloads on first use, about 860 MB for the `large` model.
 
@@ -55,6 +56,12 @@ install, is written out step by step in
 device SAM2 would run on. On Apple Silicon that is `mps`, which works but is slow, and
 which upstream still calls preliminary, so masks can differ slightly from a CUDA run.
 Reprop stays disabled until torch and a usable checkpoint folder are both present.
+
+The neuron list's **View neurons** button opens the ticked neurons together in the
+napari multi-neuron viewer (see [cli.md](../reference/cli.md)); tick at least one
+first, since an empty tick list here is not "all" the way it is for **Render video +
+mesh**. The **3D mesh** checkbox next to it also builds each neuron's 3D surface,
+real per-neuron compute, so tick it only for the few neurons you actually need in 3D.
 
 ---
 
