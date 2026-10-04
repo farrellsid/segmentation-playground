@@ -82,19 +82,22 @@ resolve overlaps between neurons into one canonical label. With `--mesh`, also b
 each neuron's 3D surface (reusing `sam2_utils.meshing.volume_to_mesh`) as its own
 toggleable Surface layer in the same window. With `--save-package`, also saves the
 built neurons to disk as a VAST-style labelmap package (reopen later with `--package`
-instead of rebuilding from `--tree`). See
+instead of rebuilding from `--tree`); combined with `--mesh`, each neuron's mesh is
+also cached into the package (one `.ply` per neuron) so `--package ... --mesh` loads
+it back instead of recomputing it. See
 [../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md](../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md),
 [../superpowers/specs/2026-10-04-multi-neuron-3d-mesh-view-design.md](../superpowers/specs/2026-10-04-multi-neuron-3d-mesh-view-design.md),
+[../superpowers/specs/2026-10-04-neuron-package-design.md](../superpowers/specs/2026-10-04-neuron-package-design.md),
 and
-[../superpowers/specs/2026-10-04-neuron-package-design.md](../superpowers/specs/2026-10-04-neuron-package-design.md).
+[../superpowers/specs/2026-10-04-neuron-mesh-package-design.md](../superpowers/specs/2026-10-04-neuron-mesh-package-design.md).
 
 | Flag | Effect |
 |------|--------|
 | `--tree <dir>` | Bundle folder or output tree root to read neurons from (same per-chain layout either way). Required with `--neurons`, unless `--package` is given instead. |
 | `--neurons <names>` | Comma-separated neuron names to open together, e.g. `AVAL,AVAR,RIBL`. Required with `--tree`, unless `--package` is given instead. |
-| `--mesh` | Also build and show each neuron's 3D mesh. Slower than the 2D-only default, mesh generation is real compute per neuron. Cannot be combined with `--package`. |
-| `--save-package <dir>` | Also save the built `--tree`/`--neurons` selection to this directory as a VAST-style labelmap package. |
-| `--package <dir>` | Load from a previously saved package instead of `--tree`/`--neurons`. 2D only, cannot be combined with `--mesh`. |
+| `--mesh` | Also build and show each neuron's 3D mesh. Slower than the 2D-only default, mesh generation is real compute per neuron. With `--package`, loads a cached mesh instead of recomputing it (fails clearly if the package has none). |
+| `--save-package <dir>` | Also save the built `--tree`/`--neurons` selection to this directory as a VAST-style labelmap package. With `--mesh`, also caches each neuron's mesh into the same package. |
+| `--package <dir>` | Load from a previously saved package instead of `--tree`/`--neurons`. Add `--mesh` to also load that package's cached meshes. |
 
 ## eval.score_batch
 

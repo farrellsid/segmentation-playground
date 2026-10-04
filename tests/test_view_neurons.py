@@ -10,8 +10,10 @@ wiring around it is not.
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
+import types
 
 import numpy as np
 import pytest
@@ -75,6 +77,17 @@ def _two_specs(*, overlap: bool = False):
         spec_b = {"name": "AIAR", "data": data_b,
                  "translate": (100.0, 0.0, 128.0), "scale": spacing}
     return [spec_a, spec_b]
+
+
+class _FakeViewer:
+    """Stands in for napari.Viewer so test_main_* can exercise main() end-to-end
+    (argument parsing, load_package/load_mesh_specs, the final viewer.add_* calls)
+    without opening a real GUI window."""
+    def add_labels(self, *a, **kw):
+        pass
+
+    def add_surface(self, *a, **kw):
+        pass
 
 
 def test_assigns_distinct_ids_in_selection_order(monkeypatch):
@@ -283,6 +296,102 @@ def test_a_later_neurons_own_background_does_not_erase_an_earlier_neurons_foregr
     assert aiar["data"][0, 0, 0] == 0, "AIAR has no claim of its own at this voxel"
 
 
+def _two_mesh_specs():
+    """Two small, hand-built mesh specs in the exact shape build_mesh_specs() returns,
+    matching the two neuron names _two_specs() uses, so a test can save both the 2D
+    and mesh specs into the same package and check the mesh entries' ids line up with
+    the 2D neurons' ids. Uses the asymmetric box fixture (via build_mesh_specs itself,
+    not hand-built vertices) so the written .ply's own axis order is independently
+    checkable the same way test_mesh_vertices_are_reversed_back_to_z_y_x_order already
+    checks build_mesh_specs's in-memory output."""
+    import view_neurons as vn
+    vol = _asymmetric_box_volume()
+    spacing = (50.0, 128.0, 128.0)
+
+    def fake(root, neuron, **kw):
+        return {"AIAL": (vol, (0, 0, 0), spacing), "AIAR": (vol, (0, 0, 0), spacing)}[neuron]
+
+    import render_review
+    real_neuron_volume = render_review.neuron_volume
+    render_review.neuron_volume = fake
+    try:
+        mesh_specs = vn.build_mesh_specs("fake-root", ["AIAL", "AIAR"])
+    finally:
+        render_review.neuron_volume = real_neuron_volume
+    return mesh_specs
+
+
+def test_save_package_writes_one_ply_per_neuron_with_matching_2d_ids(tmp_path):
+    specs = _two_specs()
+    mesh_specs = _two_mesh_specs()
+
+    out_dir = view_neurons.save_package(
+        specs, tmp_path / "pkg", built_from={}, mesh_specs=mesh_specs)
+
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    assert (out_dir / "meshes" / "AIAL.ply").exists()
+    assert (out_dir / "meshes" / "AIAR.ply").exists()
+    mesh_by_name = {m["name"]: m for m in manifest["meshes"]}
+    neuron_by_name = {n["name"]: n for n in manifest["neurons"]}
+    assert mesh_by_name["AIAL"]["id"] == neuron_by_name["AIAL"]["id"], (
+        "a mesh entry's id must match its neuron's own 2D id, so a reloaded mesh "
+        "gets the same color it would have live, not a renumbered one")
+    assert mesh_by_name["AIAR"]["id"] == neuron_by_name["AIAR"]["id"]
+    assert mesh_by_name["AIAL"]["file"] == "AIAL.ply"
+
+
+def test_save_package_without_mesh_specs_writes_no_meshes_key_or_dir(tmp_path):
+    specs = _two_specs()
+
+    out_dir = view_neurons.save_package(specs, tmp_path / "pkg", built_from={})
+
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    assert "meshes" not in manifest
+    assert not (out_dir / "meshes").exists()
+
+
+def test_saved_ply_uses_native_x_y_z_order_matching_render_reviews_own_ply_writer(tmp_path):
+    specs = _two_specs()
+    mesh_specs = _two_mesh_specs()
+    out_dir = view_neurons.save_package(
+        specs, tmp_path / "pkg", built_from={}, mesh_specs=mesh_specs)
+
+    verts_on_disk, _faces = view_neurons.meshing.read_ply(out_dir / "meshes" / "AIAL.ply")
+    x_span, y_span, z_span = (np.ptp(verts_on_disk[:, i]) for i in range(3))
+    assert x_span > y_span > z_span, (
+        "the fixture box is widest in x, narrowest in z; the .ply on disk must store "
+        "volume_to_mesh's native (x, y, z) order, same as render_review.py's neuron_mesh, "
+        "not this module's internal (z, y, x) order")
+
+
+def test_load_mesh_specs_round_trips_vertices_faces_translate_and_color(tmp_path):
+    specs = _two_specs()
+    mesh_specs = _two_mesh_specs()
+    out_dir = view_neurons.save_package(
+        specs, tmp_path / "pkg", built_from={}, mesh_specs=mesh_specs)
+
+    loaded = view_neurons.load_mesh_specs(out_dir)
+
+    assert [s["name"] for s in loaded] == ["AIAL mesh", "AIAR mesh"]
+    original_by_name = {s["name"]: s for s in mesh_specs}
+    for spec in loaded:
+        original = original_by_name[spec["name"]]
+        assert np.allclose(spec["vertices"], original["vertices"], atol=1e-4)
+        assert np.array_equal(spec["faces"], original["faces"])
+        assert spec["translate"] == original["translate"]
+        assert np.allclose(spec["vertex_colors"][0], original["vertex_colors"][0]), (
+            "color must be re-derived from the stored id and match the live color "
+            "exactly, since nothing else determines a mesh's color")
+
+
+def test_load_mesh_specs_raises_a_clear_error_when_package_has_no_mesh_data(tmp_path):
+    specs = _two_specs()
+    out_dir = view_neurons.save_package(specs, tmp_path / "pkg", built_from={})
+
+    with pytest.raises(SystemExit, match="no saved mesh data"):
+        view_neurons.load_mesh_specs(out_dir)
+
+
 def test_saved_png_is_readable_by_the_existing_vast_gt_reader(tmp_path):
     specs = _two_specs()
     out_dir = view_neurons.save_package(specs, tmp_path / "pkg", built_from={})
@@ -306,11 +415,29 @@ def test_main_rejects_package_combined_with_tree(monkeypatch, tmp_path):
         view_neurons.main()
 
 
-def test_main_rejects_package_combined_with_mesh(monkeypatch, tmp_path):
-    (tmp_path / "manifest.json").write_text("{}")
+def test_main_allows_package_combined_with_mesh_when_package_has_mesh_data(monkeypatch, tmp_path):
+    specs = _two_specs()
+    mesh_specs = _two_mesh_specs()
+    pkg_dir = view_neurons.save_package(
+        specs, tmp_path / "pkg", built_from={}, mesh_specs=mesh_specs)
+
+    fake_napari = types.ModuleType("napari")
+    fake_napari.Viewer = lambda **kw: _FakeViewer()
+    fake_napari.run = lambda: None
+    monkeypatch.setitem(sys.modules, "napari", fake_napari)
     monkeypatch.setattr(sys, "argv", [
-        "view_neurons.py", "--package", str(tmp_path), "--mesh"])
-    with pytest.raises(SystemExit, match="cannot be combined with --mesh"):
+        "view_neurons.py", "--package", str(pkg_dir), "--mesh"])
+
+    view_neurons.main()  # must not raise
+
+
+def test_main_package_with_mesh_fails_clearly_when_package_has_no_mesh_data(monkeypatch, tmp_path):
+    specs = _two_specs()
+    pkg_dir = view_neurons.save_package(specs, tmp_path / "pkg", built_from={})
+    monkeypatch.setattr(sys, "argv", [
+        "view_neurons.py", "--package", str(pkg_dir), "--mesh"])
+
+    with pytest.raises(SystemExit, match="no saved mesh data"):
         view_neurons.main()
 
 

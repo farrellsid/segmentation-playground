@@ -19,13 +19,19 @@ With --save-package, the built 2D layers are also saved to disk as a VAST-style
 labelmap package (one 16-bit PNG per z-slice plus manifest.json, this repo's
 existing VAST-GT convention from eval/groundtruth.py, not a new format), so a
 later run can reopen it with --package instead of rebuilding from --tree
-(see docs/superpowers/specs/2026-10-04-neuron-package-design.md). --package is
-2D-only and cannot be combined with --mesh.
+(see docs/superpowers/specs/2026-10-04-neuron-package-design.md). Combined with
+--mesh, each neuron's mesh is also cached into the same package (one .ply per
+neuron plus a "meshes" entry in manifest.json, see
+docs/superpowers/specs/2026-10-04-neuron-mesh-package-design.md); --package
+--mesh then loads those meshes back instead of recomputing them, and fails
+clearly if the package was saved without --mesh.
 
     py -3 view_neurons.py --tree <bundle or output tree root> --neurons AVAL,AVAR,RIBL
     py -3 view_neurons.py --tree <root> --neurons AVAL,AVAR --mesh
     py -3 view_neurons.py --tree <root> --neurons AVAL,AVAR --save-package <pkg dir>
+    py -3 view_neurons.py --tree <root> --neurons AVAL,AVAR --mesh --save-package <pkg dir>
     py -3 view_neurons.py --package <pkg dir>
+    py -3 view_neurons.py --package <pkg dir> --mesh
 """
 from __future__ import annotations
 
@@ -106,7 +112,8 @@ def build_mesh_specs(root, neurons: list[str], *, preset: str = "faithful") -> l
     return specs
 
 
-def save_package(specs: list[dict], out_dir, *, built_from: dict) -> Path:
+def save_package(specs: list[dict], out_dir, *, built_from: dict,
+                 mesh_specs: list[dict] | None = None) -> Path:
     """Write `specs` (the same shape build_layer_specs() returns) to `out_dir`
     as a VAST-style labelmap package: one 16-bit single-channel PNG per
     z-slice (pixel value is the neuron ID, 0 is background, the same
@@ -128,6 +135,10 @@ def save_package(specs: list[dict], out_dir, *, built_from: dict) -> Path:
     cannot show two neurons' claims on one pixel the way separate live layers
     blend visually; this masked last-wins rule is a real, deliberate
     simplification (see the design doc), not full overlap arbitration.
+
+    `mesh_specs` (the same shape `build_mesh_specs()` returns), when given and non-empty, is
+    also written: one `.ply` per neuron under `meshes/`, plus a `"meshes"` entry in the manifest.
+    Omitted or empty, the package is 2D-only, exactly as before this parameter existed.
     """
     if not specs:
         raise SystemExit("[view] nothing to save, no neuron had any masks")
@@ -168,6 +179,30 @@ def save_package(specs: list[dict], out_dir, *, built_from: dict) -> Path:
         "shape": list(shape),
         "neurons": neuron_entries,
     }
+
+    if mesh_specs:
+        id_by_name = {entry["name"]: entry["id"] for entry in neuron_entries}
+        meshes_dir = out_dir / "meshes"
+        meshes_dir.mkdir(parents=True, exist_ok=True)
+        mesh_entries = []
+        for spec in mesh_specs:
+            name = spec["name"].removesuffix(" mesh")
+            if name not in id_by_name:
+                raise SystemExit(
+                    f"[view] mesh for {name!r} has no matching 2D neuron entry in this "
+                    f"package; save_package needs mesh_specs built from the same neuron "
+                    f"list as specs")
+            verts_xyz = spec["vertices"][:, ::-1]
+            ply_path = meshes_dir / f"{name}.ply"
+            meshing.write_ply(ply_path, verts_xyz, spec["faces"])
+            mesh_entries.append({
+                "name": name,
+                "id": id_by_name[name],
+                "translate": [float(t) for t in spec["translate"]],
+                "file": ply_path.name,
+            })
+        manifest["meshes"] = mesh_entries
+
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return out_dir
 
@@ -204,6 +239,33 @@ def load_package(package_dir) -> list[dict]:
     return specs
 
 
+def load_mesh_specs(package_dir) -> list[dict]:
+    """The same layer-spec shape build_mesh_specs() returns, read back from a package
+    save_package() wrote with mesh_specs. Raises a clear SystemExit if the package was
+    saved without --mesh (no "meshes" key in its manifest), rather than silently
+    returning an empty list.
+    """
+    package_dir = Path(package_dir)
+    manifest = json.loads((package_dir / "manifest.json").read_text())
+    mesh_entries = manifest.get("meshes")
+    if not mesh_entries:
+        raise SystemExit(
+            f"[view] package at {package_dir} has no saved mesh data; re-save with "
+            f"--tree ... --mesh --save-package to include meshes")
+
+    specs = []
+    for entry in mesh_entries:
+        verts_xyz, faces = meshing.read_ply(package_dir / "meshes" / entry["file"])
+        verts_zyx = verts_xyz[:, ::-1]
+        translate = tuple(float(t) for t in entry["translate"])
+        color = video_viz._color_for(entry["id"])
+        vertex_colors = np.tile(color, (len(verts_zyx), 1))
+        specs.append({"name": f"{entry['name']} mesh", "vertices": verts_zyx,
+                      "faces": faces, "vertex_colors": vertex_colors,
+                      "translate": translate})
+    return specs
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Multi-neuron 2D/3D mask viewer (napari)")
     ap.add_argument("--tree", default=None,
@@ -215,20 +277,19 @@ def main() -> None:
     ap.add_argument("--mesh", action="store_true",
                     help="also build and show each neuron's 3D mesh (slower: marching "
                          "cubes + smoothing per neuron, not built unless asked for); "
-                         "cannot be combined with --package")
+                         "with --package, loads a saved mesh instead of recomputing it")
     ap.add_argument("--save-package", default=None, metavar="DIR",
                     help="also save the --tree/--neurons selection as a VAST-style "
-                         "labelmap package to this directory")
+                         "labelmap package to this directory; with --mesh, also caches "
+                         "each neuron's mesh into the same package")
     ap.add_argument("--package", default=None, metavar="DIR",
-                    help="load from a previously saved package instead of --tree/--neurons")
+                    help="load from a previously saved package instead of --tree/--neurons; "
+                         "add --mesh to also load that package's cached meshes")
     args = ap.parse_args()
 
     using_tree = args.tree is not None or args.neurons is not None
     if args.package and using_tree:
         raise SystemExit("[view] --package cannot be combined with --tree/--neurons")
-    if args.package and args.mesh:
-        raise SystemExit("[view] --package cannot be combined with --mesh (packages "
-                         "are 2D-only for now)")
     if args.package and args.save_package:
         raise SystemExit("[view] --save-package only applies when building from "
                          "--tree/--neurons, not --package")
@@ -240,6 +301,8 @@ def main() -> None:
         specs = load_package(args.package)
         if not specs:
             raise SystemExit(f"[view] package at {args.package} has no neurons")
+        if args.mesh:
+            mesh_specs = load_mesh_specs(args.package)
     else:
         neurons = [n.strip() for n in args.neurons.split(",") if n.strip()]
         specs = build_layer_specs(args.tree, neurons)
@@ -250,7 +313,8 @@ def main() -> None:
                 f"[view] none of {neurons} have any masks under {args.tree}")
         if args.save_package:
             save_package(specs, args.save_package,
-                         built_from={"tree": args.tree, "neurons": neurons})
+                         built_from={"tree": args.tree, "neurons": neurons},
+                         mesh_specs=mesh_specs)
             print(f"[view] saved package to {args.save_package}")
 
     import napari
