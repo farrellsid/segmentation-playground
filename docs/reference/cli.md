@@ -73,6 +73,19 @@ as one multi-color object on a per-neuron crop canvas. See
 | `--output-root <dir>` | Which output tree to review. |
 | `--reviewer <name>` | Stamp labels with a reviewer name. |
 
+## view_neurons.py
+
+Opens several corrected neurons together in one napari window, each as its own
+toggleable Labels layer, composited per z-slice in the shared real-world coordinate
+space. Reuses `render_review.neuron_volume` for the per-neuron remap/crop; does not
+resolve overlaps between neurons into one canonical label. See
+[../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md](../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md).
+
+| Flag | Effect |
+|------|--------|
+| `--tree <dir>` | Bundle folder or output tree root to read neurons from (same per-chain layout either way). |
+| `--neurons <names>` | Comma-separated neuron names to open together, e.g. `AVAL,AVAR,RIBL`. |
+
 ## eval.score_batch
 
 Scores a batch run against ground truth.
