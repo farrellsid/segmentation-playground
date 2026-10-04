@@ -80,14 +80,20 @@ def _two_specs(*, overlap: bool = False):
 
 
 class _FakeViewer:
-    """Stands in for napari.Viewer so test_main_* can exercise main() end-to-end
-    (argument parsing, load_package/load_mesh_specs, the final viewer.add_* calls)
-    without opening a real GUI window."""
+    """Stands in for napari.Viewer so test_main_*/test_run_* can exercise main()/run()
+    end-to-end (argument parsing or direct call, load_package/load_mesh_specs or
+    build_layer_specs/build_mesh_specs, the final viewer.add_* calls) without opening
+    a real GUI window. Records every add_labels/add_surface call so a test can assert
+    on what was actually added, not just that nothing raised."""
+    def __init__(self):
+        self.add_labels_calls = []
+        self.add_surface_calls = []
+
     def add_labels(self, *a, **kw):
-        pass
+        self.add_labels_calls.append((a, kw))
 
     def add_surface(self, *a, **kw):
-        pass
+        self.add_surface_calls.append((a, kw))
 
 
 def test_assigns_distinct_ids_in_selection_order(monkeypatch):
@@ -217,6 +223,60 @@ def test_a_neuron_with_no_masks_is_skipped_not_an_empty_mesh(monkeypatch):
 
     assert [s["name"] for s in specs] == ["AIAL mesh"], (
         "a neuron with no masks must be skipped entirely, not added as an empty mesh")
+
+
+def _fake_napari_module(viewer_holder: dict):
+    """A fresh fake napari module whose Viewer() call stashes the created _FakeViewer
+    into viewer_holder["v"], so a test can inspect it after run()/main() returns."""
+    fake = types.ModuleType("napari")
+
+    def _make_viewer(**kw):
+        v = _FakeViewer()
+        viewer_holder["v"] = v
+        return v
+
+    fake.Viewer = _make_viewer
+    fake.run = lambda: None
+    return fake
+
+
+def test_run_builds_from_tree_and_opens_the_viewer(monkeypatch):
+    vol = np.ones((1, 1, 1), dtype=np.uint8)
+    monkeypatch.setattr(view_neurons.render_review, "neuron_volume", _fake_neuron_volume({
+        "AIAL": (vol, (0, 0, 0), (50.0, 128.0, 128.0)),
+    }))
+    holder = {}
+    monkeypatch.setitem(sys.modules, "napari", _fake_napari_module(holder))
+
+    view_neurons.run("fake-root", ["AIAL"])
+
+    assert len(holder["v"].add_labels_calls) == 1
+    assert holder["v"].add_surface_calls == [], "mesh defaults to False, no surface expected"
+
+
+def test_run_with_mesh_true_also_builds_and_adds_a_mesh_layer(monkeypatch):
+    vol = _asymmetric_box_volume()
+    spacing = (50.0, 128.0, 128.0)
+    monkeypatch.setattr(view_neurons.render_review, "neuron_volume", _fake_neuron_volume({
+        "AIAL": (vol, (0, 0, 0), spacing),
+    }))
+    holder = {}
+    monkeypatch.setitem(sys.modules, "napari", _fake_napari_module(holder))
+
+    view_neurons.run("fake-root", ["AIAL"], mesh=True)
+
+    assert len(holder["v"].add_labels_calls) == 1
+    assert len(holder["v"].add_surface_calls) == 1, "mesh=True must add a surface layer"
+
+
+def test_run_raises_when_no_neuron_has_any_masks(monkeypatch):
+    empty = np.zeros((0, 0, 0), dtype=np.uint8)
+    monkeypatch.setattr(view_neurons.render_review, "neuron_volume", _fake_neuron_volume({
+        "EMPTYN": (empty, (0, 0, 0), (50.0, 128.0, 128.0)),
+    }))
+
+    with pytest.raises(SystemExit, match="none of"):
+        view_neurons.run("fake-root", ["EMPTYN"])
 
 
 def test_save_and_load_package_round_trips_names_and_placement(tmp_path):

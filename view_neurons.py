@@ -266,6 +266,50 @@ def load_mesh_specs(package_dir) -> list[dict]:
     return specs
 
 
+def _build_from_tree(tree, neurons: list[str], *, mesh: bool = False):
+    """Build layer specs (and, if requested, mesh specs) from a live tree/bundle.
+
+    Shared by run() and main()'s --tree path, so the "no masks anywhere" check and the
+    build order live in exactly one place.
+    """
+    specs = build_layer_specs(tree, neurons)
+    mesh_specs = build_mesh_specs(tree, neurons) if mesh else []
+    if not specs and not mesh_specs:
+        raise SystemExit(f"[view] none of {neurons} have any masks under {tree}")
+    return specs, mesh_specs
+
+
+def _open_viewer(specs: list[dict], mesh_specs: list[dict]) -> None:
+    """Open the napari window with the given layer specs.
+
+    Shared by run() and both branches of main() (--tree and --package), so there is
+    exactly one place that builds the window.
+    """
+    import napari
+    viewer = napari.Viewer(title="Multi-neuron mask viewer")
+    for spec in specs:
+        viewer.add_labels(spec["data"], name=spec["name"],
+                          translate=spec["translate"], scale=spec["scale"])
+    for spec in mesh_specs:
+        viewer.add_surface((spec["vertices"], spec["faces"]), name=spec["name"],
+                           vertex_colors=spec["vertex_colors"], translate=spec["translate"])
+    opened = [s["name"] for s in specs] + [s["name"] for s in mesh_specs]
+    print(f"[view] opened {len(opened)} layer(s): {', '.join(opened)}")
+    napari.run()
+
+
+def run(source, neurons: list[str], *, mesh: bool = False) -> None:
+    """Build and open the viewer directly, the same shape render_review.run(source,
+    neurons) already has (the function launcher.py's "Render video + mesh" button
+    calls). This is what launcher.py's "View neurons" button calls.
+
+    --save-package/--package are CLI-only concerns this entry point does not take;
+    see main() below for those.
+    """
+    specs, mesh_specs = _build_from_tree(source, neurons, mesh=mesh)
+    _open_viewer(specs, mesh_specs)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Multi-neuron 2D/3D mask viewer (napari)")
     ap.add_argument("--tree", default=None,
@@ -305,29 +349,14 @@ def main() -> None:
             mesh_specs = load_mesh_specs(args.package)
     else:
         neurons = [n.strip() for n in args.neurons.split(",") if n.strip()]
-        specs = build_layer_specs(args.tree, neurons)
-        if args.mesh:
-            mesh_specs = build_mesh_specs(args.tree, neurons)
-        if not specs and not mesh_specs:
-            raise SystemExit(
-                f"[view] none of {neurons} have any masks under {args.tree}")
+        specs, mesh_specs = _build_from_tree(args.tree, neurons, mesh=args.mesh)
         if args.save_package:
             save_package(specs, args.save_package,
                          built_from={"tree": args.tree, "neurons": neurons},
                          mesh_specs=mesh_specs)
             print(f"[view] saved package to {args.save_package}")
 
-    import napari
-    viewer = napari.Viewer(title="Multi-neuron mask viewer")
-    for spec in specs:
-        viewer.add_labels(spec["data"], name=spec["name"],
-                          translate=spec["translate"], scale=spec["scale"])
-    for spec in mesh_specs:
-        viewer.add_surface((spec["vertices"], spec["faces"]), name=spec["name"],
-                           vertex_colors=spec["vertex_colors"], translate=spec["translate"])
-    opened = [s["name"] for s in specs] + [s["name"] for s in mesh_specs]
-    print(f"[view] opened {len(opened)} layer(s): {', '.join(opened)}")
-    napari.run()
+    _open_viewer(specs, mesh_specs)
 
 
 if __name__ == "__main__":
