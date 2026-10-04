@@ -84,6 +84,33 @@ def write_ply(path, verts: np.ndarray, faces: np.ndarray) -> Path:
     return path
 
 
+def read_ply(path) -> Tuple[np.ndarray, np.ndarray]:
+    """Read an ASCII PLY written by `write_ply`. Parses exactly that fixed layout (a
+    short header naming vertex/face counts, then one "x y z" line per vertex, then one
+    "3 a b c" line per triangle face); this is not a general-purpose PLY reader, same
+    "a dependency wouldn't earn itself" reasoning as `write_ply` itself."""
+    path = Path(path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    n_vertex = n_face = 0
+    end_header = 0
+    for i, line in enumerate(lines):
+        if line.startswith("element vertex "):
+            n_vertex = int(line.split()[-1])
+        elif line.startswith("element face "):
+            n_face = int(line.split()[-1])
+        elif line == "end_header":
+            end_header = i
+            break
+    body = lines[end_header + 1:]
+    verts = np.array(
+        [[float(x) for x in line.split()] for line in body[:n_vertex]],
+        dtype=np.float64)
+    faces = np.array(
+        [[int(x) for x in line.split()[1:]] for line in body[n_vertex:n_vertex + n_face]],
+        dtype=np.int64)
+    return verts, faces
+
+
 #: Detail presets. `faithful` is the default because the reason these meshes exist is
 #: to find mistakes, and smoothing removes exactly the z-to-z jitter that marks a bad
 #: slice. Triangle reduction is via marching cubes `step_size`, which is cruder than

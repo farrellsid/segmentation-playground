@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from sam2_utils.meshing import taubin_smooth, write_ply
+from sam2_utils.meshing import taubin_smooth, write_ply, read_ply
 
 
 def _tube(n_rings=24, per_ring=16, radius=3.0):
@@ -98,6 +98,26 @@ class TestWritePly:
         that look like a successful export of nothing."""
         with pytest.raises(ValueError):
             write_ply(tmp_path / "e.ply", np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64))
+
+
+class TestReadPly:
+    def test_round_trips_a_write_ply_file(self, tmp_path):
+        v, f = _tube(n_rings=4, per_ring=6)
+        p = write_ply(tmp_path / "t.ply", v, f)
+        v2, f2 = read_ply(p)
+        assert v2.dtype == np.float64
+        assert f2.dtype == np.int64
+        assert np.allclose(v2, v, atol=1e-4), (
+            "write_ply rounds to 4 decimal places in its ASCII output, so an exact "
+            "equality check would be too strict")
+        assert np.array_equal(f2, f)
+
+    def test_reads_back_the_exact_counts_from_the_header(self, tmp_path):
+        v, f = _tube(n_rings=6, per_ring=8)
+        p = write_ply(tmp_path / "t.ply", v, f)
+        v2, f2 = read_ply(p)
+        assert len(v2) == len(v)
+        assert len(f2) == len(f)
 
 
 from sam2_utils.meshing import PRESETS, volume_to_mesh
