@@ -249,6 +249,40 @@ def test_overlap_uses_the_later_spec_in_the_list(tmp_path):
     assert np.sum(aiar["data"] == 2) == 2 * 3 * 3, "AIAR must have kept the whole block"
 
 
+def test_a_later_neurons_own_background_does_not_erase_an_earlier_neurons_foreground(tmp_path):
+    # A literal "later entry wins on every pixel in its bounding box" policy
+    # would let a neuron's own empty crop margin blank out a completely
+    # unrelated neuron's real mask content, just because the two bounding
+    # boxes happen to overlap, even when the two neurons' actual shapes never
+    # touch. save_package must overwrite only on the later entry's own
+    # foreground (non-zero) pixels, never on its background ones. AIAR here
+    # shares AIAL's exact origin and block shape (so every voxel's bounding
+    # box overlaps), but AIAR has one background voxel at (0, 0, 0), exactly
+    # where AIAL has foreground.
+    spacing = (50.0, 128.0, 128.0)
+    data_a = np.ones((2, 3, 3), dtype=np.uint16) * np.uint16(1)
+    spec_a = {"name": "AIAL", "data": data_a,
+             "translate": (0.0, 0.0, 0.0), "scale": spacing}
+
+    data_b = np.ones((2, 3, 3), dtype=np.uint16) * np.uint16(2)
+    data_b[0, 0, 0] = 0  # AIAR's own background voxel, same bbox slot as AIAL's foreground
+    spec_b = {"name": "AIAR", "data": data_b,
+             "translate": (0.0, 0.0, 0.0), "scale": spacing}
+
+    out_dir = view_neurons.save_package([spec_a, spec_b], tmp_path / "pkg", built_from={})
+    loaded = view_neurons.load_package(out_dir)
+
+    aial = next(s for s in loaded if s["name"] == "AIAL")
+    aiar = next(s for s in loaded if s["name"] == "AIAR")
+    assert aial["data"][0, 0, 0] == 1, (
+        "AIAR's own background voxel must not erase AIAL's real foreground "
+        "underneath it; a literal bounding-box overwrite would blank this to 0")
+    # Control: AIAR's genuine foreground elsewhere in the same shared bbox
+    # still wins, so this isn't passing merely because nothing overwrote.
+    assert aiar["data"][0, 1, 1] == 2, "AIAR's real foreground must still win where it has one"
+    assert aiar["data"][0, 0, 0] == 0, "AIAR has no claim of its own at this voxel"
+
+
 def test_saved_png_is_readable_by_the_existing_vast_gt_reader(tmp_path):
     specs = _two_specs()
     out_dir = view_neurons.save_package(specs, tmp_path / "pkg", built_from={})
@@ -277,6 +311,15 @@ def test_main_rejects_package_combined_with_mesh(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", [
         "view_neurons.py", "--package", str(tmp_path), "--mesh"])
     with pytest.raises(SystemExit, match="cannot be combined with --mesh"):
+        view_neurons.main()
+
+
+def test_main_rejects_package_combined_with_save_package(monkeypatch, tmp_path):
+    (tmp_path / "manifest.json").write_text("{}")
+    monkeypatch.setattr(sys, "argv", [
+        "view_neurons.py", "--package", str(tmp_path),
+        "--save-package", str(tmp_path / "out")])
+    with pytest.raises(SystemExit, match="only applies when building from"):
         view_neurons.main()
 
 

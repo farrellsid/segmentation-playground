@@ -118,10 +118,16 @@ def save_package(specs: list[dict], out_dir, *, built_from: dict) -> Path:
     second pass over the source data. `built_from` is recorded in the
     manifest exactly as given, not interpreted here.
 
-    Overlap policy: later entries in `specs` overwrite earlier ones on any
-    shared pixel. A dense single-valued array cannot show two neurons' claims
-    on one pixel the way separate live layers blend visually; this is a real,
-    deliberate simplification (see the design doc), not overlap arbitration.
+    Overlap policy: later entries in `specs` overwrite earlier ones only on
+    the pixels the later entry itself claims as foreground (non-zero), not on
+    every pixel inside its bounding box. A later neuron's own background
+    pixels, the empty margin inside its own crop that is normal for an
+    irregular cell shape, never erase an earlier neuron's real foreground
+    sitting underneath that margin; only an actual overlap between the two
+    neurons' own shapes resolves to last-wins. A dense single-valued array
+    cannot show two neurons' claims on one pixel the way separate live layers
+    blend visually; this masked last-wins rule is a real, deliberate
+    simplification (see the design doc), not full overlap arbitration.
     """
     if not specs:
         raise SystemExit("[view] nothing to save, no neuron had any masks")
