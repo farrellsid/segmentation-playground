@@ -409,6 +409,17 @@ def open_render_window(source: str, neurons) -> None:
     render_review.run(source=source, neurons=list(neurons or []))
 
 
+def open_neuron_viewer(source: str, neurons, *, mesh: bool = False) -> None:
+    """Hand the currently picked source, ticked neurons, and mesh choice to
+    view_neurons.run.
+
+    Same reasoning as open_render_window: a named function rather than a closure
+    inside run(), so it can be tested without Qt.
+    """
+    import view_neurons
+    view_neurons.run(source, list(neurons or []), mesh=mesh)
+
+
 def run() -> None:
     """Open the launcher window, then hand off to the review GUI."""
     # Torch BEFORE Qt, and this line must stay first. On Windows, Qt ships DLLs that
@@ -444,18 +455,25 @@ def run() -> None:
     path_row.addWidget(browse)
     layout.addLayout(path_row)
 
-    def _path_row(label: str, value: str, caption: str):
+    def _path_row(label: str, value: str, caption: str, *, root_fallback=None):
         """A label + line edit + Browse button, added to the layout. Returns the edit.
 
         Four of these now exist; without a helper the window is the same six lines
-        four times over, and the fourth one drifts."""
+        four times over, and the fourth one drifts.
+
+        root_fallback, when given, is a zero-argument callable returning a directory
+        to start the Browse dialog in when this field is empty and the data-root
+        field (below) is not. Resolved at click time, the same "defined later,
+        resolved later" idiom refresh_mode_gate already relies on in this closure
+        (see the comment inside _pick), not evaluated when _path_row is called."""
         row = QHBoxLayout()
         edit = QLineEdit(value)
         btn = QPushButton("Browse...")
 
         def _pick(*_):
+            fallback = (root_fallback() if root_fallback else "") or str(Path.home())
             chosen = QFileDialog.getExistingDirectory(win, caption,
-                                                      edit.text() or str(Path.home()))
+                                                      edit.text() or fallback)
             if chosen:
                 edit.setText(chosen)
                 # setText() emits textChanged, never editingFinished, which is all
@@ -476,10 +494,10 @@ def run() -> None:
         return edit
 
     layout.addWidget(QLabel("This machine (needed for recrop and SAM2):"))
-    worm_edit = _path_row("Raw EM (tif stack):", profile.get("worm_path", ""),
-                          "Pick the raw EM tif stack")
-    frames_edit = _path_row("Frames cache:", profile.get("frames_root", ""),
+    frames_edit = _path_row("Data root (frames cache + scratch):", profile.get("frames_root", ""),
                             "Pick a folder for prepared frames")
+    worm_edit = _path_row("Raw EM (tif stack):", profile.get("worm_path", ""),
+                          "Pick the raw EM tif stack", root_fallback=lambda: frames_edit.text())
     ckpt_edit = _path_row("Checkpoints:", profile.get("checkpoint_dir", ""),
                           "Pick the SAM2 checkpoint folder")
 
@@ -557,6 +575,12 @@ def run() -> None:
     layout.addWidget(launch_btn)
     render_btn = QPushButton("Render video + mesh")
     layout.addWidget(render_btn)
+    view_row = QHBoxLayout()
+    view_btn = QPushButton("View neurons")
+    mesh_checkbox = QCheckBox("3D mesh")
+    view_row.addWidget(view_btn, 1)
+    view_row.addWidget(mesh_checkbox)
+    layout.addLayout(view_row)
     check_btn = QPushButton("Check this machine")
     layout.addWidget(check_btn)
 
@@ -592,8 +616,9 @@ def run() -> None:
         summary.setPlainText(_summary_text(root))
 
     def pick(*_):
+        fallback = frames_edit.text() or str(Path.home())
         chosen = QFileDialog.getExistingDirectory(win, "Pick a bundle or output tree",
-                                                  path_edit.text() or str(Path.home()))
+                                                  path_edit.text() or fallback)
         if chosen:
             path_edit.setText(chosen)
             refresh()
@@ -626,10 +651,17 @@ def run() -> None:
     def do_render(*_):
         open_render_window(path_edit.text().strip(), ticked())
 
+    def do_view(*_):
+        try:
+            open_neuron_viewer(path_edit.text().strip(), ticked(), mesh=mesh_checkbox.isChecked())
+        except SystemExit as exc:
+            status.setText(str(exc))
+
     browse.clicked.connect(pick)
     path_edit.editingFinished.connect(refresh)
     launch_btn.clicked.connect(do_launch)
     render_btn.clicked.connect(do_render)
+    view_btn.clicked.connect(do_view)
     check_btn.clicked.connect(do_check)
     # The machine rows re-gate the mode combo, but deliberately do NOT call refresh():
     # which neurons are listed depends on the picked tree, not on where the raw EM is.

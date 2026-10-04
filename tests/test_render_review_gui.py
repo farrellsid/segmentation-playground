@@ -100,6 +100,42 @@ class TestLauncherIntegration:
         launcher.open_render_window("/some/bundle", None)
         assert seen["neurons"] == []
 
+    def test_launcher_exposes_a_view_neurons_entry_point(self):
+        import launcher
+        assert hasattr(launcher, "open_neuron_viewer")
+
+    def test_view_neurons_entry_point_hands_its_source_and_neurons_across(self, monkeypatch):
+        import launcher
+        import view_neurons
+        seen = {}
+        monkeypatch.setattr(view_neurons, "run",
+                            lambda source="", neurons=None, mesh=False: seen.update(
+                                source=source, neurons=neurons, mesh=mesh))
+        launcher.open_neuron_viewer("/some/bundle", ["AIBL"], mesh=True)
+        assert seen["source"] == "/some/bundle"
+        assert seen["neurons"] == ["AIBL"]
+        assert seen["mesh"] is True
+
+    def test_view_neurons_entry_point_no_ticked_neurons_passes_an_empty_list_not_none(
+            self, monkeypatch):
+        import launcher
+        import view_neurons
+        seen = {}
+        monkeypatch.setattr(view_neurons, "run",
+                            lambda source="", neurons=None, mesh=False: seen.update(
+                                neurons=neurons))
+        launcher.open_neuron_viewer("/some/bundle", None)
+        assert seen["neurons"] == []
+
+    def test_view_neurons_entry_point_defaults_mesh_to_false(self, monkeypatch):
+        import launcher
+        import view_neurons
+        seen = {}
+        monkeypatch.setattr(view_neurons, "run",
+                            lambda source="", neurons=None, mesh=False: seen.update(mesh=mesh))
+        launcher.open_neuron_viewer("/some/bundle", ["AIBL"])
+        assert seen["mesh"] is False
+
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
