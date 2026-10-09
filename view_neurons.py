@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import csv
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -173,6 +175,7 @@ def save_package(specs: list[dict], out_dir, *, built_from: dict,
 
     manifest = {
         "schema_version": 1,
+        "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "built_from": built_from,
         "origin": [z0, y0, x0],
         "spacing": list(spacing),
@@ -298,14 +301,66 @@ def _open_viewer(specs: list[dict], mesh_specs: list[dict]) -> None:
     napari.run()
 
 
-def run(source, neurons: list[str], *, mesh: bool = False) -> None:
+def _cache_is_stale(source, neurons: list[str], saved_at: str) -> bool:
+    """Whether any of `neurons`' chains were corrected (through gui.py) after this
+    cache was saved.
+
+    Reads `source`'s _review.csv directly (not via sam2_utils.review_queue, to avoid
+    that import for one column read). An absent file or no "corrected" row for these
+    neurons means no evidence anything changed, so the cache is trusted, not treated
+    as stale by default. Only a "corrected" status counts: "approved"/"rejected" do
+    not change mask pixels.
+    """
+    review_path = Path(source) / "_review.csv"
+    if not review_path.exists():
+        return False
+    saved_dt = datetime.fromisoformat(saved_at)
+    with review_path.open(newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            if (row.get("neuron") in neurons and row.get("review_status") == "corrected"
+                    and datetime.fromisoformat(row["updated_at"]) > saved_dt):
+                return True
+    return False
+
+
+def _run_cached(source, neurons: list[str], *, mesh: bool, force_rebuild: bool) -> None:
+    """The cache=True path run() delegates to: reuse <source>/.view_package/ when it
+    exists, is not stale, and (if mesh is requested) already has mesh data; otherwise
+    build live and overwrite the cache so the NEXT call is fast.
+    """
+    cache_dir = Path(source) / ".view_package"
+    manifest_path = cache_dir / "manifest.json"
+    if not force_rebuild and manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        has_mesh = bool(manifest.get("meshes"))
+        fresh = not _cache_is_stale(source, neurons, manifest["saved_at"])
+        if fresh and (not mesh or has_mesh):
+            specs = load_package(cache_dir)
+            mesh_specs = load_mesh_specs(cache_dir) if mesh else []
+            _open_viewer(specs, mesh_specs)
+            return
+    specs, mesh_specs = _build_from_tree(source, neurons, mesh=mesh)
+    save_package(specs, cache_dir, built_from={"tree": str(source), "neurons": neurons},
+                mesh_specs=mesh_specs if mesh else None)
+    _open_viewer(specs, mesh_specs)
+
+
+def run(source, neurons: list[str], *, mesh: bool = False,
+       cache: bool = False, force_rebuild: bool = False) -> None:
     """Build and open the viewer directly, the same shape render_review.run(source,
     neurons) already has (the function launcher.py's "Render video + mesh" button
     calls). This is what launcher.py's "View neurons" button calls.
 
+    cache=True (launcher-only; main()'s --tree CLI path never sets it) reuses a saved
+    package at <source>/.view_package/ instead of always rebuilding live; see
+    _run_cached. force_rebuild=True skips the cache and staleness check entirely.
+
     --save-package/--package are CLI-only concerns this entry point does not take;
     see main() below for those.
     """
+    if cache:
+        _run_cached(source, neurons, mesh=mesh, force_rebuild=force_rebuild)
+        return
     specs, mesh_specs = _build_from_tree(source, neurons, mesh=mesh)
     _open_viewer(specs, mesh_specs)
 

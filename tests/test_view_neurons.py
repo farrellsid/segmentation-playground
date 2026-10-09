@@ -279,6 +279,141 @@ def test_run_raises_when_no_neuron_has_any_masks(monkeypatch):
         view_neurons.run("fake-root", ["EMPTYN"])
 
 
+def test_cache_is_stale_true_when_a_corrected_row_is_newer(tmp_path):
+    (tmp_path / "_review.csv").write_text(
+        "neuron,chain_idx,review_status,reviewer,notes,updated_at\n"
+        "AIAL,0,corrected,L,,2026-10-09T12:00:00+00:00\n", encoding="utf-8")
+    assert view_neurons._cache_is_stale(tmp_path, ["AIAL"],
+                                        "2026-10-09T10:00:00+00:00") is True
+
+
+def test_cache_is_stale_false_when_the_corrected_row_is_older(tmp_path):
+    (tmp_path / "_review.csv").write_text(
+        "neuron,chain_idx,review_status,reviewer,notes,updated_at\n"
+        "AIAL,0,corrected,L,,2026-10-09T08:00:00+00:00\n", encoding="utf-8")
+    assert view_neurons._cache_is_stale(tmp_path, ["AIAL"],
+                                        "2026-10-09T10:00:00+00:00") is False
+
+
+def test_cache_is_stale_false_when_no_review_csv_exists(tmp_path):
+    assert view_neurons._cache_is_stale(tmp_path, ["AIAL"],
+                                        "2026-10-09T10:00:00+00:00") is False
+
+
+def test_cache_is_stale_ignores_a_different_neurons_correction(tmp_path):
+    (tmp_path / "_review.csv").write_text(
+        "neuron,chain_idx,review_status,reviewer,notes,updated_at\n"
+        "AIAR,0,corrected,L,,2026-10-09T12:00:00+00:00\n", encoding="utf-8")
+    assert view_neurons._cache_is_stale(tmp_path, ["AIAL"],
+                                        "2026-10-09T10:00:00+00:00") is False
+
+
+def test_cache_is_stale_ignores_a_non_corrected_status(tmp_path):
+    (tmp_path / "_review.csv").write_text(
+        "neuron,chain_idx,review_status,reviewer,notes,updated_at\n"
+        "AIAL,0,approved,L,,2026-10-09T12:00:00+00:00\n", encoding="utf-8")
+    assert view_neurons._cache_is_stale(tmp_path, ["AIAL"],
+                                        "2026-10-09T10:00:00+00:00") is False
+
+
+def test_save_package_records_saved_at(tmp_path):
+    specs = _two_specs()
+    out_dir = view_neurons.save_package(specs, tmp_path / "pkg", built_from={})
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    from datetime import datetime
+    datetime.fromisoformat(manifest["saved_at"])  # must not raise
+
+
+def test_run_cache_true_reuses_the_package_on_a_second_call(tmp_path, monkeypatch):
+    vol = np.ones((1, 1, 1), dtype=np.uint8)
+    monkeypatch.setattr(view_neurons.render_review, "neuron_volume", _fake_neuron_volume({
+        "AIAL": (vol, (0, 0, 0), (50.0, 128.0, 128.0)),
+    }))
+    holder = {}
+    monkeypatch.setitem(sys.modules, "napari", _fake_napari_module(holder))
+    calls = {"n": 0}
+    real_build = view_neurons._build_from_tree
+    def counting_build(*a, **kw):
+        calls["n"] += 1
+        return real_build(*a, **kw)
+    monkeypatch.setattr(view_neurons, "_build_from_tree", counting_build)
+
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True)
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True)
+
+    assert calls["n"] == 1, "second call must load from the cache, not rebuild"
+    assert (tmp_path / ".view_package" / "manifest.json").exists()
+
+
+def test_run_cache_true_rebuilds_when_mesh_newly_requested(tmp_path, monkeypatch):
+    vol = _asymmetric_box_volume()
+    spacing = (50.0, 128.0, 128.0)
+    monkeypatch.setattr(view_neurons.render_review, "neuron_volume", _fake_neuron_volume({
+        "AIAL": (vol, (0, 0, 0), spacing),
+    }))
+    holder = {}
+    monkeypatch.setitem(sys.modules, "napari", _fake_napari_module(holder))
+    calls = {"n": 0}
+    real_build = view_neurons._build_from_tree
+    def counting_build(*a, **kw):
+        calls["n"] += 1
+        return real_build(*a, **kw)
+    monkeypatch.setattr(view_neurons, "_build_from_tree", counting_build)
+
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True, mesh=False)
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True, mesh=True)
+
+    assert calls["n"] == 2, "mesh requested but cache lacked it must trigger a rebuild"
+    manifest = json.loads((tmp_path / ".view_package" / "manifest.json").read_text())
+    assert manifest.get("meshes"), "the rebuilt cache must now include mesh data"
+
+
+def test_run_cache_true_force_rebuild_ignores_a_fresh_cache(tmp_path, monkeypatch):
+    vol = np.ones((1, 1, 1), dtype=np.uint8)
+    monkeypatch.setattr(view_neurons.render_review, "neuron_volume", _fake_neuron_volume({
+        "AIAL": (vol, (0, 0, 0), (50.0, 128.0, 128.0)),
+    }))
+    holder = {}
+    monkeypatch.setitem(sys.modules, "napari", _fake_napari_module(holder))
+    calls = {"n": 0}
+    real_build = view_neurons._build_from_tree
+    def counting_build(*a, **kw):
+        calls["n"] += 1
+        return real_build(*a, **kw)
+    monkeypatch.setattr(view_neurons, "_build_from_tree", counting_build)
+
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True)
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True, force_rebuild=True)
+
+    assert calls["n"] == 2, "force_rebuild must skip the cache even when fresh"
+
+
+def test_run_cache_true_rebuilds_when_a_correction_postdates_the_cache(tmp_path, monkeypatch):
+    vol = np.ones((1, 1, 1), dtype=np.uint8)
+    monkeypatch.setattr(view_neurons.render_review, "neuron_volume", _fake_neuron_volume({
+        "AIAL": (vol, (0, 0, 0), (50.0, 128.0, 128.0)),
+    }))
+    holder = {}
+    monkeypatch.setitem(sys.modules, "napari", _fake_napari_module(holder))
+    calls = {"n": 0}
+    real_build = view_neurons._build_from_tree
+    def counting_build(*a, **kw):
+        calls["n"] += 1
+        return real_build(*a, **kw)
+    monkeypatch.setattr(view_neurons, "_build_from_tree", counting_build)
+
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True)
+    from datetime import datetime, timedelta, timezone
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="seconds")
+    (tmp_path / "_review.csv").write_text(
+        "neuron,chain_idx,review_status,reviewer,notes,updated_at\n"
+        f"AIAL,0,corrected,L,,{future}\n", encoding="utf-8")
+
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True)
+
+    assert calls["n"] == 2, "a correction newer than the cache must trigger a rebuild"
+
+
 def test_save_and_load_package_round_trips_names_and_placement(tmp_path):
     specs = _two_specs()
 
