@@ -116,6 +116,50 @@ def test_export_copies_masks_and_frames(tmp_path):
     assert (dest / "AIAL" / "chain_00" / "frames" / "00000.jpg").read_bytes() == b"jpg"
 
 
+def test_no_frames_skips_frame_generation_entirely(tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    dest = tmp_path / "bundle"
+
+    def boom(*a, **k):
+        raise AssertionError("regenerate_frames must not be called when no_frames=True")
+    monkeypatch.setattr(export_bundle, "regenerate_frames", boom)
+
+    export_bundle.export_bundle(root, dest, source_tree="master", no_frames=True)
+
+    assert not (dest / "AIAL" / "chain_00" / "frames").exists()
+
+
+def test_no_frames_leaves_frames_dir_none_in_state(tmp_path):
+    root = _tree(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, source_tree="master", no_frames=True)
+    state = json.loads((dest / "AIAL" / "chain_00" / "state.json").read_text(encoding="utf-8"))
+    assert state["frames_dir"] is None
+
+
+def test_no_frames_bundle_validates_clean_without_require_frames(tmp_path):
+    root = _tree(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, source_tree="master", no_frames=True)
+    assert bundle.validate_bundle(dest, require_frames=False) == []
+
+
+def test_no_frames_still_copies_masks_and_qc(tmp_path):
+    root = _tree(tmp_path)
+    dest = tmp_path / "bundle"
+    export_bundle.export_bundle(root, dest, source_tree="master", no_frames=True)
+    assert (dest / "AIAL" / "chain_00" / "masks" / "mask_1402.png").read_bytes() == b"px"
+    assert (dest / "AIAL" / "chain_00" / "qc.csv").exists()
+
+
+def test_no_frames_and_force_frames_together_is_rejected(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "export_bundle.py", "--output-root", "x", "--dest", "y",
+        "--no-frames", "--force-frames"])
+    with pytest.raises(SystemExit, match="no-frames.*force-frames|force-frames.*no-frames"):
+        export_bundle.main()
+
+
 def test_neuron_filter_limits_the_bundle(tmp_path):
     root = _tree(tmp_path)
     dest = tmp_path / "bundle"

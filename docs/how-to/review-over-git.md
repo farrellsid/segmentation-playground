@@ -42,6 +42,26 @@ rather than an error.
 Do not create the repository on the drive itself. exFAT records no ownership, so git
 refuses to operate there without an explicit `safe.directory` exception.
 
+## A simpler path when the reviewer already has her own raw EM
+
+If the reviewer has gone through
+[set-up-sam2-on-a-review-machine.md](set-up-sam2-on-a-review-machine.md) (torch,
+checkpoint, and her own raw EM copy, for recrop), she does not need frames shipped at
+all: `gui.py`'s chain-loading code already regenerates a chain's frames locally from the
+raw EM whenever its recorded `frames_dir` is unset, the same fallback `import_bundle.py`
+already relies on for a returned recrop.
+
+```bash
+py -3 export_bundle.py --output-root <tree> --dest ~/mask-review/<GROUP>_for_lucinda \
+    --neurons <NEURONL> <NEURONR> --no-frames
+```
+
+No separate "copy without frames" step is needed (there are no frames to strip), and no
+`place_frames.py` step on her side either (there is nothing to place). Her first
+`gui.py` open of each chain regenerates it from her own raw EM. Only use this for a
+reviewer confirmed to have raw EM access; the rest of this page's frames-shipped path is
+unchanged for everyone else.
+
 ## The reviewer's setup
 
 Three things have to meet: the repository, the review code, and the frames.

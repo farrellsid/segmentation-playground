@@ -306,7 +306,8 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
                   source_tree: Optional[str] = None, backend: str = "sam2",
                   reprop_variant: Optional[str] = None, frames_root: Optional[Path] = None,
                   overlay_roots: Optional[List[Path]] = None,
-                  force: bool = False, force_frames: bool = False) -> dict:
+                  force: bool = False, force_frames: bool = False,
+                  no_frames: bool = False) -> dict:
     """Write a review bundle for ``neurons`` from ``output_root`` into ``dest``.
 
     Parameters
@@ -331,6 +332,15 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
     force_frames : bool, optional
         Regenerate (or re-copy) frames even for chains the bundle already has a
         complete frame set for.
+    no_frames : bool, optional
+        Skip generating/shipping frames entirely. Only for a destination reviewer who
+        already has her own raw EM and the recrop setup from
+        docs/how-to/set-up-sam2-on-a-review-machine.md: gui.py's _ensure_local_frames
+        regenerates frames locally from a chain's frames_dir=None, the same mechanism
+        import_bundle.py already relies on for a returned recrop. This is a
+        trust-the-caller flag like `force`/`force_frames` above; export_bundle.py has
+        no way to verify the destination machine actually has raw EM, and using this
+        for a reviewer without it ships a bundle that silently fails to open any chain.
 
     Returns
     -------
@@ -372,31 +382,35 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
         if (src_dir / "qc.csv").exists():
             shutil.copy2(src_dir / "qc.csv", out_dir / "qc.csv")
 
-        frames_out = out_dir / "frames"
-        if _frames_complete(frames_out, rec["state"]) and not force_frames:
-            print(f"[export] {rec['chain_dir']}: frames already present, skipping")
+        if no_frames:
+            print(f"[export] {rec['chain_dir']}: --no-frames, not shipping frames "
+                  f"(reviewer regenerates locally from her own raw EM)")
+            state_out = bundle.rewrite_state_frames_dir(rec["state"], relative=None)
         else:
-            # Frames are ALWAYS regenerated, never copied from the recorded
-            # frames_dir. That directory cannot be trusted, for two independent
-            # reasons found on real data. It is usually a dead Compute Canada
-            # Narval /localscratch path, deleted when the job ended. And when it
-            # does still exist, a `gui.py --anchor-only --context-frames N` review
-            # session will have rewritten it to hold only the anchor plus or minus
-            # N: the first real export found every one of 18 AIYL chains left with
-            # exactly 5 frames, for chains needing anywhere from 1 to 43.
-            #
-            # A bare directory of numbered jpgs carries nothing that proves which
-            # z each frame is, so a count cannot tell a complete set from a
-            # narrowed one that happens to be the same size. Regenerating is the
-            # only option correct by construction, and a reviewer checking masks
-            # against the wrong EM slices is worse than one waiting a bit longer.
-            print(f"[export] {rec['chain_dir']}: regenerating frames from raw EM")
-            src = regenerate_frames(rec["state"], neuron=rec["cell_name"],
-                                    chain_idx=rec["chain_idx"], output_root=output_root,
-                                    frames_root=frames_root)
-            _replace_frames_dir(src, frames_out)
-
-        state_out = bundle.rewrite_state_frames_dir(rec["state"])
+            frames_out = out_dir / "frames"
+            if _frames_complete(frames_out, rec["state"]) and not force_frames:
+                print(f"[export] {rec['chain_dir']}: frames already present, skipping")
+            else:
+                # Frames are ALWAYS regenerated, never copied from the recorded
+                # frames_dir. That directory cannot be trusted, for two independent
+                # reasons found on real data. It is usually a dead Compute Canada
+                # Narval /localscratch path, deleted when the job ended. And when it
+                # does still exist, a `gui.py --anchor-only --context-frames N` review
+                # session will have rewritten it to hold only the anchor plus or minus
+                # N: the first real export found every one of 18 AIYL chains left with
+                # exactly 5 frames, for chains needing anywhere from 1 to 43.
+                #
+                # A bare directory of numbered jpgs carries nothing that proves which
+                # z each frame is, so a count cannot tell a complete set from a
+                # narrowed one that happens to be the same size. Regenerating is the
+                # only option correct by construction, and a reviewer checking masks
+                # against the wrong EM slices is worse than one waiting a bit longer.
+                print(f"[export] {rec['chain_dir']}: regenerating frames from raw EM")
+                src = regenerate_frames(rec["state"], neuron=rec["cell_name"],
+                                        chain_idx=rec["chain_idx"], output_root=output_root,
+                                        frames_root=frames_root)
+                _replace_frames_dir(src, frames_out)
+            state_out = bundle.rewrite_state_frames_dir(rec["state"])
         (out_dir / "state.json").write_text(json.dumps(state_out, indent=2), encoding="utf-8")
 
         nid = registry.neuron_id(rec["cell_name"], registry=reg)
@@ -419,7 +433,7 @@ def export_bundle(output_root: Path, dest: Path, *, neurons: Optional[List[str]]
         for name in names:
             w.writerow([registry.neuron_id(name, registry=reg), name])
 
-    problems = bundle.validate_bundle(dest)
+    problems = bundle.validate_bundle(dest, require_frames=not no_frames)
     if problems:
         print("[export] bundle validation problems:", file=sys.stderr)
         for p in problems:
@@ -448,12 +462,24 @@ def main() -> None:
                     help="write into a non-empty destination (check it is not a returned bundle)")
     ap.add_argument("--force-frames", action="store_true",
                     help="regenerate frames even for chains the bundle already has them for")
+    ap.add_argument("--no-frames", action="store_true",
+                    help="skip shipping frames; only for a destination reviewer who "
+                         "already has her own raw EM and the recrop setup from "
+                         "set-up-sam2-on-a-review-machine.md (gui.py regenerates frames "
+                         "locally on open). Do not use this for a reviewer without raw "
+                         "EM, the bundle will not open.")
     args = ap.parse_args()
+    if args.no_frames and args.force_frames:
+        # SystemExit with a message (not ap.error): the message is what gets printed,
+        # and it is what a caller or test inspecting the exception sees.
+        raise SystemExit("--no-frames and --force-frames contradict each other "
+                         "(never generate vs. always regenerate)")
     export_bundle(args.output_root, args.dest, neurons=args.neurons,
                   source_tree=args.source_tree, backend=args.backend,
                   reprop_variant=args.reprop_variant, frames_root=args.frames_root,
                   overlay_roots=args.overlay_roots,
-                  force=args.force, force_frames=args.force_frames)
+                  force=args.force, force_frames=args.force_frames,
+                  no_frames=args.no_frames)
 
 
 if __name__ == "__main__":
