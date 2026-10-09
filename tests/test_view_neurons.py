@@ -414,6 +414,58 @@ def test_run_cache_true_rebuilds_when_a_correction_postdates_the_cache(tmp_path,
     assert calls["n"] == 2, "a correction newer than the cache must trigger a rebuild"
 
 
+def test_run_cache_true_rebuilds_when_the_requested_neuron_set_changes(tmp_path, monkeypatch):
+    vol_a = np.ones((1, 1, 1), dtype=np.uint8)
+    vol_b = np.ones((1, 1, 1), dtype=np.uint8)
+    monkeypatch.setattr(view_neurons.render_review, "neuron_volume", _fake_neuron_volume({
+        "AIAL": (vol_a, (0, 0, 0), (50.0, 128.0, 128.0)),
+        "AIAR": (vol_b, (0, 0, 0), (50.0, 128.0, 128.0)),
+    }))
+    holder = {}
+    monkeypatch.setitem(sys.modules, "napari", _fake_napari_module(holder))
+    calls = {"n": 0}
+    real_build = view_neurons._build_from_tree
+    def counting_build(*a, **kw):
+        calls["n"] += 1
+        return real_build(*a, **kw)
+    monkeypatch.setattr(view_neurons, "_build_from_tree", counting_build)
+
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True)
+    view_neurons.run(str(tmp_path), ["AIAR"], cache=True)
+
+    assert calls["n"] == 2, (
+        "a second call for a different neuron set must rebuild, not silently serve "
+        "the first call's cached neuron(s)")
+    manifest = json.loads((tmp_path / ".view_package" / "manifest.json").read_text())
+    assert manifest["built_from"]["neurons"] == ["AIAR"], (
+        "the cache on disk after the second call must record AIAR, the neuron actually "
+        "requested, not AIAL left over from the first call")
+
+
+def test_run_cache_true_reuses_when_mesh_already_present_and_requested_again(
+        tmp_path, monkeypatch):
+    vol = _asymmetric_box_volume()
+    spacing = (50.0, 128.0, 128.0)
+    monkeypatch.setattr(view_neurons.render_review, "neuron_volume", _fake_neuron_volume({
+        "AIAL": (vol, (0, 0, 0), spacing),
+    }))
+    holder = {}
+    monkeypatch.setitem(sys.modules, "napari", _fake_napari_module(holder))
+    calls = {"n": 0}
+    real_build = view_neurons._build_from_tree
+    def counting_build(*a, **kw):
+        calls["n"] += 1
+        return real_build(*a, **kw)
+    monkeypatch.setattr(view_neurons, "_build_from_tree", counting_build)
+
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True, mesh=True)
+    view_neurons.run(str(tmp_path), ["AIAL"], cache=True, mesh=True)
+
+    assert calls["n"] == 1, (
+        "a cache that already has mesh data for the same neuron set must be reused "
+        "when mesh is requested again, not rebuilt")
+
+
 def test_save_and_load_package_round_trips_names_and_placement(tmp_path):
     specs = _two_specs()
 

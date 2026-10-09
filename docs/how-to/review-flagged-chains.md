@@ -62,6 +62,12 @@ napari multi-neuron viewer (see [cli.md](../reference/cli.md)); tick at least on
 first, since an empty tick list here is not "all" the way it is for **Render video +
 mesh**. The **3D mesh** checkbox next to it also builds each neuron's 3D surface,
 real per-neuron compute, so tick it only for the few neurons you actually need in 3D.
+Results are cached at `<tree>/.view_package/`, so a second **View neurons** call for
+the same tree is fast; the cache is per neuron set, so ticking a different set of
+neurons rebuilds automatically rather than reusing someone else's cache. The **Force
+rebuild** checkbox next to it skips that cache outright: use it when masks changed
+outside `gui.py` (a cluster reprop re-run, a hand edit to the mask files), since the
+automatic staleness check only sees corrections made through `gui.py`'s own review flow.
 
 ---
 

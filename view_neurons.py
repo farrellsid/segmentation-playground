@@ -325,16 +325,18 @@ def _cache_is_stale(source, neurons: list[str], saved_at: str) -> bool:
 
 def _run_cached(source, neurons: list[str], *, mesh: bool, force_rebuild: bool) -> None:
     """The cache=True path run() delegates to: reuse <source>/.view_package/ when it
-    exists, is not stale, and (if mesh is requested) already has mesh data; otherwise
-    build live and overwrite the cache so the NEXT call is fast.
+    exists, was built from exactly this neuron set, is not stale, and (if mesh is
+    requested) already has mesh data; otherwise build live and overwrite the cache so
+    the NEXT call is fast.
     """
     cache_dir = Path(source) / ".view_package"
     manifest_path = cache_dir / "manifest.json"
     if not force_rebuild and manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
+        same_neurons = sorted(manifest["built_from"]["neurons"]) == sorted(neurons)
         has_mesh = bool(manifest.get("meshes"))
         fresh = not _cache_is_stale(source, neurons, manifest["saved_at"])
-        if fresh and (not mesh or has_mesh):
+        if same_neurons and fresh and (not mesh or has_mesh):
             specs = load_package(cache_dir)
             mesh_specs = load_mesh_specs(cache_dir) if mesh else []
             _open_viewer(specs, mesh_specs)
