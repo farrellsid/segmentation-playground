@@ -409,15 +409,22 @@ def open_render_window(source: str, neurons) -> None:
     render_review.run(source=source, neurons=list(neurons or []))
 
 
-def open_neuron_viewer(source: str, neurons, *, mesh: bool = False) -> None:
+def open_neuron_viewer(source: str, neurons, *, mesh: bool = False,
+                       force_rebuild: bool = False) -> None:
     """Hand the currently picked source, ticked neurons, and mesh choice to
     view_neurons.run.
+
+    Always passes cache=True: the launcher's use case (the same tree, reviewed session
+    after session) is exactly what the write-through cache is for, so this is not a
+    separate on/off toggle, unlike force_rebuild, which the "Force rebuild" checkbox
+    does expose.
 
     Same reasoning as open_render_window: a named function rather than a closure
     inside run(), so it can be tested without Qt.
     """
     import view_neurons
-    view_neurons.run(source, list(neurons or []), mesh=mesh)
+    view_neurons.run(source, list(neurons or []), mesh=mesh, cache=True,
+                     force_rebuild=force_rebuild)
 
 
 def run() -> None:
@@ -578,8 +585,10 @@ def run() -> None:
     view_row = QHBoxLayout()
     view_btn = QPushButton("View neurons")
     mesh_checkbox = QCheckBox("3D mesh")
+    force_rebuild_checkbox = QCheckBox("Force rebuild")
     view_row.addWidget(view_btn, 1)
     view_row.addWidget(mesh_checkbox)
+    view_row.addWidget(force_rebuild_checkbox)
     layout.addLayout(view_row)
     check_btn = QPushButton("Check this machine")
     layout.addWidget(check_btn)
@@ -657,7 +666,9 @@ def run() -> None:
             status.setText("Tick at least one neuron to view")
             return
         try:
-            open_neuron_viewer(path_edit.text().strip(), neurons, mesh=mesh_checkbox.isChecked())
+            open_neuron_viewer(path_edit.text().strip(), neurons,
+                               mesh=mesh_checkbox.isChecked(),
+                               force_rebuild=force_rebuild_checkbox.isChecked())
         except SystemExit as exc:
             status.setText(str(exc))
 

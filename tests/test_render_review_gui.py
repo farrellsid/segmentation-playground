@@ -109,8 +109,9 @@ class TestLauncherIntegration:
         import view_neurons
         seen = {}
         monkeypatch.setattr(view_neurons, "run",
-                            lambda source="", neurons=None, mesh=False: seen.update(
-                                source=source, neurons=neurons, mesh=mesh))
+                            lambda source="", neurons=None, mesh=False, cache=False,
+                                  force_rebuild=False: seen.update(
+                                      source=source, neurons=neurons, mesh=mesh))
         launcher.open_neuron_viewer("/some/bundle", ["AIBL"], mesh=True)
         assert seen["source"] == "/some/bundle"
         assert seen["neurons"] == ["AIBL"]
@@ -122,8 +123,8 @@ class TestLauncherIntegration:
         import view_neurons
         seen = {}
         monkeypatch.setattr(view_neurons, "run",
-                            lambda source="", neurons=None, mesh=False: seen.update(
-                                neurons=neurons))
+                            lambda source="", neurons=None, mesh=False, cache=False,
+                                  force_rebuild=False: seen.update(neurons=neurons))
         launcher.open_neuron_viewer("/some/bundle", None)
         assert seen["neurons"] == []
 
@@ -132,9 +133,42 @@ class TestLauncherIntegration:
         import view_neurons
         seen = {}
         monkeypatch.setattr(view_neurons, "run",
-                            lambda source="", neurons=None, mesh=False: seen.update(mesh=mesh))
+                            lambda source="", neurons=None, mesh=False, cache=False,
+                                  force_rebuild=False: seen.update(mesh=mesh))
         launcher.open_neuron_viewer("/some/bundle", ["AIBL"])
         assert seen["mesh"] is False
+
+    def test_view_neurons_entry_point_always_requests_the_cache(self, monkeypatch):
+        import launcher
+        import view_neurons
+        seen = {}
+        monkeypatch.setattr(view_neurons, "run",
+                            lambda source="", neurons=None, mesh=False, cache=False,
+                                  force_rebuild=False: seen.update(cache=cache))
+        launcher.open_neuron_viewer("/some/bundle", ["AIBL"])
+        assert seen["cache"] is True
+
+    def test_view_neurons_entry_point_forwards_force_rebuild(self, monkeypatch):
+        import launcher
+        import view_neurons
+        seen = {}
+        monkeypatch.setattr(view_neurons, "run",
+                            lambda source="", neurons=None, mesh=False, cache=False,
+                                  force_rebuild=False: seen.update(
+                                      force_rebuild=force_rebuild))
+        launcher.open_neuron_viewer("/some/bundle", ["AIBL"], force_rebuild=True)
+        assert seen["force_rebuild"] is True
+
+    def test_view_neurons_entry_point_defaults_force_rebuild_to_false(self, monkeypatch):
+        import launcher
+        import view_neurons
+        seen = {}
+        monkeypatch.setattr(view_neurons, "run",
+                            lambda source="", neurons=None, mesh=False, cache=False,
+                                  force_rebuild=False: seen.update(
+                                      force_rebuild=force_rebuild))
+        launcher.open_neuron_viewer("/some/bundle", ["AIBL"])
+        assert seen["force_rebuild"] is False
 
 
 if __name__ == "__main__":
