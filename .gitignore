@@ -27,6 +27,11 @@ results/
 # Generated run logs from experiments/ are disposable (findings live in PIPELINE_HISTORY old §8).
 experiments/*.log
 
+# view_neurons.py's local write-through cache (masks, meshes, EM-stack snapshot):
+# real data regenerable from the output tree, machine-specific (keyed to this
+# machine's own WORM_PATH), never meant to be committed.
+.view_package/
+
 # Generated eval results (per-run CSVs + measurement logs) — project-generated, not source.
 eval/out_gt*/
 # Generated A/B campaign reports (experiments/ab_eval.py) — project-generated, not source.

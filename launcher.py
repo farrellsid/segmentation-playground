@@ -410,21 +410,22 @@ def open_render_window(source: str, neurons) -> None:
 
 
 def open_neuron_viewer(source: str, neurons, *, mesh: bool = False,
-                       force_rebuild: bool = False) -> None:
-    """Hand the currently picked source, ticked neurons, and mesh choice to
+                       force_rebuild: bool = False, show_stack: bool = False) -> None:
+    """Hand the currently picked source, ticked neurons, and mesh/EM-stack choice to
     view_neurons.run.
 
     Always passes cache=True: the launcher's use case (the same tree, reviewed session
     after session) is exactly what the write-through cache is for, so this is not a
     separate on/off toggle, unlike force_rebuild, which the "Force rebuild" checkbox
-    does expose.
+    does expose. show_stack is likewise never cached (see view_neurons._open_viewer),
+    it is re-decided every time the "EM stack (quick)" checkbox is ticked.
 
     Same reasoning as open_render_window: a named function rather than a closure
     inside run(), so it can be tested without Qt.
     """
     import view_neurons
     view_neurons.run(source, list(neurons or []), mesh=mesh, cache=True,
-                     force_rebuild=force_rebuild)
+                     force_rebuild=force_rebuild, show_stack=show_stack)
 
 
 def run() -> None:
@@ -586,9 +587,15 @@ def run() -> None:
     view_btn = QPushButton("View neurons")
     mesh_checkbox = QCheckBox("3D mesh")
     force_rebuild_checkbox = QCheckBox("Force rebuild")
+    show_stack_checkbox = QCheckBox("EM stack (quick)")
+    show_stack_checkbox.setToolTip(
+        "Show the raw EM underneath the masks, downscaled 8x and cropped to the "
+        "ticked neurons' bounding box. Needs raw EM access and costs real crop "
+        "time, off by default.")
     view_row.addWidget(view_btn, 1)
     view_row.addWidget(mesh_checkbox)
     view_row.addWidget(force_rebuild_checkbox)
+    view_row.addWidget(show_stack_checkbox)
     layout.addLayout(view_row)
     check_btn = QPushButton("Check this machine")
     layout.addWidget(check_btn)
@@ -668,7 +675,8 @@ def run() -> None:
         try:
             open_neuron_viewer(path_edit.text().strip(), neurons,
                                mesh=mesh_checkbox.isChecked(),
-                               force_rebuild=force_rebuild_checkbox.isChecked())
+                               force_rebuild=force_rebuild_checkbox.isChecked(),
+                               show_stack=show_stack_checkbox.isChecked())
         except SystemExit as exc:
             status.setText(str(exc))
 

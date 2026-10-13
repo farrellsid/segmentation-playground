@@ -26,7 +26,15 @@ docs/superpowers/specs/2026-10-04-neuron-mesh-package-design.md); --package
 --mesh then loads those meshes back instead of recomputing them, and fails
 clearly if the package was saved without --mesh.
 
+With --show-stack, a third layer is added: the raw EM underneath the masks, cropped to
+the selection's own bounding box and downscaled to the same 8x grid the mask layers
+already use (see build_em_stack_spec), so a disjointed neuron is visible against real
+anatomy instead of floating labels on nothing. Off by default, since it needs raw EM
+access and real crop time; never cached into a --save-package (that travels to other
+machines, this does not).
+
     py -3 view_neurons.py --tree <bundle or output tree root> --neurons AVAL,AVAR,RIBL
+    py -3 view_neurons.py --tree <root> --neurons AVAL,AVAR --show-stack
     py -3 view_neurons.py --tree <root> --neurons AVAL,AVAR --mesh
     py -3 view_neurons.py --tree <root> --neurons AVAL,AVAR --save-package <pkg dir>
     py -3 view_neurons.py --tree <root> --neurons AVAL,AVAR --mesh --save-package <pkg dir>
@@ -48,7 +56,13 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import render_review
+from pipeline.frames import TifFrameStore, _read_tif_window
 from sam2_utils import meshing, video_viz
+
+#: _sam-grid downscale: raw EM pixels per _sam voxel in x/y (z is 1:1, no downscale).
+#: Matches render_review.SPACING_SAM8_NM and every mask layer's own grid, so the EM
+#: stack lines up with them with no separate alignment math.
+_SAM_SCALE = 8
 
 
 def build_layer_specs(root, neurons: list[str]) -> list[dict]:
@@ -112,6 +126,65 @@ def build_mesh_specs(root, neurons: list[str], *, preset: str = "faithful") -> l
         specs.append({"name": f"{neuron} mesh", "vertices": verts_zyx, "faces": faces,
                       "vertex_colors": vertex_colors, "translate": translate})
     return specs
+
+
+def build_em_stack_spec(specs: list[dict]) -> dict | None:
+    """Raw EM, cropped to the union bounding box of `specs` and downscaled to the
+    same _sam scale-8 grid the mask layers already use (render_review.SPACING_SAM8_NM),
+    so it lines up with them with no separate alignment math: same spacing, same
+    per-voxel grid, just a third layer underneath.
+
+    This is for a quick look at whether a neuron's segmentation stays continuous
+    across z, not pixel-perfect detail: an 8x downscale from native EM resolution,
+    the same coarseness every mask layer already has, not the finer tier-2 crop a
+    single chain's own review session loads. Cropping a 100% is the "untenable"
+    cost that made this optional in the first place (see the repropagation-round-
+    protocol doc for the same reasoning on the reviewer side).
+
+    Returns None if `specs` is empty, there is nothing to bound.
+    """
+    if not specs:
+        return None
+    spacing = render_review.SPACING_SAM8_NM
+    origins = [tuple(t / s for t, s in zip(spec["translate"], spec["scale"]))
+              for spec in specs]
+    z_lo = min(int(round(o[0])) for o in origins)
+    z_hi = max(int(round(o[0])) + spec["data"].shape[0]
+              for o, spec in zip(origins, specs))
+    y_lo = min(int(round(o[1])) for o in origins)
+    y_hi = max(int(round(o[1])) + spec["data"].shape[1]
+              for o, spec in zip(origins, specs))
+    x_lo = min(int(round(o[2])) for o in origins)
+    x_hi = max(int(round(o[2])) + spec["data"].shape[2]
+              for o, spec in zip(origins, specs))
+
+    import cv2
+    store = TifFrameStore()
+    files = store.files_in_z_range(z_lo, z_hi - 1)
+    path_by_z = {store.z_of_key(k): p for k, p in files}
+    ny0, ny1 = y_lo * _SAM_SCALE, y_hi * _SAM_SCALE
+    nx0, nx1 = x_lo * _SAM_SCALE, x_hi * _SAM_SCALE
+    out_h, out_w = y_hi - y_lo, x_hi - x_lo
+    sl = (slice(ny0, ny1), slice(nx0, nx1))
+
+    planes = []
+    missing = 0
+    for z in range(z_lo, z_hi):
+        path = path_by_z.get(z)
+        if path is None:
+            missing += 1
+            planes.append(np.zeros((out_h, out_w), dtype=np.uint8))
+            continue
+        win = _read_tif_window(path, sl)
+        gray = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY)
+        planes.append(cv2.resize(gray, (out_w, out_h), interpolation=cv2.INTER_AREA))
+    if missing:
+        print(f"[view] EM stack: {missing}/{len(planes)} z-slice(s) had no tif, left blank")
+    em_vol = np.stack(planes, axis=0)
+    translate = (float(z_lo) * spacing[0], float(y_lo) * spacing[1], float(x_lo) * spacing[2])
+    print(f"[view] EM stack: {em_vol.shape} (z, y, x) at {_SAM_SCALE}x downscale")
+    return {"name": "EM (quick, downscaled)", "data": em_vol, "translate": translate,
+            "scale": spacing}
 
 
 def save_package(specs: list[dict], out_dir, *, built_from: dict,
@@ -210,6 +283,42 @@ def save_package(specs: list[dict], out_dir, *, built_from: dict,
     return out_dir
 
 
+def save_em_stack(em_spec: dict, out_dir) -> None:
+    """Write `em_spec` (the shape build_em_stack_spec() returns) into an existing
+    package directory: the volume as one compressed .npy, plus an "em_stack" entry
+    in manifest.json recording translate/scale/shape so load_em_stack_spec can
+    rebuild the dict without guessing.
+
+    Call this on an `out_dir` save_package() already wrote (manifest.json must
+    exist); it only adds to that manifest, never creates a package on its own.
+    """
+    out_dir = Path(out_dir)
+    manifest_path = out_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    np.save(out_dir / "em_stack.npy", em_spec["data"])
+    manifest["em_stack"] = {
+        "translate": [float(t) for t in em_spec["translate"]],
+        "scale": [float(s) for s in em_spec["scale"]],
+        "shape": list(em_spec["data"].shape),
+        "file": "em_stack.npy",
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+
+
+def load_em_stack_spec(package_dir) -> dict | None:
+    """The shape build_em_stack_spec() returns, read back from a package
+    save_em_stack() wrote into. None if this package has no cached EM stack yet
+    (show_stack was never requested for it, or it predates this feature)."""
+    package_dir = Path(package_dir)
+    manifest = json.loads((package_dir / "manifest.json").read_text())
+    entry = manifest.get("em_stack")
+    if not entry:
+        return None
+    data = np.load(package_dir / entry["file"])
+    return {"name": "EM (quick, downscaled)", "data": data,
+            "translate": tuple(entry["translate"]), "scale": tuple(entry["scale"])}
+
+
 def load_package(package_dir) -> list[dict]:
     """The same layer-spec shape build_layer_specs() returns, read back from a
     package save_package() wrote.
@@ -282,21 +391,38 @@ def _build_from_tree(tree, neurons: list[str], *, mesh: bool = False):
     return specs, mesh_specs
 
 
-def _open_viewer(specs: list[dict], mesh_specs: list[dict]) -> None:
+def _open_viewer(specs: list[dict], mesh_specs: list[dict], *,
+                 show_stack: bool = False, em_spec: dict | None = None) -> None:
     """Open the napari window with the given layer specs.
 
     Shared by run() and both branches of main() (--tree and --package), so there is
     exactly one place that builds the window.
+
+    `em_spec`, when given, is used directly (the launcher's cached path, see
+    _run_cached: already loaded from or saved into the package, so this function
+    does not rebuild it). Without one, `show_stack=True` builds it live from
+    `specs`' own bounding box, the uncached main()/run() path: raw EM access is a
+    local-machine thing, not something to bake into a package that might travel to
+    a reviewer's machine with a different WORM_PATH, so --save-package never writes
+    one either.
     """
     import napari
     viewer = napari.Viewer(title="Multi-neuron mask viewer")
+    em_name = None
+    if em_spec is None and show_stack:
+        em_spec = build_em_stack_spec(specs)
+    if em_spec is not None:
+        viewer.add_image(em_spec["data"], name=em_spec["name"],
+                         translate=em_spec["translate"], scale=em_spec["scale"])
+        em_name = em_spec["name"]
     for spec in specs:
         viewer.add_labels(spec["data"], name=spec["name"],
                           translate=spec["translate"], scale=spec["scale"])
     for spec in mesh_specs:
         viewer.add_surface((spec["vertices"], spec["faces"]), name=spec["name"],
                            vertex_colors=spec["vertex_colors"], translate=spec["translate"])
-    opened = [s["name"] for s in specs] + [s["name"] for s in mesh_specs]
+    opened = ([em_name] if em_name else []) + [s["name"] for s in specs] + \
+             [s["name"] for s in mesh_specs]
     print(f"[view] opened {len(opened)} layer(s): {', '.join(opened)}")
     napari.run()
 
@@ -323,11 +449,20 @@ def _cache_is_stale(source, neurons: list[str], saved_at: str) -> bool:
     return False
 
 
-def _run_cached(source, neurons: list[str], *, mesh: bool, force_rebuild: bool) -> None:
+def _run_cached(source, neurons: list[str], *, mesh: bool, force_rebuild: bool,
+                show_stack: bool = False) -> None:
     """The cache=True path run() delegates to: reuse <source>/.view_package/ when it
     exists, was built from exactly this neuron set, is not stale, and (if mesh is
     requested) already has mesh data; otherwise build live and overwrite the cache so
     the NEXT call is fast.
+
+    show_stack rides the same reuse/rebuild decision as the masks: when the cached
+    package is being reused, its em_stack entry (if any) is reused too; otherwise a
+    fresh EM crop is built and saved into the (possibly freshly rebuilt) package, so
+    the NEXT call with show_stack=True is instant instead of re-cropping every time
+    (the actual gripe this cache exists to fix). A reuse call with show_stack=True
+    against a package saved WITHOUT one still builds and saves it now, on top of the
+    otherwise-reused masks, rather than waiting for a mask rebuild to earn it.
     """
     cache_dir = Path(source) / ".view_package"
     manifest_path = cache_dir / "manifest.json"
@@ -339,16 +474,29 @@ def _run_cached(source, neurons: list[str], *, mesh: bool, force_rebuild: bool) 
         if same_neurons and fresh and (not mesh or has_mesh):
             specs = load_package(cache_dir)
             mesh_specs = load_mesh_specs(cache_dir) if mesh else []
-            _open_viewer(specs, mesh_specs)
+            em_spec = None
+            if show_stack:
+                em_spec = load_em_stack_spec(cache_dir)
+                if em_spec is None:
+                    em_spec = build_em_stack_spec(specs)
+                    if em_spec is not None:
+                        save_em_stack(em_spec, cache_dir)
+            _open_viewer(specs, mesh_specs, em_spec=em_spec)
             return
     specs, mesh_specs = _build_from_tree(source, neurons, mesh=mesh)
     save_package(specs, cache_dir, built_from={"tree": str(source), "neurons": neurons},
                 mesh_specs=mesh_specs if mesh else None)
-    _open_viewer(specs, mesh_specs)
+    em_spec = None
+    if show_stack:
+        em_spec = build_em_stack_spec(specs)
+        if em_spec is not None:
+            save_em_stack(em_spec, cache_dir)
+    _open_viewer(specs, mesh_specs, em_spec=em_spec)
 
 
 def run(source, neurons: list[str], *, mesh: bool = False,
-       cache: bool = False, force_rebuild: bool = False) -> None:
+       cache: bool = False, force_rebuild: bool = False,
+       show_stack: bool = False) -> None:
     """Build and open the viewer directly, the same shape render_review.run(source,
     neurons) already has (the function launcher.py's "Render video + mesh" button
     calls). This is what launcher.py's "View neurons" button calls.
@@ -357,14 +505,21 @@ def run(source, neurons: list[str], *, mesh: bool = False,
     package at <source>/.view_package/ instead of always rebuilding live; see
     _run_cached. force_rebuild=True skips the cache and staleness check entirely.
 
+    show_stack adds a quick, downscaled raw-EM layer underneath the masks (see
+    build_em_stack_spec), for spotting where a neuron goes disjointed across z. Off
+    by default: it needs raw EM access (WORM_PATH) and costs real time to crop, the
+    same cost that makes shipping frames to a reviewer worth doing centrally instead
+    (see docs/how-to/repropagation-round-protocol.md).
+
     --save-package/--package are CLI-only concerns this entry point does not take;
     see main() below for those.
     """
     if cache:
-        _run_cached(source, neurons, mesh=mesh, force_rebuild=force_rebuild)
+        _run_cached(source, neurons, mesh=mesh, force_rebuild=force_rebuild,
+                   show_stack=show_stack)
         return
     specs, mesh_specs = _build_from_tree(source, neurons, mesh=mesh)
-    _open_viewer(specs, mesh_specs)
+    _open_viewer(specs, mesh_specs, show_stack=show_stack)
 
 
 def main() -> None:
@@ -386,6 +541,12 @@ def main() -> None:
     ap.add_argument("--package", default=None, metavar="DIR",
                     help="load from a previously saved package instead of --tree/--neurons; "
                          "add --mesh to also load that package's cached meshes")
+    ap.add_argument("--show-stack", action="store_true",
+                    help="also show the raw EM underneath the masks, cropped to the "
+                         "selection's bounding box and downscaled 8x (same grid the "
+                         "masks already use), for spotting where a neuron goes "
+                         "disjointed across z. Needs raw EM access (WORM_PATH) and "
+                         "costs real time to crop, so it's opt-in.")
     args = ap.parse_args()
 
     using_tree = args.tree is not None or args.neurons is not None
@@ -413,7 +574,7 @@ def main() -> None:
                          mesh_specs=mesh_specs)
             print(f"[view] saved package to {args.save_package}")
 
-    _open_viewer(specs, mesh_specs)
+    _open_viewer(specs, mesh_specs, show_stack=args.show_stack)
 
 
 if __name__ == "__main__":
