@@ -25,8 +25,14 @@
 #   N=$(($(wc -l < cluster/corrected_chains.csv) - 1))   # rows minus the header
 #   sbatch --array=0-$((N - 1))%8 \
 #       --export=ALL,WORKING_TREE=/scratch/$USER/manual_verify_AIYL_AIYR,\
-#OUT_MASK=/scratch/$USER/reprop_maskseed,OUT_BOX=/scratch/$USER/reprop_boxseed \
+#OUT_MASK=/scratch/$USER/reprop_maskseed,OUT_BOX=/scratch/$USER/reprop_boxseed,\
+#OUT_FRAMES=/scratch/$USER/reprop_frames \
 #       cluster/run_reprop_corrected_seed.sh
+#
+# OUT_FRAMES is optional. Set it to persist each chain's prepared frames to scratch
+# instead of letting them vanish with $SLURM_TMPDIR when the task ends (see the
+# SAM2_FRAMES_ROOT comment below for why they'd otherwise be lost). Without it, this
+# job behaves exactly as before: masks only, no frames survive the task.
 #
 # Each task propagates ONE chain (both variants), much lighter than a full per-slice
 # generation array task, hence the smaller --mem/--cpus-per-task/--time below relative
@@ -46,6 +52,12 @@ set -euo pipefail
 : "${OUT_MASK:?set OUT_MASK (mask-seed variant output tree) via --export}"
 : "${OUT_BOX:?set OUT_BOX (box-seed variant output tree) via --export}"
 MANIFEST="${MANIFEST:-cluster/corrected_chains.csv}"
+# optional: persist prepared frames to scratch instead of losing them with
+# $SLURM_TMPDIR. Unset means the old behaviour, masks only.
+FRAMES_ARGS=()
+if [ -n "${OUT_FRAMES:-}" ]; then
+    FRAMES_ARGS=(--out-frames "$OUT_FRAMES")
+fi
 # both (default, unchanged) or mask. Mask-seed beat box-seed on overfill on all four
 # AIA/AIY sides while matching its underfill fix (2026-08-14), so a run that only wants
 # the winner halves its GPU time with VARIANT=mask. OUT_BOX stays required either way;
@@ -96,6 +108,6 @@ echo "[reprop-array] task=$SLURM_ARRAY_TASK_ID neuron=$NEURON chain=$CHAIN_IDX g
 python experiments/propagate_from_corrected_seed.py \
     --working "$WORKING_TREE" \
     --neuron "$NEURON" --chain "$CHAIN_IDX" \
-    --out-mask "$OUT_MASK" --out-box "$OUT_BOX" "${VARIANT_ARGS[@]}"
+    --out-mask "$OUT_MASK" --out-box "$OUT_BOX" "${VARIANT_ARGS[@]}" "${FRAMES_ARGS[@]}"
 
 echo "[reprop-array] task=$SLURM_ARRAY_TASK_ID neuron=$NEURON chain=$CHAIN_IDX done"

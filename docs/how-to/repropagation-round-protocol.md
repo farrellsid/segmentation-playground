@@ -35,7 +35,7 @@ instead with Slurm's own dependency mechanism, in one paste:
 
 ```bash
 JOBID=$(sbatch --array=0-<N-1>%8 \
-    --export=ALL,WORKING_TREE=<path>,OUT_MASK=<path>,OUT_BOX=<path>,\
+    --export=ALL,WORKING_TREE=<path>,OUT_MASK=<path>,OUT_BOX=<path>,OUT_FRAMES=<path>,\
 MANIFEST=cluster/corrected_chains_<label>.csv,VARIANT=mask \
     cluster/run_reprop_corrected_seed.sh | awk '{print $NF}')
 echo "reprop array job id: $JOBID"
@@ -43,7 +43,9 @@ echo "reprop array job id: $JOBID"
 sbatch --dependency=afterany:$JOBID \
     --job-name=tar-reprop --account=def-mzhen --cpus-per-task=1 --mem=4G --time=00:30:00 \
     --output=/home/fsid/tar-reprop-%j.out \
-    --wrap="tar -czhf <out>.tar.gz -C /scratch/fsid <OUT_MASK basename> && ls -lh <out>.tar.gz"
+    --wrap="tar -czhf <out>.tar.gz -C /scratch/fsid <OUT_MASK basename> && \
+tar -czhf <out>_frames.tar.gz -C /scratch/fsid <OUT_FRAMES basename> && \
+ls -lh <out>.tar.gz <out>_frames.tar.gz"
 ```
 
 `awk '{print $NF}'` pulls the numeric id off `sbatch`'s own `Submitted batch job <id>` line,
@@ -52,6 +54,13 @@ be inspectable even if some individual chains in the array failed, matching
 `stage_download.sh`'s own reasoning for the same choice. The tar job sits `PD` (dependency
 not yet satisfied) in the queue and starts itself the moment the array finishes; nothing
 needs to be watched or resubmitted.
+
+`OUT_FRAMES` is optional on the array job itself (see `run_reprop_corrected_seed.sh`), but
+set it here every time: cropping a chain's frames is the slow, "untenable" part when done
+per-reviewer on her own machine, with no shared cache for a tier-2 `_pcrop` chain. Doing it
+once centrally, on Narval, and shipping the result as its own zip (never through git, see
+step 3) is what makes a reviewer's `gui.py` session open instantly instead of re-decoding
+every chain she opens.
 
 ## 2. Verify the reprop output is complete and unbroken
 
@@ -105,3 +114,8 @@ corrected or otherwise, in the base tree), stop and ask before shipping it. Do n
 bundle with only one side of a pair on the assumption that "the other side just was not
 ready this round." Step 1, done properly, is what prevents this from being a silent
 assumption in the first place.
+
+Masks and their metadata are small and go through `mask-review` in git, as usual. Frames
+never do, they're real image data and would bloat the repo's history forever; they go to
+Lucinda as a plain zip of the `OUT_FRAMES` tarball from step 2 instead, outside git
+entirely, by whatever file-sharing channel is in use (Drive, etc.) at the time.

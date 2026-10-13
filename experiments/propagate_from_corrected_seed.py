@@ -29,12 +29,14 @@ only ever read.
         --working "F:\\ZhenLab\\Data\\output_masks\\manual_verify_AIYL_AIYR" \\
         --neuron AIYL --chain 0 \\
         --out-mask "F:\\ZhenLab\\Data\\output_masks\\reprop_maskseed_AIYL_AIYR" \\
-        --out-box  "F:\\ZhenLab\\Data\\output_masks\\reprop_boxseed_AIYL_AIYR"
+        --out-box  "F:\\ZhenLab\\Data\\output_masks\\reprop_boxseed_AIYL_AIYR" \\
+        --out-frames "F:\\ZhenLab\\Data\\output_masks\\reprop_frames_AIYL_AIYR"
 """
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -88,6 +90,14 @@ def main(argv=None):
     ap.add_argument("--chain", type=int, required=True, help="chain_idx")
     ap.add_argument("--out-mask", required=True, help="output tree for the mask-seed variant")
     ap.add_argument("--out-box", required=True, help="output tree for the box-seed variant")
+    ap.add_argument("--out-frames", default=None,
+                    help="persist this chain's prepared frames here (<out-frames>/<neuron>/"
+                         "chain_NN/frames), and point both variants' state.json at that copy "
+                         "instead of the ephemeral prep location. On Narval, frames prepare "
+                         "into $SLURM_TMPDIR, which is node-local and deleted the moment the "
+                         "job ends; without --out-frames a chain's frames exist only for the "
+                         "lifetime of this one task. Omit to keep the old ephemeral-only "
+                         "behaviour (masks only, no frames to ship).")
     ap.add_argument("--box-margin", type=int, default=10)
     ap.add_argument("--seed-negatives", action="store_true",
                     help="include the chain's original negative points in the box-seed variant")
@@ -128,6 +138,15 @@ def main(argv=None):
             chain, annotate_df, scale=SCALE, frames_root=config.FRAMES_ROOT,
             anchor_catmaid_z=anchor_z, neuron=neuron, chain_idx=chain_idx)
     print(f"[reprop] {n_frames} frames prepared, anchor at frame {anchor_frame_idx}")
+
+    if args.out_frames:
+        persist_dir = Path(args.out_frames) / neuron / f"chain_{chain_idx:02d}" / "frames"
+        if persist_dir.exists():
+            shutil.rmtree(persist_dir)
+        persist_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(frames_dir, persist_dir)
+        frames_dir = str(persist_dir)
+        print(f"[reprop] frames persisted to {frames_dir}")
 
     corrected_mask = _anchor_mask_native(working, neuron, chain_idx, anchor_z)
     print(f"[reprop] corrected anchor mask area={int(corrected_mask.sum())}, "
