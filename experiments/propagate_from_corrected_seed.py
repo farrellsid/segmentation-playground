@@ -68,6 +68,22 @@ from sam2_utils import alignment, config, qc, setup
 SCALE = 8
 
 
+def _build_video_predictor(*, backend: str, model_size: str, sam3_checkpoint: str | None):
+    """(video predictor) for `backend`, same branch batch.build_predictors() uses:
+    sam3's HuggingFace adapter presents the SAM2 predictor interface, so
+    pipeline.propagate.propagate() runs unchanged either way. Inlined here rather
+    than importing batch.py (a top-level script with its own argparse/__main__,
+    not meant to be imported as a library)."""
+    if backend == "sam3":
+        from sam2_utils import sam3_backend
+        ckpt = sam3_checkpoint or sam3_backend.DEFAULT_CHECKPOINT_DIR
+        return sam3_backend.Sam3VideoPredictor(ckpt)
+    if backend != "sam2":
+        raise ValueError(f"unknown backend {backend!r}; expected 'sam2' or 'sam3'")
+    video_predictor, _ = setup.build_predictor(size=model_size, kind="video")
+    return video_predictor
+
+
 def _anchor_mask_native(working: Path, neuron: str, chain_idx: int, anchor_z: int):
     """The corrected anchor mask exactly as saved, at NATIVE resolution: the full
     `_pcrop` crop window for a tier-2 chain, or the full `_sam` frame for a legacy
@@ -199,6 +215,14 @@ def main(argv=None):
     ap.add_argument("--box-margin", type=int, default=10)
     ap.add_argument("--seed-negatives", action="store_true",
                     help="include the chain's original negative points in the box-seed variant")
+    ap.add_argument("--backend", default="sam2", choices=["sam2", "sam3"],
+                    help="sam2 (default, unchanged) or sam3, matching batch.py's own "
+                         "--backend. The ORIGINAL masks this script reseeds from are SAM3 "
+                         "(target_perslice_only_guard_sam3_merged), but this script itself "
+                         "defaulted to sam2 until now; pass --backend sam3 to match.")
+    ap.add_argument("--sam3-checkpoint", default=None,
+                    help="sam3 backend only; defaults to sam2_utils.sam3_backend's own "
+                         "DEFAULT_CHECKPOINT_DIR if omitted")
     ap.add_argument("--model-size", default="large")
     ap.add_argument("--skip-mask-variant", action="store_true")
     ap.add_argument("--skip-box-variant", action="store_true")
@@ -232,9 +256,10 @@ def main(argv=None):
     else:
         pairs = [(args.neuron, args.chain)]
 
-    print(f"[reprop] building {args.model_size} video predictor once for "
-         f"{len(pairs)} chain(s) ...")
-    video_predictor, _ = setup.build_predictor(size=args.model_size, kind="video")
+    print(f"[reprop] building {args.backend} ({args.model_size}) video predictor once "
+         f"for {len(pairs)} chain(s) ...")
+    video_predictor = _build_video_predictor(backend=args.backend, model_size=args.model_size,
+                                             sam3_checkpoint=args.sam3_checkpoint)
 
     for neuron, chain_idx in pairs:
         _propagate_one_chain(working=working, neuron=neuron, chain_idx=chain_idx,

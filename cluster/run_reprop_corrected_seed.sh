@@ -1,8 +1,8 @@
 #!/bin/bash
 # run_reprop_corrected_seed.sh: Slurm ARRAY job, one task per BATCH of manually-
 # corrected chains, re-propagating from the corrected anchor mask in two variants
-# (mask-seed, box-seed). Each task builds ONE SAM2 predictor and reuses it across
-# its whole batch of chains.
+# (mask-seed, box-seed). Each task builds ONE video predictor (SAM2 by default, SAM3
+# via SAM_BACKEND=sam3, see below) and reuses it across its whole batch of chains.
 #
 # Was one task per chain until the 2026-10-25 round (286 chains): real per-task
 # timing showed ~1-3 min of actual propagation work each, but every task also paid
@@ -40,6 +40,11 @@
 # each chain's prepared frames to scratch instead of letting them vanish with
 # $SLURM_TMPDIR when the task ends (see the SAM2_FRAMES_ROOT comment below for why
 # they'd otherwise be lost). Without it, masks only, no frames survive the task.
+#
+# For SAM3 (matching the ORIGINAL masks this script reseeds from, which are already
+# SAM3-generated, see docs/how-to/run-sam3-on-narval.md), add to the --export list:
+#   VENV=$HOME/sam3env,SAM_BACKEND=sam3,SAM3_CKPT=$HOME/projects/def-mzhen/<user>/sam3_checkpoint
+# Unset, this script is SAM2-only, exactly its pre-2026-10-25 behaviour.
 #
 # --time below is sized for a full BATCH_SIZE=15 batch (one predictor load + up to
 # 15 chains' worth of propagation); shrink it if BATCH_SIZE is set smaller.
@@ -93,10 +98,23 @@ export SAM2_FRAMES_ROOT=${SLURM_TMPDIR:-/tmp}/frames
 # --- environment (same module set as every other job here) -------------------
 module load StdEnv/2023 gcc/12.3 python/3.11 cuda/12.2 cudnn/9.2.1.18 \
     opencv/4.13.0 scipy-stack/2026a ipykernel/2026a
-source $HOME/sam2env/bin/activate
+# VENV/SAM_BACKEND/SAM3_CKPT: same optional pass-through run_array.sh already uses for
+# its SAM3 A/B runs. Unset reproduces the old SAM2-only behaviour exactly (VENV defaults
+# to sam2env, SAM_BACKEND to sam2, no --sam3-checkpoint flag appended). The ORIGINAL
+# masks this script reseeds from are already SAM3 (target_perslice_only_guard_sam3_merged);
+# this script itself only grew SAM3 support in the 2026-10-25 round.
+VENV=${VENV:-$HOME/sam2env}
+source "$VENV/bin/activate"
 
 cd "$REPO"
 mkdir -p cluster/logs
+
+SAM_BACKEND=${SAM_BACKEND:-sam2}
+SAM3_CKPT=${SAM3_CKPT:-}
+BACKEND_ARGS=(--backend "$SAM_BACKEND")
+if [ -n "$SAM3_CKPT" ]; then
+    BACKEND_ARGS+=(--sam3-checkpoint "$SAM3_CKPT")
+fi
 
 # --- this task's row range (find_corrected_chains.py's --out-csv, header:
 # neuron,chain_idx,anchor_z; row 0 of the array owns data rows [0, BATCH_SIZE),
@@ -109,6 +127,7 @@ echo "[reprop-array] task=$SLURM_ARRAY_TASK_ID rows=[$ROW_START, $((ROW_START + 
 python experiments/propagate_from_corrected_seed.py \
     --working "$WORKING_TREE" \
     --manifest "$MANIFEST" --row-start "$ROW_START" --row-count "$BATCH_SIZE" \
-    --out-mask "$OUT_MASK" --out-box "$OUT_BOX" "${VARIANT_ARGS[@]}" "${FRAMES_ARGS[@]}"
+    --out-mask "$OUT_MASK" --out-box "$OUT_BOX" "${VARIANT_ARGS[@]}" "${FRAMES_ARGS[@]}" \
+    "${BACKEND_ARGS[@]}"
 
 echo "[reprop-array] task=$SLURM_ARRAY_TASK_ID done"
