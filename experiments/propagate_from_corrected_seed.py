@@ -31,6 +31,20 @@ only ever read.
         --out-mask "F:\\ZhenLab\\Data\\output_masks\\reprop_maskseed_AIYL_AIYR" \\
         --out-box  "F:\\ZhenLab\\Data\\output_masks\\reprop_boxseed_AIYL_AIYR" \\
         --out-frames "F:\\ZhenLab\\Data\\output_masks\\reprop_frames_AIYL_AIYR"
+
+Batch mode (one Slurm task, many chains, ONE predictor build shared across all of
+them, see docs/how-to/repropagation-round-protocol.md for why this exists: a round
+of 286 single-chain tasks measured ~1-3 min of real propagation work each, but the
+SAM2 checkpoint load at the top of every task was eating a large, unmeasured share
+of that, paid 286 times over instead of once per batch). `--working` is the ONE
+staged tree all chains in the manifest share (the manifest's own neuron column
+disambiguates per chain, same flat <neuron>/chain_NN layout single-chain mode uses):
+
+    py -3 experiments/propagate_from_corrected_seed.py \\
+        --working /scratch/fsid/manual_verify_2026-10-25_batch \\
+        --manifest cluster/corrected_chains_2026-10-25.csv \\
+        --row-start 0 --row-count 15 \\
+        --out-mask ... --out-box ... --out-frames ...
 """
 from __future__ import annotations
 
@@ -82,32 +96,13 @@ def _save_variant(video_segments, frame_to_z, *, out_tree: Path, neuron: str, ch
     print(f"[reprop]   wrote {n_written} masks + state.json to {out_chain_dir}")
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--working", required=True, help="tree with the corrected anchor mask")
-    ap.add_argument("--neuron", required=True)
-    ap.add_argument("--chain", type=int, required=True, help="chain_idx")
-    ap.add_argument("--out-mask", required=True, help="output tree for the mask-seed variant")
-    ap.add_argument("--out-box", required=True, help="output tree for the box-seed variant")
-    ap.add_argument("--out-frames", default=None,
-                    help="persist this chain's prepared frames here (<out-frames>/<neuron>/"
-                         "chain_NN/frames), and point both variants' state.json at that copy "
-                         "instead of the ephemeral prep location. On Narval, frames prepare "
-                         "into $SLURM_TMPDIR, which is node-local and deleted the moment the "
-                         "job ends; without --out-frames a chain's frames exist only for the "
-                         "lifetime of this one task. Omit to keep the old ephemeral-only "
-                         "behaviour (masks only, no frames to ship).")
-    ap.add_argument("--box-margin", type=int, default=10)
-    ap.add_argument("--seed-negatives", action="store_true",
-                    help="include the chain's original negative points in the box-seed variant")
-    ap.add_argument("--model-size", default="large")
-    ap.add_argument("--skip-mask-variant", action="store_true")
-    ap.add_argument("--skip-box-variant", action="store_true")
-    args = ap.parse_args(argv)
-
-    working = Path(args.working)
-    neuron, chain_idx = args.neuron, args.chain
+def _propagate_one_chain(*, working: Path, neuron: str, chain_idx: int,
+                         annotate_df: pd.DataFrame, all_chains: list,
+                         video_predictor, args) -> None:
+    """Everything main() used to do for a single chain, minus building the
+    predictor (the caller already built it, once, and passes it in here so a
+    batch of chains shares the same predictor instead of each paying the
+    checkpoint-load cost separately)."""
     src_chain_dir = working / neuron / f"chain_{chain_idx:02d}"
     src_state = load_state(src_chain_dir / "state.json")
     if src_state.anchor_catmaid_z is None or src_state.prompts is None:
@@ -117,11 +112,6 @@ def main(argv=None):
     print(f"[reprop] {neuron} chain_{chain_idx:02d}, anchor z={anchor_z}, "
          f"space={'_pcrop tier-2 (crop_scale=' + str(cw.crop_scale) + ')' if cw else '_sam legacy'}")
 
-    annotate_df = pd.read_csv(config.CSV_PATH)
-    xy = alignment.catmaid_to_tif(annotate_df["x"].values, annotate_df["y"].values)
-    annotate_df["x_tif"], annotate_df["y_tif"] = xy[:, 0], xy[:, 1]
-    with open(config.CHAINS_PATH) as f:
-        all_chains = json.load(f)
     cell_chains = [c for c in all_chains if c["cell_name"] == neuron]
     if chain_idx >= len(cell_chains):
         raise SystemExit(f"[reprop] {neuron} has only {len(cell_chains)} chains in chains.json, "
@@ -152,8 +142,6 @@ def main(argv=None):
     print(f"[reprop] corrected anchor mask area={int(corrected_mask.sum())}, "
          f"native shape={corrected_mask.shape}")
 
-    print(f"[reprop] building {args.model_size} video predictor ...")
-    video_predictor, _ = setup.build_predictor(size=args.model_size, kind="video")
     crop_window_dict = src_state.crop_window  # already a plain dict, reuse verbatim for outputs
 
     if not args.skip_mask_variant:
@@ -184,8 +172,77 @@ def main(argv=None):
                          anchor_frame_idx=anchor_frame_idx, n_frames=n_frames,
                          frames_dir=frames_dir, crop_window=crop_window_dict)
 
-    print("[reprop] done. Note: QC was not run on either output (no qc.csv). Score "
-         "with eval.merge_metric like any other tree.")
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--working", required=True, help="tree with the corrected anchor mask(s)")
+    ap.add_argument("--neuron", help="single-chain mode: chain's neuron")
+    ap.add_argument("--chain", type=int, help="single-chain mode: chain_idx")
+    ap.add_argument("--manifest", help="batch mode: CSV with neuron,chain_idx columns "
+                                       "(find_corrected_chains.py's --out-csv)")
+    ap.add_argument("--row-start", type=int, default=0,
+                    help="batch mode: first manifest data row this task owns (0-based, "
+                         "after the header)")
+    ap.add_argument("--row-count", type=int, default=0,
+                    help="batch mode: how many consecutive manifest rows this task owns")
+    ap.add_argument("--out-mask", required=True, help="output tree for the mask-seed variant")
+    ap.add_argument("--out-box", required=True, help="output tree for the box-seed variant")
+    ap.add_argument("--out-frames", default=None,
+                    help="persist each chain's prepared frames here (<out-frames>/<neuron>/"
+                         "chain_NN/frames), and point both variants' state.json at that copy "
+                         "instead of the ephemeral prep location. On Narval, frames prepare "
+                         "into $SLURM_TMPDIR, which is node-local and deleted the moment the "
+                         "job ends; without --out-frames a chain's frames exist only for the "
+                         "lifetime of this one task. Omit to keep the old ephemeral-only "
+                         "behaviour (masks only, no frames to ship).")
+    ap.add_argument("--box-margin", type=int, default=10)
+    ap.add_argument("--seed-negatives", action="store_true",
+                    help="include the chain's original negative points in the box-seed variant")
+    ap.add_argument("--model-size", default="large")
+    ap.add_argument("--skip-mask-variant", action="store_true")
+    ap.add_argument("--skip-box-variant", action="store_true")
+    args = ap.parse_args(argv)
+
+    batch_mode = args.manifest is not None
+    if batch_mode and (args.neuron or args.chain is not None):
+        raise SystemExit("[reprop] --manifest and --neuron/--chain are mutually exclusive")
+    if not batch_mode and (args.neuron is None or args.chain is None):
+        raise SystemExit("[reprop] single-chain mode needs both --neuron and --chain "
+                         "(or use --manifest for batch mode)")
+
+    working = Path(args.working)
+
+    print("[reprop] loading shared CATMAID tables + chains.json once ...")
+    annotate_df = pd.read_csv(config.CSV_PATH)
+    xy = alignment.catmaid_to_tif(annotate_df["x"].values, annotate_df["y"].values)
+    annotate_df["x_tif"], annotate_df["y_tif"] = xy[:, 0], xy[:, 1]
+    with open(config.CHAINS_PATH) as f:
+        all_chains = json.load(f)
+
+    if batch_mode:
+        manifest = pd.read_csv(args.manifest)
+        if args.row_count <= 0:
+            raise SystemExit("[reprop] --row-count must be > 0 in batch mode")
+        rows = manifest.iloc[args.row_start:args.row_start + args.row_count]
+        if len(rows) == 0:
+            raise SystemExit(f"[reprop] no manifest rows in [{args.row_start}, "
+                             f"{args.row_start + args.row_count}), manifest has {len(manifest)} rows")
+        pairs = [(r["neuron"], int(r["chain_idx"])) for _, r in rows.iterrows()]
+    else:
+        pairs = [(args.neuron, args.chain)]
+
+    print(f"[reprop] building {args.model_size} video predictor once for "
+         f"{len(pairs)} chain(s) ...")
+    video_predictor, _ = setup.build_predictor(size=args.model_size, kind="video")
+
+    for neuron, chain_idx in pairs:
+        _propagate_one_chain(working=working, neuron=neuron, chain_idx=chain_idx,
+                             annotate_df=annotate_df, all_chains=all_chains,
+                             video_predictor=video_predictor, args=args)
+
+    print(f"[reprop] done, {len(pairs)} chain(s). Note: QC was not run on either output "
+         f"(no qc.csv). Score with eval.merge_metric like any other tree.")
 
 
 if __name__ == "__main__":
