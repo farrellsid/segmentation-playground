@@ -192,6 +192,51 @@ def _config_from_dict(d: Optional[dict]) -> PipelineConfig:
     return PipelineConfig(**d)
 
 
+#: Config fields a re-run must NOT inherit from a chain's recorded state. They say where
+#: THIS machine reads and writes, not how the chain was segmented, and a state.json can
+#: come from a bundle or from the cluster naming directories that do not exist here.
+RERUN_PATH_FIELDS = ("output_root", "frames_root")
+
+
+def config_for_rerun(recorded: Optional[PipelineConfig], *, base: PipelineConfig,
+                     **overrides) -> PipelineConfig:
+    """The config to re-run a chain with: its own settings, this machine's paths.
+
+    Re-running a chain in place (the GUI's recrop) used to build a fresh config from the
+    GUI's defaults, which silently changed HOW the chain was segmented. Measured on a real
+    chain: produced with ``backend="sam3"`` and ``seed_negatives=True``, re-run as
+    ``"sam2"`` with no negatives, and a mask-seeded chain lost its mask seed. Nothing
+    surfaced it, so the loss compounded with every recrop.
+
+    Inherits by default and excludes by exception, which is the opposite of
+    ``bundle.GEOMETRY_FIELDS`` and deliberately so. There the risk is a field quietly
+    CROSSING machines, so the allowlist names what may travel. Here the risk is a field
+    quietly being DROPPED, so a setting added to PipelineConfig later must keep carrying
+    over rather than reverting to a default nobody chose.
+
+    Parameters
+    ----------
+    recorded : PipelineConfig or None
+        The chain's own config, from its ``state.json``. None when the chain has no
+        recorded state, in which case ``base`` is all there is.
+    base : PipelineConfig
+        This machine's config. Only :data:`RERUN_PATH_FIELDS` are taken from it.
+    **overrides
+        Settings the caller is changing on purpose, which win over both.
+
+    Returns
+    -------
+    PipelineConfig
+        A new config. Neither input is modified.
+    """
+    from dataclasses import replace
+
+    if recorded is None:
+        return replace(base, **overrides) if overrides else replace(base)
+    paths = {f: getattr(base, f) for f in RERUN_PATH_FIELDS}
+    return replace(recorded, **paths, **overrides)
+
+
 def state_to_dict(state: ChainState) -> dict:
     """Plain-json-safe dict view of a ChainState."""
     ftz = state.frame_to_z

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAM2 vs SAM3 mask overlays (AIAL bake-off)</title>
+<style>
+  :root { --ink:#1a1a1a; --muted:#666; --line:#e2e2e2; --bg:#fafafa; --sam2:#0072B2; --sam3:#E69F00; }
+  @media (prefers-color-scheme: dark){ :root{ --ink:#eaeaea; --muted:#9a9a9a; --line:#333; --bg:#141414; } }
+  body{ margin:0; padding:28px; background:var(--bg); color:var(--ink);
+        font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; }
+  h1{ font-size:20px; margin:0 0 4px; }
+  h2{ font-size:16px; margin:32px 0 4px; border-bottom:1px solid var(--line); padding-bottom:6px; }
+  h3{ font-size:13px; color:var(--muted); font-weight:600; margin:18px 0 8px; text-transform:uppercase; letter-spacing:.04em; }
+  p.note{ color:var(--muted); max-width:900px; }
+  .row{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:8px; }
+  figure{ margin:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#000; }
+  figcaption{ padding:6px 10px; font-size:12px; color:#fff; background:#000; }
+  .tag{ display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:middle; }
+  .s2{ background:var(--sam2); } .s3{ background:var(--sam3); }
+  img{ display:block; width:100%; height:auto; }
+  .metric{ color:#bbb; }
+</style>
+</head>
+<body>
+<h1>SAM2 vs SAM3 — mask overlays on real EM (AIAL bake-off)</h1>
+<p class="note">The actual segmentations from the 2-chain local bake-off: SAM2 (left,
+<span class="tag s2"></span>) beside SAM3 (right, <span class="tag s3"></span>) for the same chain and
+method. Captions show that cell's foreign-node bleed rate (lower is cleaner). These are the two chains
+we validated locally (chain_00 = 113 frames, chain_05 = 17 frames); whole-worm overlays await mask
+extraction.</p>
+
+<h2>AIAL · chain_00 (113 frames)</h2>
+<h3>Per-slice</h3>
+<div class="row">
+  <figure><img src="AIAL_chain00_sam2_perslice.png" alt="SAM2 per-slice chain_00"><figcaption>SAM2 per-slice <span class="metric">· foreign-frame-rate 0.540</span></figcaption></figure>
+  <figure><img src="AIAL_chain00_sam3_perslice.png" alt="SAM3 per-slice chain_00"><figcaption>SAM3 per-slice <span class="metric">· foreign-frame-rate 0.221</span></figcaption></figure>
+</div>
+<h3>Propagation</h3>
+<div class="row">
+  <figure><img src="AIAL_chain00_sam2_prop.png" alt="SAM2 propagation chain_00"><figcaption>SAM2 propagation <span class="metric">· foreign-frame-rate 0.796</span></figcaption></figure>
+  <figure><img src="AIAL_chain00_sam3_prop.png" alt="SAM3 propagation chain_00"><figcaption>SAM3 propagation <span class="metric">· foreign-frame-rate 0.372</span></figcaption></figure>
+</div>
+
+<h2>AIAL · chain_05 (17 frames)</h2>
+<h3>Per-slice</h3>
+<div class="row">
+  <figure><img src="AIAL_chain05_sam2_perslice.png" alt="SAM2 per-slice chain_05"><figcaption>SAM2 per-slice <span class="metric">· foreign-frame-rate 0.353</span></figcaption></figure>
+  <figure><img src="AIAL_chain05_sam3_perslice.png" alt="SAM3 per-slice chain_05"><figcaption>SAM3 per-slice <span class="metric">· foreign-frame-rate 0.059</span></figcaption></figure>
+</div>
+<h3>Propagation</h3>
+<div class="row">
+  <figure><img src="AIAL_chain05_sam2_prop.png" alt="SAM2 propagation chain_05"><figcaption>SAM2 propagation <span class="metric">· foreign-frame-rate 0.647</span></figcaption></figure>
+  <figure><img src="AIAL_chain05_sam3_prop.png" alt="SAM3 propagation chain_05"><figcaption>SAM3 propagation <span class="metric">· foreign-frame-rate 0.294</span></figcaption></figure>
+</div>
+</body>
+</html>

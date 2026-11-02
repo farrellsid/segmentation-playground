@@ -159,7 +159,9 @@ def _append_timing(output_root, neuron, chain_idx, state, peak_vram):
         row[f"t_{p.split()[0]}"] = round(ps[p], 3) if p in ps else pd.NA
     for k in ("jpeg_load", "propagate_only"):
         row[f"t_{k}"] = round(sub[k], 3) if k in sub else pd.NA
-    row["t_total"] = round(sum(ps.values()), 3)
+    tier1 = getattr(state, "tier1_seconds", 0.0) or 0.0    # first _sam pass on a tier-2 re-run
+    row["t_pass1"] = round(tier1, 3) if tier1 else pd.NA   # NA for a single-pass chain
+    row["t_total"] = round(tier1 + sum(ps.values()), 3)    # both passes for a tier-2 chain
     path = Path(output_root) / "_timing.csv"
     pd.DataFrame([row], columns=list(row)).to_csv(
         path, mode="a", header=not path.exists(), index=False)
@@ -216,10 +218,18 @@ def load_or_init_manifest(
         return seed
 
     existing = pd.read_csv(manifest_path)
-    for col in ("status", "error"):
+    # pd.read_csv infers an all-blank column as float64 (NaN), so a manifest
+    # saved after a run where every row's anchor_reasons/error/status happened
+    # to be blank reloads those columns as float64. The next _update_row call
+    # then fails with pandas.errors.LossySetitemError trying to write a real
+    # empty string into what pandas now thinks is a float column. Recast every
+    # column this run can write a literal string into back to object, matching
+    # the fresh seed's own dtype. anchor_reasons is '' whenever the anchor
+    # passed (the common case), so this is not a rare edge case in practice.
+    for col in ("status", "error", "anchor_reasons"):
         if col in existing.columns:
             existing[col] = existing[col].astype("object")
-    
+
     # Append any new (neuron, chain_idx) not already tracked.
     have = set(zip(existing["neuron"], existing["chain_idx"]))
     new_rows = seed[~seed.apply(lambda r: (r["neuron"], r["chain_idx"]) in have, axis=1)]
@@ -378,6 +388,95 @@ def _run_chain_once(session: Session, cfg: PipelineConfig, neuron: str,
     )
 
 
+def _tier2_overrides(cfg) -> dict:
+    """The non-None tier-2 seed overrides, mapped to their base PipelineConfig names, for
+    the tier-2 rerun. Empty when none are set, so replace(cfg, chain_crop=True, **overrides)
+    is identical to the plain rerun."""
+    out = {}
+    if cfg.tier2_k_max_neg is not None:
+        out["k_max_neg"] = cfg.tier2_k_max_neg
+    if cfg.tier2_seed_negatives is not None:
+        out["seed_negatives"] = cfg.tier2_seed_negatives
+    if cfg.tier2_multimask_generous is not None:
+        out["multimask_generous"] = cfg.tier2_multimask_generous
+    return out
+
+
+def _apply_second_pass_and_update_qc(session, cfg, neuron: str, chain: dict,
+                                     chain_dir: Path, state) -> None:
+    """Run the propagation second pass on a finished chain and fold its outcomes into
+    qc.csv, recording what happened for a human reviewer. Both "corrected" and
+    "guard_fallback" outcomes still force flag/intervene/queue to True, so the frame
+    stays in _triage.csv: real verification found "corrected" does not reliably mean
+    the frame's original trigger actually resolved, so this pass records evidence for
+    a human to check rather than silently clearing the queue on an unverified claim.
+    No-op when second_pass is off, the chain used per-slice re-seeding (already has
+    its own guard), or the chain has nothing flagged.
+    """
+    import pandas as pd
+
+    from eval import merge_metric
+    from pipeline.propagate import apply_second_pass
+    from sam2_utils import alignment
+
+    if not cfg.second_pass or cfg.per_slice_reseed:
+        return
+
+    qc_csv_path = chain_dir / "qc.csv"
+    if not qc_csv_path.exists():
+        return
+    qc_df = pd.read_csv(qc_csv_path)
+    if "queue" in qc_df.columns:
+        has_flags = bool(qc_df["queue"].any())
+    elif "intervene" in qc_df.columns:
+        has_flags = bool(qc_df["intervene"].any())
+    elif "flag" in qc_df.columns:
+        has_flags = bool(qc_df["flag"].any())
+    else:
+        has_flags = False
+    if not has_flags:
+        return
+
+    nodes_by_z = merge_metric.nodes_by_z(session.annotate_df, cfg.scale)
+    records = merge_metric.score_chain(chain_dir, neuron, nodes_by_z, merge_metric.DEFAULT_RADIUS)
+
+    cw = alignment.CropWindow.from_dict(state.crop_window) if state.crop_window else None
+    outcomes = apply_second_pass(
+        session.image_predictor, state.frames_dir, state.frame_to_z, cw, chain,
+        session.annotate_df, chain_dir, records, cfg=cfg,
+        min_neighbour_area_ratio=cfg.second_pass_min_neighbour_area_ratio)
+    if not outcomes:
+        return
+
+    if "second_pass" not in qc_df.columns:
+        qc_df["second_pass"] = ""
+    # Both outcomes force the triage columns build_triage_queue reads to True,
+    # keeping the frame queued for a human. corrected is NOT trusted to have
+    # actually fixed the frame: real verification (Task 5) found 3 of 5
+    # corrected frames on a real chain still had their triggering problem
+    # unresolved, so clearing the flags there would silently drop still-broken
+    # frames out of review. guard_fallback is a neighbour-copy stand-in, not a
+    # real fix either, mirroring apply_blowup_guard's own zero-confidence
+    # intent (no live frame_conf/pred_iou dict exists post-hoc, so queue the
+    # frame for a human directly). The `second_pass` column still records the
+    # real tag ("corrected" vs "guard_fallback") for a human reviewer; only
+    # triage-queue membership is affected.
+    tag_to_flag_value = {"corrected": True, "guard_fallback": True}
+    for z, tag in outcomes.items():
+        row = qc_df["z"] == z
+        qc_df.loc[row, "second_pass"] = tag
+        flag_value = tag_to_flag_value.get(tag)
+        if flag_value is not None:
+            for col in ("flag", "intervene", "queue"):
+                if col in qc_df.columns:
+                    qc_df.loc[row, col] = flag_value
+    qc_df.to_csv(qc_csv_path, index=False)
+    print(f"[batch] second pass {neuron}/{chain_dir.name}: "
+          f"{len(outcomes)} frame(s), "
+          f"{sum(1 for t in outcomes.values() if t == 'corrected')} corrected, "
+          f"{sum(1 for t in outcomes.values() if t == 'guard_fallback')} guard_fallback")
+
+
 def _run_one_chain(
     session: Session,
     cfg: PipelineConfig,
@@ -413,13 +512,27 @@ def _run_one_chain(
         why = "all-chains mode" if tier2_all else "flagged in _sam"
         print(f"[batch] tier-2 re-run ({why}) {neuron}/chain_{chain_idx:02d}")
         diagnostics.cleanup_vram()                       # reclaim before the second pass
-        state = _run_chain_once(session, replace(cfg, chain_crop=True),
+        pass1_seconds = sum((getattr(state, "phase_seconds", {}) or {}).values())
+        state = _run_chain_once(session, replace(cfg, chain_crop=True, **_tier2_overrides(cfg)),
                                 neuron, chain_idx, chain)
+        # carry the first (_sam) pass's time, otherwise reassigning `state` drops it and
+        # _timing.csv would record only the second pass for a two-pass chain.
+        state.tier1_seconds = pass1_seconds
         kept = ("fell back to _sam" if getattr(state, "fell_back_to_sam", False)
                 else "kept tier-2 (_pcrop)")
         print(f"[batch] tier-2 re-run done {neuron}/chain_{chain_idx:02d}: "
               f"{kept}, status={getattr(state, 'status', '?')}")
     save_state(state, chain_dir / "state.json")
+    # Must run AFTER save_state: _apply_second_pass_and_update_qc's internal
+    # score_chain call reads state.json back off disk to learn the chain's
+    # crop space (crop_window). Calling it before save_state means score_chain
+    # reads a missing or stale state.json, mis-reads the crop space, flags
+    # every frame as foreign-node, and apply_second_pass finds no eligible
+    # neighbours anywhere, so the whole pass silently no-ops.
+    try:
+        _apply_second_pass_and_update_qc(session, cfg, neuron, chain, chain_dir, state)
+    except Exception as e:          # optional post-pass must never sink an already-done chain
+        print(f"[batch] second pass skipped {neuron}/chain_{chain_idx:02d}: {e}")
     return state
 
 
@@ -633,12 +746,31 @@ def run_batch(
 # Bootstrap  (mirror run_aval.py's setup, then loop instead of single-chain)
 # =============================================================================
 
+def build_predictors(cfg: PipelineConfig):
+    """Build (image_predictor, video_predictor) for the configured backend.
+
+    sam2 (default): the existing setup.build_predictor path, byte-identical to before.
+    sam3: the HuggingFace SAM3 PVS adapters, which present the SAM2 predictor interface
+    so run_chain / per-slice / propagation / save_masks all run unchanged.
+    """
+    if cfg.backend == "sam3":
+        from sam2_utils import sam3_backend
+        ckpt = cfg.sam3_checkpoint or sam3_backend.DEFAULT_CHECKPOINT_DIR
+        return sam3_backend.Sam3ImagePredictor(ckpt), sam3_backend.Sam3VideoPredictor(ckpt)
+    if cfg.backend != "sam2":
+        raise ValueError(f"unknown backend {cfg.backend!r}; expected 'sam2' or 'sam3'")
+    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image",
+                                               image_size=cfg.image_size)
+    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video",
+                                               image_size=cfg.image_size)
+    return image_predictor, video_predictor
+
+
 def _build_session(cfg: PipelineConfig) -> Session:
     """One-time session setup. Lift this almost verbatim from run_aval.py."""
     # Predictors built ONCE, above the driver (cfg.model_size consumed here, not
     # inside run_chain).
-    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image")
-    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video")
+    image_predictor, video_predictor = build_predictors(cfg)
     diagnostics.snapshot("after model load")
 
     # annotate_df: CATMAID pull (or cached CSV), then apply the stack->tif affine.
@@ -670,8 +802,7 @@ def _build_gt_session(cfg: PipelineConfig,
     from eval import gt_dataset
     from sam2_utils.skeletons import normalize_name
 
-    image_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="image")
-    video_predictor, _ = setup.build_predictor(size=cfg.model_size, kind="video")
+    image_predictor, video_predictor = build_predictors(cfg)
     diagnostics.snapshot("after model load")
 
     annotate_df, chains, frame_store = gt_dataset.build_gt_session_inputs(
@@ -681,6 +812,66 @@ def _build_gt_session(cfg: PipelineConfig,
     print(f"[batch] SEM-Dauer 1: {len(chains)} chains over "
           f"{len({c['cell_name'] for c in chains})} neurons; EM={frame_store.em_dir}")
     return Session(image_predictor, video_predictor, annotate_df, chains, frame_store)
+
+
+def write_run_meta(output_root: Path, *, preset: str, cfg: PipelineConfig,
+                   neurons: Optional[Sequence[str]], gif_mode: str,
+                   tier2_on_flagged: bool, tier2_all: bool, session: "Session") -> None:
+    """Write ``_run_meta.json``: full provenance for a run we cannot watch live.
+
+    A cluster run is fire-and-forget (no live console, Duo-gated login), so persist
+    everything needed to reconstruct what actually executed for post-hoc comparison:
+    the preset and resolved resolution/tier-2 knobs, the git commit + dirty flag, host,
+    the argv, the neuron scope, and the video predictor's ACTUAL ``image_size`` (so the
+    bigimg variant records the size it truly built at, not just what was requested). Pairs
+    with the per-chain ``state.json`` (phase timings, ``fell_back_to_sam``, QC summary) and
+    ``_manifest.csv`` / ``_timing.csv`` already written per run.
+    """
+    import sys
+    import platform
+    import subprocess
+    from dataclasses import asdict, is_dataclass
+
+    output_root = Path(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    def _git(*a: str) -> Optional[str]:
+        try:
+            return subprocess.run(["git", *a], cwd=Path(__file__).resolve().parent,
+                                  capture_output=True, text=True, timeout=10).stdout.strip()
+        except Exception:
+            return None
+
+    meta = {
+        "preset": preset,
+        "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "git_commit": _git("rev-parse", "HEAD"),
+        "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+        "git_dirty": bool(_git("status", "--porcelain")),
+        "host": platform.node(),
+        "argv": sys.argv,
+        "resolution": {
+            "scale": cfg.scale,
+            "save_downscale": cfg.save_downscale,
+            "image_size_requested": cfg.image_size,
+            "image_size_actual": getattr(session.video_predictor, "image_size", None),
+        },
+        "tier2": {
+            "tier2_on_flagged": tier2_on_flagged,
+            "tier2_all": tier2_all,
+            "chain_crop_min_image_score": cfg.chain_crop_min_image_score,
+            "chain_crop_from_mask": cfg.chain_crop_from_mask,
+        },
+        "model_size": cfg.model_size,
+        "gif_mode": gif_mode,
+        "neurons": list(neurons) if neurons else None,
+        "n_neurons": len(neurons) if neurons else None,
+        "pipeline_config": asdict(cfg) if is_dataclass(cfg) else None,
+    }
+    path = output_root / "_run_meta.json"
+    path.write_text(json.dumps(meta, indent=2, default=str))
+    print(f"[batch] wrote run provenance -> {path} "
+          f"(image_size actual={meta['resolution']['image_size_actual']})")
 
 
 def main() -> None:
@@ -701,6 +892,10 @@ def main() -> None:
     ap.add_argument("--output-root", type=Path, default=None, help="override the preset output root")
     ap.add_argument("--frames-root", type=Path, default=None, help="override the preset frames root")
     ap.add_argument("--model-size", default=None, help="override the preset model size")
+    ap.add_argument("--backend", choices=["sam2", "sam3"], default=None,
+                    help="segmentation backend (default: the preset's, which is sam2)")
+    ap.add_argument("--sam3-checkpoint", default=None,
+                    help="SAM3 HuggingFace checkpoint dir (default: sam3_backend.DEFAULT_CHECKPOINT_DIR)")
     ap.add_argument("--gif-mode", choices=["off", "flagged", "all"], default=None,
                     help="override the preset gif mode")
     ap.add_argument("--no-tier2", action="store_true",
@@ -709,6 +904,13 @@ def main() -> None:
                     help="force mask post-processing ON (overrides the preset; A/B with --no-postprocess)")
     ap.add_argument("--no-postprocess", dest="postprocess", action="store_false",
                     help="force mask post-processing OFF (overrides the preset)")
+    ap.add_argument("--second-pass", dest="second_pass", action="store_true", default=None,
+                    help="force the propagation second pass ON (overrides the preset)")
+    ap.add_argument("--no-second-pass", dest="second_pass", action="store_false",
+                    help="force the propagation second pass OFF (overrides the preset)")
+    ap.add_argument("--second-pass-min-neighbour-area-ratio", type=float, default=None,
+                    help="override the second pass's nucleus-capture neighbour area floor "
+                         "(default 0.5, see PipelineConfig.second_pass_min_neighbour_area_ratio)")
     args = ap.parse_args()
 
     p = presets.get_preset(args.preset)
@@ -717,6 +919,14 @@ def main() -> None:
         pipe["model_size"] = args.model_size
     if args.postprocess is not None:
         pipe["postprocess_masks"] = args.postprocess
+    if args.second_pass is not None:
+        pipe["second_pass"] = args.second_pass
+    if args.second_pass_min_neighbour_area_ratio is not None:
+        pipe["second_pass_min_neighbour_area_ratio"] = args.second_pass_min_neighbour_area_ratio
+    if args.backend is not None:
+        pipe["backend"] = args.backend
+    if args.sam3_checkpoint is not None:
+        pipe["sam3_checkpoint"] = args.sam3_checkpoint
     cfg = PipelineConfig(**pipe,
                          output_root=args.output_root or p["output_root"],
                          frames_root=args.frames_root or p["frames_root"])
@@ -735,12 +945,18 @@ def main() -> None:
         session = _build_gt_session(cfg, neurons, args.neuron_limit)
         # scope run_batch (clean + enumerate) to exactly the chains we loaded
         resolved = sorted({c["cell_name"] for c in session.chains})
+        write_run_meta(Path(cfg.output_root), preset=args.preset, cfg=cfg, neurons=resolved,
+                       gif_mode=gif_mode, tier2_on_flagged=tier2_flagged,
+                       tier2_all=tier2_all, session=session)
         run_batch(session, cfg, Path(cfg.output_root), neurons=resolved, clean=clean,
                   gif_mode=gif_mode, tier2_on_flagged=tier2_flagged, tier2_all=tier2_all)
         return
 
     # --- target worm ---
     session = _build_session(cfg)
+    write_run_meta(Path(cfg.output_root), preset=args.preset, cfg=cfg, neurons=neurons,
+                   gif_mode=gif_mode, tier2_on_flagged=tier2_flagged,
+                   tier2_all=tier2_all, session=session)
     run_batch(session, cfg, Path(cfg.output_root), neurons=neurons, clean=clean,
               gif_mode=gif_mode, tier2_on_flagged=tier2_flagged, tier2_all=tier2_all)
 

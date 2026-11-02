@@ -1,6 +1,6 @@
 # Command-line reference
 
-The four entry points and their common flags. All run from the repo root.
+Every entry point and its common flags. All run from the repo root.
 
 ## run_aval.py
 
@@ -28,8 +28,11 @@ The headless batch over many chains, with resume.
 | `--gif-mode <off\|flagged\|all>` | Override the preset's overlay-gif policy. |
 | `--no-tier2` | Disable the tier-2 auto second-pass on flagged chains. |
 | `--postprocess` / `--no-postprocess` | Force mask post-processing on/off (overrides the preset). Use the pair to A/B outputs with vs without cleanup; see [configuration.md](configuration.md). |
+| `--backend <sam2\|sam3>` | Segmentation backend. Defaults to the preset's value, which is `sam2`. `sam3` routes prompts, propagation, and mask save through the HuggingFace SAM3 adapters in `sam2_utils/sam3_backend.py`, unchanged everywhere else. |
+| `--sam3-checkpoint <dir>` | Path to the SAM3 HuggingFace checkpoint directory. Only read when `--backend sam3`. Defaults to `sam3_backend.DEFAULT_CHECKPOINT_DIR` (a local dev path that does not exist on the cluster), so a cluster SAM3 run must set it explicitly. |
 
-See [../how-to/run-a-batch.md](../how-to/run-a-batch.md).
+See [../how-to/run-a-batch.md](../how-to/run-a-batch.md). To run SAM3 on the cluster, see
+[../how-to/run-sam3-on-narval.md](../how-to/run-sam3-on-narval.md).
 
 ## gui.py
 
@@ -42,7 +45,19 @@ The napari review and correction GUI.
 | `--reviewer <name>` | Stamp labels with a reviewer name. |
 | `--point-size <n>` | Prompt point size in grid pixels. |
 | `--no-auto-zoom` | Do not auto-zoom to the mask on open. |
-| `--hires-em` | Load the full-resolution EM as the background. |
+| `--hires-em` | Load the full-resolution EM as the background. Shorthand for `--em-scale 1`. |
+| `--em-scale <n>` | Load the raw EM backdrop downscaled by `n` (1 = full res, same as `--hires-em`; 2 = half; 4 = quarter), for a lighter-memory backdrop. Useful on cluster runs where the scale-8 JPEG frames were not saved. Wins over `--hires-em` when both are given. |
+| `--anchor-only` | Only prepare/load the anchor frame of each chain opened this session, not the whole chain. For an "only fix the seed" review pass (see the design doc at `docs/superpowers/specs/2026-08-12-lasso-add-mask-tool-design.md` for the workflow this exists for); frame-stepping and resume-propagation are disabled since there is nothing to step or propagate through. Not a general default, only worth it when you specifically mean to review/correct just the seed. |
+| `--context-frames <n>` | With `--anchor-only`, load `n` frames of context on each side of the anchor (e.g. `2` = 5 frames total) instead of just the anchor frame alone, so `,`/`.` can scrub a little context around the correction. Ignored without `--anchor-only`. Default 0 (the original single-frame behaviour). |
+| `--source <dir>` | Original tree to auto-provision `--neuron` from into `--output-root` the first time that neuron is opened (skips a separate `experiments/make_review_tree.py` call). Never touches an already-provisioned neuron. |
+| `--ui-mode <review\|full>` | `review` shows only navigation, drawing and verdict controls, hiding the 10 controls and 7 of the 17 keybindings that need a SAM2/SAM3 predictor. For a reviewer on a machine with no GPU. `full` (the default) is every control. |
+
+The dock is grouped into four sections: navigation (reviewer, chains, frames), draw / view / save
+(lasso, point size, auto-zoom, save masks), model (prompts, correct, recrop; hidden entirely in
+`--ui-mode review`), and disposition (error type, approve, reject). This grouping changed when
+review mode was added: lasso moved out of the old prompts cluster into draw, save moved out of the
+old correct cluster into its own group, and the model block now sits after draw/view/save instead
+of before it. The control set itself is unchanged, only the visual order in full mode moved.
 
 See [../how-to/review-flagged-chains.md](../how-to/review-flagged-chains.md).
 
@@ -58,6 +73,32 @@ as one multi-color object on a per-neuron crop canvas. See
 | `--output-root <dir>` | Which output tree to review. |
 | `--reviewer <name>` | Stamp labels with a reviewer name. |
 
+## view_neurons.py
+
+Opens several corrected neurons together in one napari window, each as its own
+toggleable Labels layer, composited per z-slice in the shared real-world coordinate
+space. Reuses `render_review.neuron_volume` for the per-neuron remap/crop; does not
+resolve overlaps between neurons into one canonical label. With `--mesh`, also builds
+each neuron's 3D surface (reusing `sam2_utils.meshing.volume_to_mesh`) as its own
+toggleable Surface layer in the same window. With `--save-package`, also saves the
+built neurons to disk as a VAST-style labelmap package (reopen later with `--package`
+instead of rebuilding from `--tree`); combined with `--mesh`, each neuron's mesh is
+also cached into the package (one `.ply` per neuron) so `--package ... --mesh` loads
+it back instead of recomputing it. See
+[../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md](../superpowers/specs/2026-10-04-multi-neuron-2d-viewer-design.md),
+[../superpowers/specs/2026-10-04-multi-neuron-3d-mesh-view-design.md](../superpowers/specs/2026-10-04-multi-neuron-3d-mesh-view-design.md),
+[../superpowers/specs/2026-10-04-neuron-package-design.md](../superpowers/specs/2026-10-04-neuron-package-design.md),
+and
+[../superpowers/specs/2026-10-04-neuron-mesh-package-design.md](../superpowers/specs/2026-10-04-neuron-mesh-package-design.md).
+
+| Flag | Effect |
+|------|--------|
+| `--tree <dir>` | Bundle folder or output tree root to read neurons from (same per-chain layout either way). Required with `--neurons`, unless `--package` is given instead. |
+| `--neurons <names>` | Comma-separated neuron names to open together, e.g. `AVAL,AVAR,RIBL`. Required with `--tree`, unless `--package` is given instead. |
+| `--mesh` | Also build and show each neuron's 3D mesh. Slower than the 2D-only default, mesh generation is real compute per neuron. With `--package`, loads a cached mesh instead of recomputing it (fails clearly if the package has none). |
+| `--save-package <dir>` | Also save the built `--tree`/`--neurons` selection to this directory as a VAST-style labelmap package. With `--mesh`, also caches each neuron's mesh into the same package. |
+| `--package <dir>` | Load from a previously saved package instead of `--tree`/`--neurons`. Add `--mesh` to also load that package's cached meshes. |
+
 ## eval.score_batch
 
 Scores a batch run against ground truth.
@@ -70,3 +111,243 @@ Common flags: `--preset <name>`, `--no-labelmap` (skip the VOI/ARAND/ERL labelma
 metrics only). See [../how-to/evaluate-against-gt.md](../how-to/evaluate-against-gt.md). Other `eval/`
 entry points (`eval.run_erl`, `eval.registration`, `eval.diag_registration`,
 `eval.scale_registration`) are documented in `eval/README.md`.
+
+## run_perframe.py
+
+Per-frame neuron segmentation, for one or more CATMAID frames: Approach 1 (`prompt`),
+image-mode SAM2 once per node, or Approach 2 (`amg`), `SAM2AutomaticMaskGenerator` matched to
+nodes with the rest kept as competitors. Both share membrane-aware overlap resolution and F2
+scoring. Writes `results/perframe/<run>/{config.json,scores.csv,montages/}` (gitignored,
+regenerable) and appends one summary row to
+[perframe-experiments.md](../explanation/perframe-experiments.md) (committed), which also carries
+the comparison protocol for judging Approach 1's best sweep knobs against Approach 2 default and
+Approach 2 tuned on the same frame sample.
+
+```bash
+py -3 run_perframe.py --approach prompt --frames 1400 1420 --negatives on \
+    --selection metric --resolver argmax --scale 8 --model-size tiny \
+    --out results/perframe/smoke
+```
+
+| Flag | Effect |
+|------|--------|
+| `--approach prompt\|amg` | Segmentation approach. `prompt` (Approach 1, image-mode SAM2 per node) or `amg` (Approach 2, auto-mask generator + match to nodes). Default `prompt`. |
+| `--frames Z [Z ...]` | CATMAID z's to segment. Required. |
+| `--negatives on\|off` | Prompt only: pass other cells' nodes as negative points. Default `on`. Ignored with `--sweep` or `--approach amg`. |
+| `--selection pred_iou\|generous\|metric` | Prompt only: how to pick among SAM2's 3 multimask candidates. Default `metric`. Ignored with `--sweep` or `--approach amg`. |
+| `--match area\|metric` | Amg only: how to match a node to one of the AMG masks. `area` picks the smallest containing mask (no cross-node foreign exclusion, prefer `metric` when the match itself needs to be trusted); `metric` uses the F2 composite. Default `metric`. |
+| `--amg-params <json>` | Amg only: JSON object overriding `DEFAULT_AMG_PARAMS` key-by-key, e.g. `'{"points_per_side": 32}'`. |
+| `--resolver argmax\|watershed` | Overlap-resolution method (F3). Default `argmax`. Ignored with `--sweep`. |
+| `--sweep` | Loop the Approach-1 knob grid (`negatives` x `selection` x `resolver`, 12 combos) over `--frames` instead of one combo. Each combo gets its own auto-named subdirectory of `--out` (e.g. `neg_on-sel_metric-res_argmax`) and its own experiments-log row. Prompt approach only; mutually exclusive with `--tune`. |
+| `--tune` | Grid-search AMG params (`pred_iou_thresh` x `stability_score_thresh` x `points_per_side`, or `--tune-grid` override) over `--frames`, maximising `eval.perframe_score.objective`. Writes every trial to `<out>/trials.csv`, the winning params' montages/scores/config to `--out`, and a summary row (with a gameable-objective NOTE) to the experiments log. Amg only; mutually exclusive with `--sweep`. |
+| `--tune-grid <json>` | JSON object overriding the default tune grid key-by-key, e.g. `'{"points_per_side": [32]}'` (values are lists). |
+| `--scale N` | Downscale factor for the `_sam` grid. Default 8. |
+| `--model-size <size>` | SAM2 checkpoint size. Default `tiny`. |
+| `--out <dir>` | Results dir, e.g. `results/perframe/<run>`. Required. With `--sweep`, the parent dir under which each combo's subdirectory is written. |
+| `--radius N` | Node-containment radius in grid px. Default 3. |
+| `--tau T` | Membrane threshold on the normalised `[0, 1]` map. Default 0.5. |
+| `--k-max-neg N` | Cap on negative points per node, nearest first. Default 3. |
+| `--box-margin N` | Fixed px pad for the first-pass box. Default 10. |
+
+Sweep example, 12 combos over one frame:
+
+```bash
+py -3 run_perframe.py --approach prompt --sweep --frames 1400 --scale 8 \
+    --model-size tiny --out results/perframe/sweep_smoke
+```
+
+Tune example, default 12-combo AMG grid over one frame:
+
+```bash
+py -3 run_perframe.py --approach amg --tune --frames 1400 --scale 8 \
+    --model-size tiny --out results/perframe/tune_smoke
+```
+
+## eval.merge_metric
+
+Ground-truth-free bleed / dropout scorer for the target worm (roadmap Phase 0 + Phase 2). For each
+run's RAW per-chain masks it counts foreign skeleton nodes contained (a merge) and own-node dropout,
+scored against the worm's own CATMAID skeletons, so it needs no cross-worm GT and no boundary labels.
+By default it also runs a membrane-aware pass (reads the raw EM, see
+[ADR 0016](../adr/0016-membrane-map-border-to-border-bleed-detection.md)) that catches mild bleed and
+underfill, the two error classes foreign-node containment alone cannot see. Writes a
+`_merge_metric.csv` into each run tree and prints one summary line per run.
+
+```bash
+py -3 -m eval.merge_metric --root <merged_run> [--root <other> ...] [--radius N] [--no-membrane] [--tau T] [--tol PX]
+```
+
+| Flag | Effect |
+|------|--------|
+| `--radius N` | Foreign/own-node containment radius in grid px (default 3). |
+| `--no-membrane` | Skip the Phase-2 membrane pass (Phase-0-only, no EM reads). |
+| `--tau T` | Membrane threshold on the normalised `[0, 1]` map (default 0.5). See [configuration.md](configuration.md). |
+| `--tol PX` | Tolerance in px for `boundary_on_membrane` (default 2). See [configuration.md](configuration.md). |
+| `--low-iou-threshold T` | IoU floor for `frac_low_iou`; a gap-1 z-to-z transition below `T` counts as low-consistency (default 0.5). |
+| `--scale N` | Override the `_sam` grid scale, for a merged tree with no `_run_meta.json` to read it from. |
+| `--neurons "A B ..."` | Score only these neuron dirs (comma- or space-separated). Used by the sharded eval array to split one tree across CPUs. |
+| `--out-csv <path>` | Write the per-frame CSV here instead of `<root>/_merge_metric.csv`. Only valid with a single `--root`; a shard task passes `<root>/_merge_metric.shard_<i>.csv`. |
+
+Summary line fields: `foreign_frame_rate` (fraction of frames whose mask contains another neuron's
+node), `dropout_rate` (fraction whose mask lost its own node), `total_foreign`, this part is the
+Phase-0 severe-merge floor (foreign-node containment at `--radius`) and unaffected by `--no-membrane`.
+When the membrane pass ran, the line also carries `mild_bleed_rate` (the headline: a spanning membrane
+crossing with no foreign node, mild bleed the floor alone misses), `spanning_merge_rate` (spanning
+membrane crossings regardless of foreign-node status), `mean_boundary_on_membrane`, and
+`mean_underfill_fraction`. These four are absent from the line (and `None` in the returned summary)
+when `--no-membrane` is passed or the EM could not be read for any frame.
+
+The line also carries a z-to-z consistency group, scored from every chain's own adjacent-slice
+mask pairs and independent of the membrane pass: `n_transitions` (total z-to-z pairs scored),
+`n_dropout_transitions` (of those, how many touched an empty mask and so were excluded from the IoU/
+drift means below, this is the dropout signal `dropout_rate` already reports, not a low-consistency
+reading), `mean_z2z_iou` and `mean_centroid_drift_px` (mean IoU and centroid drift in px over the
+non-dropout transitions), `frac_gap1_transitions` (fraction of all transitions between consecutive
+z-slices, gap 1, as opposed to a gap left by a missing frame), and `frac_low_iou` (fraction of gap-1,
+scored (non-dropout) transitions scoring below `--low-iou-threshold`, so neither a real missed-frame
+gap nor a dropout transition gets counted as a consistency failure). This group answers a question
+the per-frame fields above cannot: whether a run's masks hold their shape from slice to slice, which
+per-slice methods have no structural reason to do and video propagation does. The group is absent
+from the line (and every one of its keys is `None` in the returned summary) when no chain in the
+tree produced at least one z-to-z transition (every chain has zero or one mask).
+
+`_merge_metric.csv` gets four matching per-frame columns alongside the existing `z`, `neuron`,
+`chain_idx`, `own_contained`, `n_foreign`, `foreign_ids`, `empty`: `spanning_merge` (bool),
+`bled_fraction` (float), `boundary_on_membrane` (float), `underfill_fraction` (float). All four are
+blank for a frame the membrane pass could not score (EM unavailable, or `--no-membrane`).
+
+`score_run` also writes a `_z_consistency.csv` into the run tree, one row per z-to-z transition, with
+columns in write order: `z_from`, `z_to`, `gap` (z distance between the two slices), `iou`,
+`centroid_drift_px`, `neuron`, `chain_idx`. `iou`/`centroid_drift_px` are blank for a transition that
+touched an empty mask.
+
+Repeat `--root` to compare runs on a single node-table load.
+
+## eval.concat_merge_shards
+
+Stitches a sharded merge-metric run back into one CSV. The sharded eval array
+(`cluster/run_eval_array.sh`) splits one tree across CPUs, each task writing its own
+`<tree>/_merge_metric.shard_<i>.csv`; this concatenates those shards into the canonical
+`<tree>/_merge_metric.csv` (identical to what a single-core `merge_metric` run would write) and
+prints the whole-tree summary.
+
+```bash
+py -3 -m eval.concat_merge_shards --tree /scratch/$USER/<tree>_merged
+```
+
+| Flag | Effect |
+|------|--------|
+| `--tree <dir>` | The merged tree whose `_merge_metric.shard_*.csv` to stitch. Required. |
+| `--out <path>` | Output CSV (default: `<tree>/_merge_metric.csv`). |
+| `--shard-glob <glob>` | Glob for the shard CSVs (default: `_merge_metric.shard_*.csv`). |
+
+## eval.retro_eval
+
+One unified table over several run trees: the merge-metric numbers plus compute columns (from each
+tree's `_timing.csv`) and legacy QC columns (from `_manifest.csv`), one row per tree. Useful for a
+per-chain wall-clock comparison alongside the accuracy numbers, for example SAM2 versus SAM3.
+
+```bash
+py -3 -m eval.retro_eval --membrane --root <tree> [--root <other> ...] --out <dir>
+py -3 -m eval.retro_eval --membrane --glob "/scratch/$USER/*_merged" --out <dir>
+```
+
+`--membrane` runs the Phase-2 membrane pass; `--min-scale N` (default 4) skips the merge-metric for
+trees coarser than that (a full-res scale-1 tree needs a lot of RAM), while still reporting its
+compute and QC columns. Membrane numbers only compare within one `_sam` scale.
+
+## export_bundle.py
+
+Builds a portable review bundle from an output tree: a directory that opens on a machine with none
+of this project's data. Zip the result and send it. Needs the raw EM store on this machine, since
+every cluster-produced chain records a dead Narval `frames_dir` and its frames are regenerated.
+
+```bash
+py -3 export_bundle.py --output-root "F:\ZhenLab\Data\output_masks\reprop_maskseed" \
+    --dest "F:\ZhenLab\Data\bundles\AIA_for_lucinda" --neurons AIAL AIAR
+```
+
+| Flag | Effect |
+|------|--------|
+| `--output-root <dir>` | The master tree to export from. Only ever read. Required. |
+| `--dest <dir>` | Bundle directory to create. Must be absent or empty unless `--force`. Required. |
+| `--neurons A B ...` | Export only these cell names. Omitted exports every neuron in the tree. |
+| `--source-tree <name>` | Provenance label recorded in the manifest and in every `meta.json`. Defaults to the output tree's directory name, which is also what `import_bundle.py` matches against, so overriding it means the import needs `--allow-tree-mismatch`. |
+| `--backend <sam2\|sam3>` | Recorded in each `meta.json`. Defaults to `sam2`. |
+| `--reprop-variant <mask_seed\|box_seed>` | Recorded in each `meta.json` when exporting a re-propagation tree. |
+| `--frames-root <dir>` | Scratch root regenerated frames are written under. Defaults to `config.FRAMES_ROOT`. |
+| `--force` | Write into a non-empty destination. Check first that it is not a returned bundle with corrections in it. |
+| `--force-frames` | Regenerate frames even for chains the bundle already has a complete set for. |
+
+The bundle also carries `data/chains.json` and `data/nodes.csv`, the slice of the CATMAID tables the
+reviewer's GUI needs, filtered to the exported neurons. Both source files are gitignored, so without
+them no chain opens on her machine. Export fails rather than writing a bundle that cannot be opened.
+See [../how-to/review-on-a-mac.md](../how-to/review-on-a-mac.md) and
+[state-and-storage.md](state-and-storage.md).
+
+## import_bundle.py
+
+Merges a returned bundle back into the master tree. Per chain it moves `masks/` and `qc.csv`; at the
+tree root it merges the reviewer's rows in `_review.csv` and `_labels.csv` row-wise, leaving the
+master's rows for chains that were never in the bundle untouched.
+
+```bash
+py -3 import_bundle.py --bundle <returned-folder> --output-root <master-tree> --dry-run
+py -3 import_bundle.py --bundle <returned-folder> --output-root <master-tree>
+```
+
+| Flag | Effect |
+|------|--------|
+| `--bundle <dir>` | The returned bundle. Validated before anything is written. Required. |
+| `--output-root <dir>` | The master tree to merge into. Required. |
+| `--dry-run` | Report what would change without writing. Runs every refusal check, including the tree check. |
+| `--allow-tree-mismatch` | Merge even though the bundle's `source_tree` does not match the target tree's directory name. Only for a tree that was renamed or copied since the export. |
+
+Run `--dry-run` first and read the list of chains it reports. Without `--allow-tree-mismatch` the
+import refuses a bundle exported from a different tree, which matters because this repo keeps
+parallel trees with identical layouts (`reprop_maskseed` next to `reprop_boxseed`, sam2 next to
+sam3) and a wrong-tree merge would silently overwrite good masks.
+
+## backfill_meta.py
+
+Writes `meta.json` into an output tree that predates it, one record per chain, from each chain's own
+`state.json`. The corrected AIA/AIY trees need this. Note that the batch pipeline does not write
+`meta.json` itself, so this and `export_bundle.py` are the only two producers.
+
+```bash
+py -3 backfill_meta.py --output-root "F:\ZhenLab\Data\output_masks\my_tree"
+```
+
+| Flag | Effect |
+|------|--------|
+| `--output-root <dir>` | The tree to backfill. Required. |
+| `--source-tree <name>` | Provenance label. Defaults to the tree's directory name. |
+| `--backend <sam2\|sam3>` | Recorded in each `meta.json`. Defaults to `sam2`. |
+| `--reprop-variant <mask_seed\|box_seed>` | Recorded in each `meta.json` for a re-propagation tree. |
+| `--overwrite` | Rewrite a `meta.json` that is already there. Without it, existing sidecars are left alone. |
+
+## launcher.py
+
+A window for picking a bundle or output tree, the neurons to review, and the mode. Settings persist
+to `~/.sam2review/profile.json`, outside the repo. It sets `SAM2_OUTPUT_ROOT` and
+`SAM2_FRAMES_ROOT` from the profile, so no config file needs editing.
+
+```bash
+py -3 launcher.py
+```
+
+There are no flags: everything it configures is in the window.
+
+## place_frames.py
+
+Copies a bundle's EM frames from a drive into a git clone that has none. See
+[../how-to/review-over-git.md](../how-to/review-over-git.md).
+
+| Flag | Effect |
+|------|--------|
+| `--clone <dir>` | The cloned bundle, which has masks but no frames. |
+| `--from <dir>` | The matching bundle on the drive, which has the frames. |
+| `--dry-run` | Report what would be copied without writing. |
+
+Safe to re-run: chains that already have their frames are skipped, so an interrupted copy
+resumes where it stopped. Exits non-zero and names the chains if the source lacks any.

@@ -22,7 +22,9 @@ py -3 gui.py --reviewer sf             # stamp your name on the labels you creat
 ```
 
 Other flags: `--output-root <dir>` (which output tree to review), `--point-size N`,
-`--no-auto-zoom`, `--hires-em` (full-res EM background, see §6). From a notebook:
+`--no-auto-zoom`, `--hires-em` (full-res EM background, see §6), `--em-scale N` (the same raw-EM
+backdrop at a chosen downscale: 1 = full res like `--hires-em`, 2 = half, 4 = quarter, for lighter
+memory; see §6). From a notebook:
 
 ```python
 from gui import launch
@@ -32,6 +34,40 @@ launch(neuron="AIAL", chain_idx=0, reviewer="sf")
 The first time you trigger a re-segmentation (`R`/`G`), the SAM2 models load (a few
 seconds + GPU memory). Everything before that, browsing, scrubbing, labeling,
 painting, needs **no GPU**.
+
+### Machine settings (recrop and SAM2)
+
+The launcher's **This machine** group holds the three paths the model needs, none of
+which travel in a bundle:
+
+- **Raw EM (tif stack)**: the full-resolution `..z<number>.tif` frames. Recrop re-reads
+  them to cut a new window, so recrop is the only thing that needs this.
+- **Data root (frames cache + scratch)**: where prepared JPEG frames are written, plus
+  other working/scratch data. Needs to be writable and roomy; a tier-2 chain's frames
+  are unique to its window and are not shared.
+- **Checkpoints**: where the SAM2 weights live or land. If the checkpoint is absent it
+  downloads on first use, about 860 MB for the `large` model.
+
+Setting these up on a reviewer's own machine, including the checkpoint and the torch
+install, is written out step by step in
+[set-up-sam2-on-a-review-machine.md](set-up-sam2-on-a-review-machine.md).
+
+**Check this machine** reports each one, plus whether torch is installed and which
+device SAM2 would run on. On Apple Silicon that is `mps`, which works but is slow, and
+which upstream still calls preliminary, so masks can differ slightly from a CUDA run.
+Reprop stays disabled until torch and a usable checkpoint folder are both present.
+
+The neuron list's **View neurons** button opens the ticked neurons together in the
+napari multi-neuron viewer (see [cli.md](../reference/cli.md)); tick at least one
+first, since an empty tick list here is not "all" the way it is for **Render video +
+mesh**. The **3D mesh** checkbox next to it also builds each neuron's 3D surface,
+real per-neuron compute, so tick it only for the few neurons you actually need in 3D.
+Results are cached at `<tree>/.view_package/`, so a second **View neurons** call for
+the same tree is fast; the cache is per neuron set, so ticking a different set of
+neurons rebuilds automatically rather than reusing someone else's cache. The **Force
+rebuild** checkbox next to it skips that cache outright: use it when masks changed
+outside `gui.py` (a cluster reprop re-run, a hand edit to the mask files), since the
+automatic staleness check only sees corrections made through `gui.py`'s own review flow.
 
 ---
 
@@ -43,13 +79,20 @@ A frame slider (top/bottom) scrubs through the chain by **frame index**. Layers
 | Layer | What it is | Editable? |
 |---|---|---|
 | **box** | A blue bounding box, an optional seed for the image-phase re-predict (see §5b). One per frame; pre-loaded with the chain's *original* box at the anchor frame. | **Yes**, press `B` (or "draw box") then drag; select+delete to remove |
+| **lasso** | An orange freehand loop for extending a mask. Press `L` (or "draw lasso") then drag a loop over the area to add; on release it unions into the mask. Addition only, if you draw too much, remove it with the mask's own eraser. | **Yes**, press `L` (or "draw lasso") then drag |
 | **prompts** | The SAM2 seed points: **green = positive**, **red = negative**. Pre-loaded with the chain's *original* seed at the anchor frame. | **Yes**, click to add (in *add* mode), select+delete to remove |
 | **skeleton** | Yellow dots = this chain's CATMAID skeleton nodes per slice. Context only, these are *not* the SAM prompts. | No |
-| **mask** | The segmentation, as a paintable label layer. **Paint here** to correct a mask by hand. | **Yes**, napari brush/eraser; `Ctrl+Z` undoes |
+| **mask** | The segmentation, as a paintable label layer. **Paint here** to correct a mask by hand. | **Yes**, napari brush/eraser; `Ctrl+Z` undoes. A viewer-level fallback routes `Ctrl+Z` here even when another layer (e.g. lasso) is active |
 | **EM** | The electron-microscopy image. | No |
 
-The dock panel on the right is grouped: **chains · frames (this chain) ·
-prompts · view · correct · label / disposition**.
+The dock panel on the right is grouped into four sections: **navigation** (reviewer, chains,
+frames this chain), **draw / view / save** (lasso, point size, auto-zoom, save masks), **model**
+(prompts, correct, recrop), and **disposition** (error type, approve, reject). Passing
+`--ui-mode review` (see [cli.md](../reference/cli.md)) hides the whole model section for a
+reviewer with no GPU; everything else is unchanged. This grouping changed when review mode was
+added: lasso used to sit in the prompts cluster and save used to sit in the correct cluster, and
+the model section used to come before view instead of after save. No control was added or
+removed, only the visual order in the dock moved.
 
 ---
 
@@ -95,6 +138,7 @@ CHAIN cycle, and `↻ refresh queue` re-reads from disk in whichever mode you're
 | `.` / `,` | next / prev flagged **frame** (this chain) |
 | `p` / `n` | set new prompt points to **p**ositive / **n**egative |
 | `B` | **draw box**, activate the box layer to drag a bounding box on this frame |
+| `L` | **draw lasso**, activate the lasso layer to drag a freehand loop that unions into the mask on release |
 | `R` | **re-run image phase**, re-predict the anchor mask from the current points and/or box |
 | `G` | **resume propagation**, re-track from the current frame over the correction |
 | `S` | **save masks**, persist the current mask layer to disk now (no QC/propagation) |
@@ -103,6 +147,11 @@ CHAIN cycle, and `↻ refresh queue` re-reads from disk in whichever mode you're
 | `W` / `O` | mark the current **frame** **w**rong / **o**k (uses the error-type picker) |
 | `A` / `X` | **approve** / **reject** the whole **chain** |
 | `Z` | zoom the camera back onto the mask |
+| `Ctrl+Z` | undo, works from any layer, not just mask (falls back to the mask's own undo) |
+
+`L` can occasionally be shadowed by napari's own keybindings depending on which layer is
+active, so the "draw lasso (L)" dock button next to "draw box" is the reliable way to
+activate it.
 
 Most actions also have buttons in the dock. The per-frame **mark wrong** / **mark ok**
 are keyboard-only (`W` / `O`); their buttons were dropped to keep the dock compact. The
@@ -133,7 +182,7 @@ never re-tracked:
    neighbours; select and delete bad points. (**Reset prompts** restores the original
    seed, §5e.)
 3. **Re-run image phase** (`R`), re-predicts the anchor mask from your points into the
-   **mask** layer. Tweak it by painting if needed.
+   **mask** layer. What comes back is cleaned up first (§5h). Tweak it by painting if needed.
    - *Optional box.* If points alone won't capture the neurite's full extent, press
      `B` (or "draw box") and drag a box around it, then `R`. The box and any points go
      into SAM2 together (box-only works too). The box shapes only this image-phase
@@ -175,6 +224,13 @@ If a tier-2 chain's crop still clips the cell (the membrane runs off the edge of
   region you want (anywhere on the frame, so you can re-centre, not just grow), then
   **confirm recrop**. **cancel recrop** leaves the chain unchanged.
 
+**Recropping inside a review bundle.** This works, and the bundle stays a bundle: the
+new frames are moved into the chain's own `frames/` folder and recorded relative, so it
+still opens on any machine. When you send the bundle back, `import_bundle` notices the
+new crop window and carries it home with the masks, then clears the master tree's
+recorded frames so they are re-prepared in the right window. It reports every chain
+whose window changed, since that is a bigger event than a mask edit.
+
 Either way the re-run re-prepares the cropped frames, re-seeds the anchor, re-propagates,
 and rewrites `masks/` + `qc.csv` + `state.json`, then reopens the chain so you see the
 result. It is slow (it re-reads every frame at full resolution) and blocks until done,
@@ -187,6 +243,30 @@ While walking frames, **mark FRAME wrong** (`W`) / **mark FRAME ok** (`O`) recor
 per-frame verdict for the current frame using the selected error type. Marking a
 *non-flagged* frame wrong is especially valuable, it's a "silent error" the rule
 missed, which the queue alone can never surface.
+
+### 5h. Clean up what the re-predict returns
+SAM2's raw image-mode mask on an EM frame usually arrives with detached fuzz sitting
+outside the cell and a frayed, netty boundary. **clean re-predict** decides what happens
+to that before the mask lands in the layer, and it only ever touches the `R` preview:
+propagated masks, painted pixels, and anything already on disk are left alone.
+
+- **drop specks** (the default) removes detached components below **min island (px)** and
+  keeps every larger one, so a genuine second cross-section of the cell survives. It also
+  fills interior holes below the same size and smooths the boundary by **smooth (px)**.
+- **largest blob only** additionally keeps a single component. Reach for it when the
+  re-predict bled onto a neighbouring cell, and remember it will erase a real second
+  process without saying so.
+- **off (raw SAM2)** hands you the mask exactly as the model returned it.
+
+Both sizes are in pixels of the frame you are looking at, which is why they are knobs
+rather than fixed numbers: a tier-2 `_pcrop` chain is finer than a scale-8 `_sam` one and
+wants larger values for the same physical size. The defaults, 64 px and 1 px, are sized
+for scale-8. Set either to 0 to turn that one op off. The log line after each `R` reports
+the pixels before and after, so you can see what the cleanup took.
+
+This is the same deterministic, model-free sequence the batch runs when
+`postprocess_masks` is on (`pipeline.clean_mask`), so the preview you correct matches what
+a batch run would have delivered.
 
 ---
 
@@ -208,6 +288,11 @@ whole chain was propagated and saved in that crop. The GUI detects this from the
 - `--hires-em` loads the **full-resolution EM** as the background (lazy) and scales
   the still-scale-8 mask/points to overlay it, so the EM context is crisp for judging
   a fix. The mask stays blocky, that's expected.
+- `--em-scale N` is the same raw-EM backdrop at a chosen downscale: `1` is full res (identical to
+  `--hires-em`), `2` is half, `4` is quarter, each lighter on memory. An explicit `--em-scale` wins
+  over `--hires-em`. This is read straight from the raw EM tifs rather than the scale-8 JPEG frames,
+  so it is the way to get a backdrop at all on a cluster run where the JPEG frames were never saved.
+  The mask still overlays at its saved resolution regardless of the backdrop scale.
 
 Note: the GUI's re-predict (`R`) uses the legacy full-frame scale-8 path (it matches
 the displayed frame), so it won't reproduce the batch's high-res-crop anchor
@@ -231,7 +316,8 @@ All under your `--output-root`:
 ### Error types
 `wrong_object` (segmented the wrong neurite) · `under` (mask too small / misses part)
 · `over` (mask too big / grabs background) · `bleed` (leaks into a neighbour) ·
-`fragmented` (broken into pieces) · `missing` (no/empty mask) · `other`.
+`fragmented` (broken into pieces) · `missing` (no/empty mask) · `nucleus` (segmented
+the nucleus, not the cell) · `other`.
 
 ---
 

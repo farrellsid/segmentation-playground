@@ -143,3 +143,31 @@ def smooth_edges(mask: np.ndarray, *, radius: int = 2) -> np.ndarray:
         return m
     footprint = disk(int(radius))
     return opening(closing(m, footprint), footprint).astype(bool)
+
+
+def clean_mask(mask: np.ndarray, *, open_px: int = 1, close_px: int = 1,
+               keep_largest_cc: bool = True, fill_holes: bool = True,
+               remove_islands_min_size: int = 0, fill_small_holes_area: int = 0,
+               smooth_radius: int = 0) -> np.ndarray:
+    """Run the whole model-free cleanup stage over one mask, in the order the batch uses.
+
+    ``postprocess_mask`` (open -> close -> largest-CC -> fill) first, then the three
+    size-aware ops, each skipped at its off value: islands below ``remove_islands_min_size``
+    px dropped, interior holes below ``fill_small_holes_area`` px filled, boundary smoothed
+    by a ``smooth_radius`` px close-then-open. Sizes are in pixels of whatever space the
+    mask is in, so a _pcrop mask at a finer crop_scale wants larger numbers than a scale-8
+    _sam one.
+
+    This is the sequence the orchestrator ran inline; both it and the GUI's image-phase
+    re-predict call it, so the human previewing a correction sees the same cleanup the
+    batch would have applied.
+    """
+    cleaned = postprocess_mask(mask, open_px=open_px, close_px=close_px,
+                               keep_largest_cc=keep_largest_cc, fill_holes=fill_holes)
+    if remove_islands_min_size > 0:
+        cleaned = remove_small_islands(cleaned, min_size=remove_islands_min_size)
+    if fill_small_holes_area > 0:
+        cleaned = fill_small_holes(cleaned, area_threshold=fill_small_holes_area)
+    if smooth_radius > 0:
+        cleaned = smooth_edges(cleaned, radius=smooth_radius)
+    return cleaned

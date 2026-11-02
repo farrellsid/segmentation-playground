@@ -30,6 +30,32 @@ def select_anchor(chain: dict, annotate_df: pd.DataFrame) -> tuple[int, int]:
     return midnode, anchor_catmaid_z
 
 
+def centreline_by_z(chain: dict, annotate_df: pd.DataFrame) -> dict:
+    """{catmaid_z: (x_tif, y_tif)} centreline point for each z in the chain's node
+    z-range. Uses the chain's own nodes (real and virtual); a z with no node is
+    linearly interpolated between the nearest present z's (which is what a virtual
+    node already is). Foreign neurons' nodes are never used."""
+    ids = {str(n) for n in chain["nodes"]}
+    sub = annotate_df[annotate_df["node_id"].astype(str).isin(ids)]
+    by_z: dict[int, tuple[float, float]] = {}
+    for z, x, y in zip(sub["z"].astype(int), sub["x_tif"].astype(float), sub["y_tif"].astype(float)):
+        by_z.setdefault(int(z), (float(x), float(y)))   # first node wins on a shared z
+    if not by_z:
+        return {}
+    present = sorted(by_z)
+    out: dict[int, tuple[float, float]] = {}
+    for z in range(present[0], present[-1] + 1):
+        if z in by_z:
+            out[z] = by_z[z]
+            continue
+        lo = max(p for p in present if p < z)
+        hi = min(p for p in present if p > z)
+        t = (z - lo) / (hi - lo)
+        (x0, y0), (x1, y1) = by_z[lo], by_z[hi]
+        out[z] = (x0 + t * (x1 - x0), y0 + t * (y1 - y0))
+    return out
+
+
 def build_prompts(anchor_node_id: int, catmaid_z: int, annotate_df: pd.DataFrame,
                   *, scale: int, k_max_neg: int, neg_radius: int) -> Prompts:
     """Anchor skeleton node (positive) + K nearest same-z nodes (negative), in _sam.
@@ -136,7 +162,8 @@ def _negative_points(prompts: Optional[Prompts]) -> np.ndarray:
 def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional[Prompts],
                         image_hw: tuple[int, int], *, contain_radius_px: int,
                         area_bounds: tuple[float, float],
-                        exclude_neg: bool = False) -> tuple[int, np.ndarray, float]:
+                        exclude_neg: bool = False,
+                        generous: bool = False) -> tuple[int, np.ndarray, float]:
     """Pick the best of SAM2's multimask candidates for an anchor seed.
 
     Ranking is lexicographic and *graceful*, it always returns one candidate, so a
@@ -153,13 +180,24 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
                                             usually one huge clean blob (lcc ~ 1.0) that
                                             would otherwise win on step 4
       4. single-CC health (largest_cc_frac) : one clean blob over fragmented membrane
-      5. SAM predicted IoU (scores)       : final tiebreak among otherwise-equal masks
+      5. tiebreak (generous)              : SAM predicted IoU (scores) by default; with
+                                            `generous=True`, the LARGER area_frac instead,
+                                            among candidates already tied on steps 1-4. The
+                                            area gate at step 3 outranks the tiebreak, so a
+                                            whole-frame over-cap blob loses to any candidate
+                                            that passes the gate, EVEN under `generous`. But
+                                            if every candidate exceeds the cap, area_ok ties
+                                            at 0 for all of them and generous then picks the
+                                            largest (worst) of the failing candidates, a
+                                            degenerate slice the merge-metric will surface,
+                                            not a case this tiebreak protects against.
 
     Everything is judged in the space the masks live in (the caller passes matching
     `prompts`, `image_hw`, and `contain_radius_px`), so this is transform-free like
     score_anchor. The chosen mask still only sources the video-seed *box*; the
     positive seed point is unchanged, so a multimask pick never moves the seed point.
-    With `exclude_neg=False` the key is byte-identical to the original ranking.
+    With `exclude_neg=False` and `generous=False` the key is byte-identical to the
+    original ranking.
     Returns (best_idx, mask_bool, score).
     """
     masks = np.asarray(masks).astype(bool)
@@ -178,21 +216,43 @@ def _select_anchor_mask(masks: np.ndarray, scores: np.ndarray, prompts: Optional
         _, lcc = _largest_cc_frac(m)
         score = float(scores[i]) if i < scores.size else 0.0
         area_ok = int(min_af <= area_frac <= max_af)
+        tiebreak = area_frac if generous else score
         if exclude_neg:
             no_neg = int(not any(
                 _point_in_mask(m, float(nx), float(ny), contain_radius_px) for nx, ny in negs))
-            key = (int(contained), no_neg, area_ok, lcc, score)
+            key = (int(contained), no_neg, area_ok, lcc, tiebreak)
         else:
-            key = (int(contained), area_ok, lcc, score)
+            key = (int(contained), area_ok, lcc, tiebreak)
         if best_key is None or key > best_key:
             best_idx, best_key = i, key
     return best_idx, masks[best_idx], (float(scores[best_idx]) if best_idx < scores.size else 0.0)
+
+
+def mask_to_low_res_logits(mask: np.ndarray) -> np.ndarray:
+    """Convert a full-resolution boolean mask into SAM2's 1x256x256 low-res logits
+    format, so a previously-saved mask can stand in for a `mask_input` hint.
+
+    SAM2's `mask_input` contract (verified against the installed SAM2ImagePredictor.predict
+    docstring) is a low-resolution mask, `1xHxW` with `H=W=256`, "typically coming from a
+    previous prediction iteration", i.e. real logits, not a binary mask. This resizes the
+    mask to 256x256 (nearest-neighbour, preserves the hard edge) and maps True to +8.0 and
+    False to -8.0, values far enough from 0 that SAM2's internal 0-threshold reliably
+    recovers the same shape.
+    """
+    import cv2
+
+    m = mask.astype(np.uint8)
+    resized = cv2.resize(m, (256, 256), interpolation=cv2.INTER_NEAREST)
+    logits = np.where(resized > 0, 8.0, -8.0).astype(np.float32)
+    return logits[np.newaxis, :, :]
 
 
 def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
                   multimask: bool = False, select_contain_radius_px: int = 0,
                   select_area_bounds: tuple[float, float] = (0.0, 1.0),
                   select_exclude_neg: bool = False,
+                  select_generous: bool = False,
+                  mask_input: Optional[np.ndarray] = None,
                   ) -> tuple[np.ndarray, float, np.ndarray]:
     """Run image-mode SAM2 on the anchor frame.
 
@@ -205,12 +265,18 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
     *always* computes all 3 candidates regardless of the flag (it only slices the
     output, see sam2/modeling/sam/mask_decoder.py), and the heavy image-encoder
     `set_image` runs once either way; the only added work is scoring 3 masks on CPU.
-    The selection params are only consulted when `multimask=True`.
+    The selection params are only consulted when `multimask=True`. `select_generous`
+    forwards to `_select_anchor_mask`'s `generous` tiebreak (prefer the larger
+    gate-passing candidate over the higher-scoring one); default False is unchanged.
 
     A `prompts.box_sam` (xyxy in `image_sam` space) is forwarded as SAM2's `box` seed,
     so a human-drawn box (GUI) shapes the mask alongside any points. Points are passed
     as None when there are none, so a box-only seed is valid. This is a no-op for the
     batch, whose box_sam is None here (box_from_mask runs AFTER this call).
+
+    `mask_input`, when given, is a `1x256x256` low-res logits array forwarded straight to
+    SAM2's own `mask_input` parameter (see `mask_to_low_res_logits` to build one from a
+    saved boolean mask); `None` (default) omits it, unchanged from today.
 
     Lift from: 'Image Prediction' cell.
     The GUI refinement loop wraps this call (re-predict on each point/box edit).
@@ -221,20 +287,23 @@ def image_predict(image_predictor, image_sam: np.ndarray, prompts: Prompts, *,
     labs = np.asarray(prompts.labels, dtype=int)
     has_pts = len(pts) > 0
     box = None if prompts.box_sam is None else np.asarray(prompts.box_sam, dtype=float)
+    kwargs = dict(
+        point_coords=pts if has_pts else None,
+        point_labels=labs if has_pts else None,
+        box=box,
+        multimask_output=multimask,
+    )
+    if mask_input is not None:
+        kwargs["mask_input"] = mask_input
     with torch.inference_mode():
         image_predictor.set_image(image_sam)
-        masks, scores, logits = image_predictor.predict(
-            point_coords=pts if has_pts else None,
-            point_labels=labs if has_pts else None,
-            box=box,
-            multimask_output=multimask,
-        )
+        masks, scores, logits = image_predictor.predict(**kwargs)
     if not multimask:
         return masks[0].astype(bool), float(scores[0]), logits
     best, mask_b, score = _select_anchor_mask(
         masks, scores, prompts, masks.shape[1:],
         contain_radius_px=select_contain_radius_px, area_bounds=select_area_bounds,
-        exclude_neg=select_exclude_neg)
+        exclude_neg=select_exclude_neg, generous=select_generous)
     return mask_b.astype(bool), score, logits[best:best + 1]
 
 
@@ -343,6 +412,7 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
                         multimask: bool = False, select_contain_radius_px: int = 0,
                         select_area_bounds: tuple[float, float] = (0.0, 1.0),
                         select_exclude_neg: bool = False,
+                        select_generous: bool = False,
                         ) -> tuple[np.ndarray, float, "alignment.CropWindow", "Prompts"]:
     """Image-mode anchor prediction on a high-res crop (default path).
 
@@ -397,5 +467,6 @@ def anchor_crop_predict(image_predictor, image_full: np.ndarray, full_hw: tuple[
     mask_crop, score, _logits = image_predict(
         image_predictor, crop_img, prompts_crop, multimask=multimask,
         select_contain_radius_px=select_contain_radius_px,
-        select_area_bounds=select_area_bounds, select_exclude_neg=select_exclude_neg)
+        select_area_bounds=select_area_bounds, select_exclude_neg=select_exclude_neg,
+        select_generous=select_generous)
     return mask_crop, score, cw, prompts_crop

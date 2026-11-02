@@ -14,6 +14,17 @@
 # Submit:
 #   cd ~/projects/def-mzhen/fsid/segmentation-playground
 #   sbatch cluster/run_array.sh
+#
+# Optional SAM3 A/B (unset means an unchanged SAM2 run, same as before these existed).
+# PRESET selects the config; the two SAM3 whole-set runs are:
+#   sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,OUT_ROOT=/scratch/$USER/target_perslice_only_guard_sam3 cluster/run_array.sh
+#   sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3 cluster/run_array.sh
+#
+# Optional propagation second pass (unset means no --second-pass flag, same as before this
+# existed). Set SECOND_PASS=1 on top of a propagation-preset run to turn it on; it writes into
+# whatever OUT_ROOT you give it, a SEPARATE tree from the plain-propagation run, the second pass
+# does not save a plain-propagation copy on its own:
+#   sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=/path/to/ckpt,SECOND_PASS=1,OUT_ROOT=/scratch/$USER/target_tier2_s1forced_neg_sam3_secondpass cluster/run_array.sh
 
 #SBATCH --job-name=sam2-target
 #SBATCH --account=def-mzhen        # bare account; Slurm auto-routes to _gpu via --gres
@@ -29,15 +40,25 @@ set -euo pipefail
 # --- paths (edit for your account) -------------------------------------------
 REPO=$HOME/projects/def-mzhen/fsid/segmentation-playground
 export SAM2_WORM_PATH=$HOME/projects/def-mzhen/fsid/SAM2_test_NR_raw
-SHARD_ROOT=/scratch/$USER/target_shards
-CHUNKS=$REPO/cluster/neuron_chunks.txt
+# Each array task writes its own chunk_<id> shard here, merged afterwards. The SAM3
+# runs set OUT_ROOT to point this at a SAM3-specific root, so shards stay per-task
+# (no shared-tree contention) and merge_shards.py / stage_download.sh work unchanged.
+SHARD_ROOT=${OUT_ROOT:-/scratch/$USER/target_shards}
+# Which neuron chunk file to read. Defaults to the full-run manifest (neuron_chunks.txt,
+# all ALL_NEURONS). Override with CHUNKS=$REPO/cluster/exp_neuron_chunks.txt to restrict a
+# run to the 16 EXP_NEURONS (e.g. the SAM3 A/B and full-res SAM3 rounds), matching the
+# array size to that file's line count, without mutating the full-run manifest.
+CHUNKS=${CHUNKS:-$REPO/cluster/neuron_chunks.txt}
 
 # --- environment -------------------------------------------------------------
 # opencv/scipy-stack/ipykernel supply cv2, numpy/scipy/pandas/matplotlib/Pillow, and
 # psutil (they live in modules, not the venv), so load them BEFORE activating the venv.
 module load StdEnv/2023 gcc/12.3 python/3.11 cuda/12.2 cudnn/9.2.1.18 \
     opencv/4.13.0 scipy-stack/2026a ipykernel/2026a
-source $HOME/sam2env/bin/activate
+# VENV is configurable so the SAM3 A/B activates ~/sam3env (transformers>=5.13) without
+# touching the SAM2 ~/sam2env. Unset defaults to sam2env, so the baseline run is unchanged.
+VENV=${VENV:-$HOME/sam2env}
+source "$VENV/bin/activate"
 
 cd "$REPO"
 mkdir -p cluster/logs "$SHARD_ROOT"
@@ -51,14 +72,47 @@ if [ -z "$NEURONS" ]; then
 fi
 echo "[run_array] task $SLURM_ARRAY_TASK_ID neurons: $NEURONS"
 
+# --- optional backend pass-through --------------------------------------------
+# Unset, these reproduce the SAM2 baseline run exactly: PRESET defaults to original,
+# SAM_BACKEND defaults to sam2 (explicit, the same effective value the preset already
+# sets), and SAM3_CKPT stays empty so no extra flag is appended. OUT_ROOT (the shard
+# root) is handled above where SHARD_ROOT is set, so SAM3 shards stay per-task like SAM2.
+# The two SAM3 whole-set runs set PRESET to the matching baseline preset
+# (original_perslice_only_guard for per-slice, original_tier2_s1forced_neg for propagation).
+PRESET=${PRESET:-original}
+SAM_BACKEND=${SAM_BACKEND:-sam2}
+SAM3_CKPT=${SAM3_CKPT:-}
+
+BACKEND_ARGS=(--backend "$SAM_BACKEND")
+if [ -n "$SAM3_CKPT" ]; then
+    BACKEND_ARGS+=(--sam3-checkpoint "$SAM3_CKPT")
+fi
+
+# --- optional propagation second-pass pass-through -----------------------------
+# Unset, no flag is appended, same as every existing run (second_pass defaults False
+# in PipelineConfig, so this only matters for propagation-mode presets, per_slice
+# presets ignore it). SECOND_PASS=1 turns it on; SECOND_PASS_AREA_RATIO overrides the
+# nucleus-capture neighbour-eligibility floor (default 0.5) if set.
+SECOND_PASS=${SECOND_PASS:-}
+SECOND_PASS_AREA_RATIO=${SECOND_PASS_AREA_RATIO:-}
+
+if [ -n "$SECOND_PASS" ]; then
+    BACKEND_ARGS+=(--second-pass)
+fi
+if [ -n "$SECOND_PASS_AREA_RATIO" ]; then
+    BACKEND_ARGS+=(--second-pass-min-neighbour-area-ratio "$SECOND_PASS_AREA_RATIO")
+fi
+
 # --- run ---------------------------------------------------------------------
 # Frame cache goes to node-local $SLURM_TMPDIR (fast, private, auto-cleaned) so
 # concurrent tasks do not contend on the network filesystem regenerating JPEGs.
+# Each task writes its own shard: $SHARD_ROOT/chunk_<id> (SHARD_ROOT = OUT_ROOT when set).
 python batch.py \
-    --preset original \
+    --preset "$PRESET" \
     --neurons $NEURONS \
     --output-root "$SHARD_ROOT/chunk_${SLURM_ARRAY_TASK_ID}" \
-    --frames-root "$SLURM_TMPDIR/frames"
+    --frames-root "$SLURM_TMPDIR/frames" \
+    "${BACKEND_ARGS[@]}"
 
 echo "[run_array] task $SLURM_ARRAY_TASK_ID done"
 

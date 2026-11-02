@@ -68,8 +68,10 @@ import pandas as pd
 # Verdict vocabulary. 'ok' is the implicit good label; these tag *why* a mask is
 # wrong, which is what makes the eventual detector diagnosable per failure mode.
 # Mirrors calibration.ERROR_TYPES (kept in sync deliberately, same meaning) so a
-# shelved-tool gold set and a GUI-collected set share one vocabulary.
-ERROR_TYPES = ("wrong_object", "under", "over", "bleed", "fragmented", "missing", "other")
+# shelved-tool gold set and a GUI-collected set share one vocabulary. As of 2026-07-29 no
+# calibration module exists in this repo, so the mirror only exists on this side; if calibration
+# is ever reintroduced, add "nucleus" there too.
+ERROR_TYPES = ("wrong_object", "under", "over", "bleed", "fragmented", "missing", "nucleus", "other")
 
 # Frame roles: why a row exists. Drives the train/eval split and the selection-
 # bias guard (sampled rows are the only window onto silent errors).
@@ -99,8 +101,11 @@ _QC_FEATURE_COLS = [
     "area_ratio", "temporal_iou", "pred_iou", "logit_conf",
 ]
 
-# The (neuron, chain_idx, z) primary key: one row per labelled frame.
-_KEY = ["neuron", "chain_idx", "z"]
+# The (neuron, chain_idx, z) primary key: one row per labelled frame. ``_append``
+# upserts on it, and ``import_bundle`` de-duplicates a returned bundle's rows
+# against a master ledger on it.
+KEY_COLUMNS = ("neuron", "chain_idx", "z")
+_KEY = list(KEY_COLUMNS)
 
 
 def _now() -> str:

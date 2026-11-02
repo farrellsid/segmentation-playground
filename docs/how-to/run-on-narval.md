@@ -86,3 +86,59 @@ links into the shards.
 - **Module set must match the venv.** numpy, scipy, pandas, matplotlib, Pillow, and psutil are
   provided by `scipy-stack` and `ipykernel`, not the venv, so the batch scripts load the exact same
   modules before activating it.
+
+## Resolution experiments (a separate, small comparison)
+
+To compare ways of spending compute on resolution (design:
+[../superpowers/specs/2026-07-06-fullres-resolution-experiments-design.md](../superpowers/specs/2026-07-06-fullres-resolution-experiments-design.md)),
+run the experiment presets on the fixed `EXP_NEURONS` subset. These are separate from the
+full target-worm run and write their own `/scratch/$USER/<preset>_*` trees. Chunks are 1
+neuron each (`cluster/exp_neuron_chunks.txt`, array 0-15, so the heavier per-slice presets
+isolate each neuron and AVAL cannot time out a shared chunk); submit one array per variant, then
+merge each:
+
+```bash
+cd ~/projects/def-mzhen/fsid/segmentation-playground
+git pull                                    # get the presets + run_exp.sh
+sbatch --job-name=exp_fullres     --export=ALL,EXP_PRESET=original_fullres     cluster/run_exp.sh
+sbatch --job-name=exp_wholeimg_s4 --export=ALL,EXP_PRESET=original_wholeimg_s4 cluster/run_exp.sh
+sbatch --job-name=exp_tier2forced --export=ALL,EXP_PRESET=original_tier2forced cluster/run_exp.sh
+sbatch --job-name=exp_bigimg      --export=ALL,EXP_PRESET=original_bigimg      cluster/run_exp.sh
+sbatch --job-name=exp_tier2_s1    --export=ALL,EXP_PRESET=original_tier2_s1    cluster/run_exp.sh   # scale-1 tier-2 (the cheap resolution win)
+# merge each after its array succeeds (use the job id sbatch printed):
+sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_fullres     cluster/run_merge_exp.sh
+sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_wholeimg_s4 cluster/run_merge_exp.sh
+sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_tier2forced cluster/run_merge_exp.sh
+sbatch --dependency=afterok:<jobid> --export=ALL,EXP_PRESET=original_bigimg      cluster/run_merge_exp.sh
+```
+
+`original_wholeimg_s4` is the scale control: whole image like `original_fullres` but at
+scale 4, so comparing the two confirms whether whole-image `scale` changes the masks (it
+should not, since SAM2 resizes both to 1024).
+
+Each merged tree carries a `_run_meta.json` (preset, knobs, git commit, actual SAM2
+`image_size`) for post-hoc interpretation. `original_bigimg` (`image_size=2048`) is the
+risky one: it may OOM on the 40GB A100 or fail the post-build `image_size` assertion, so an
+empty shard with an OOM or assertion error in its log is expected-failure, check the log and
+`_run_meta.json`.
+
+### Per-slice reseeding variant
+
+To test per-slice propagation with reseeding at slice boundaries, first run a downscaled
+local smoke test on your GPU. `original_perslice` normally forces a full-res tier-2 pass
+(`chain_crop_scale=1`), which already OOM'd once at full res, so the local smoke adds
+`--no-tier2`: that keeps the run on the preset's first, downscaled `_sam` pass (`scale=8`)
+and skips the full-res crop entirely. Full-res per-slice is CCDB-only, run it there instead:
+
+```bash
+py -3 batch.py --preset original_perslice --neurons AIYL --model-size tiny --no-tier2 --clean
+py -3 -m eval.merge_metric --root <that run's output_root>
+```
+
+Then submit the full run on Narval:
+
+```bash
+sbatch --job-name=exp_perslice --export=ALL,EXP_PRESET=original_perslice cluster/run_exp.sh
+```
+
+The fourth comparison point is the full `original` run you already have.

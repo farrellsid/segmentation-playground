@@ -22,11 +22,20 @@ class PipelineConfig:
     drift later.
     """
     # model / resolution
+    backend: str = "sam2"                  # "sam2" (default, unchanged) or "sam3"
+    sam3_checkpoint: Optional[str] = None  # SAM3 HF checkpoint dir; None -> adapter default
     model_size: str = "large"          # tiny / small / base_plus / large; read at predictor-build
     scale: int = 8                     # SAM2 input downscale (1 = full-res)
     save_downscale: int = 8            # on-disk mask downscale; == scale is canonical.
                                        # Diverge only if you want interpolated
                                        # higher-res Blender masks.
+    image_size: Optional[int] = None   # override SAM2's internal input resolution (px);
+                                       # None keeps the checkpoint default (1024). SAM2
+                                       # resizes every frame/crop to this size, so raising
+                                       # it is the only in-model way to feed more pixels
+                                       # (memory ~quadratic; off-distribution for the
+                                       # pretrained encoder). Read at predictor-build; the
+                                       # actual value is asserted post-build (setup.py).
 
     # prompt construction
     k_max_neg: int = 7                 # max negative points per object
@@ -170,6 +179,13 @@ class PipelineConfig:
     # default OFF so it can be measured against plain multimask selection.
     multimask_exclude_neg: bool = False
 
+    # Generous-capped multimask pick (roadmap Phase 1 item 3). When True (and
+    # multimask_anchor on), among candidates that contain the node, are single-CC, and pass
+    # the area gate, prefer the LARGEST area rather than the highest score, so a soma mask
+    # includes the nucleus and reaches the outer membrane. The area gate's upper bound still
+    # rejects whole-frame blobs. Default False reproduces the current ranking exactly.
+    multimask_generous: bool = False
+
     # paths (project-static paths like WORM_PATH stay in sam2_utils.config)
     output_root: Optional[Path] = None     # e.g. .../output_masks; per-chain subdir is derived
     frames_root: Optional[Path] = None     # parent dir for SAM2 JPEG frame folders
@@ -189,6 +205,38 @@ class PipelineConfig:
                                        # (requires the anchor mask to be in the propagation space:
                                        # legacy _sam or tier-2 _pcrop, NOT tier-1 crop_anchor _crop)
     box_margin_frac: float = 0.0       # %-of-bbox-size box pad when seed_box == "frac" (underfill fix)
+
+    # Per-pass tier-2 seed overrides (roadmap Phase 1 close-out). When set (not None), the
+    # tier-2 rerun (batch, under tier2_all or tier2_on_flagged) applies these instead of the
+    # base value, so the first _sam pass and the tier-2 crop pass can seed differently, e.g.
+    # a generous, negative-free first pass to size the crop (chain_crop_from_mask), then
+    # negatives in the crop. None = inherit the base value (current behaviour).
+    tier2_k_max_neg: Optional[int] = None
+    tier2_seed_negatives: Optional[bool] = None
+    tier2_multimask_generous: Optional[bool] = None
+
+    # Per-slice re-seeding (roadmap Phase 1 item 1). When True, run_chain segments each
+    # slice independently in the chain crop, re-seeded from that slice's own node, instead
+    # of seeding one anchor and propagating. Memory cannot carry the wrong cell across
+    # slices. Default False keeps the propagation path byte-identical.
+    per_slice_reseed: bool = False
+
+    # Per-slice blow-up guard (roadmap Phase 1 close-out). When True (per_slice_reseed only),
+    # a post-pass rejects any slice whose mask area exceeds blowup_area_factor times the
+    # chain's median non-empty area (a per-frame explosion with no memory to catch it) and
+    # replaces it with the nearest accepted slice's mask, flagging the guarded frames for
+    # review. Default False keeps segment_per_slice's output unchanged.
+    blowup_guard: bool = False
+    blowup_area_factor: float = 25.0
+
+    # Post-hoc second pass for propagation chains (roadmap: propagation second-pass design,
+    # 2026-07-30). When True (propagation-mode chains only, cfg.per_slice_reseed=False), a
+    # post-pass re-segments frames eval.merge_metric.score_chain flags (dropout, foreign-node
+    # bleed, lost own node) via a neighbour mask-prompt, falling back to a neighbour-copy when
+    # re-segmentation is not possible or does not pass a sanity check. Default False keeps
+    # every existing propagation run byte-identical.
+    second_pass: bool = False
+    second_pass_min_neighbour_area_ratio: float = 0.5
 
     # mask post-processing -> deterministic, no model. Runs before
     # save+QC so QC scores the delivered mask. Off = baseline. Kernels are in

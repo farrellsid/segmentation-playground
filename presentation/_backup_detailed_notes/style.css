@@ -1,0 +1,42 @@
+/* Global deck styles. Slidev auto-loads ./style.css across every slide, unlike a
+   per-slide <style> block, which is scoped to its own slide. */
+
+/* Content slides: pin the title to the top-left (as in the original), and centre
+   everything else vertically in the space BELOW it. The padding-top reserves a
+   strip for the title so tall figures do not run under it. The title slide
+   (class: text-center) is excluded so its cover layout is untouched. */
+.slidev-layout:not(.text-center) {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-top: 5rem;
+  position: relative;
+}
+.slidev-layout:not(.text-center) h1 {
+  position: absolute;
+  top: 1.6rem;
+  left: 3rem;
+  right: 3rem;
+  margin: 0;
+}
+
+/* Figures: centred, native aspect, bounded height. Set here in real CSS because
+   UnoCSS arbitrary vh classes (max-h-[..vh]) render inconsistently in export. */
+/* Heights are in px against the slide canvas (~980x550), not vh: in export the
+   viewport height is not the slide height, so vh caps misfire. */
+.slidev-layout:not(.text-center) img {
+  max-height: 330px !important;
+  max-width: 90% !important;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
+}
+/* Slides that stack two figures cap each so the pair fits below the title. */
+.slidev-layout:not(.text-center) .fig-two img { max-height: 150px !important; }
+/* Three-across method comparison: uniform, modest height. */
+.slidev-layout:not(.text-center) .fig-three img { max-height: 215px !important; }
+/* Trade-off cards: small method thumbnails above the pros/cons text. */
+.slidev-layout:not(.text-center) .fig-tradeoff img { max-height: 130px !important; }
+/* Per-method detail slides: method diagram beside/above the example overlay. */
+.slidev-layout:not(.text-center) .two-img img { max-height: 250px !important; }
+.slidev-layout:not(.text-center) .ps-tree { max-height: 120px !important; }

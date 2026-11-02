@@ -19,9 +19,9 @@ import tempfile
 from pathlib import Path
 
 # NB: torch is imported lazily inside the functions that need it (never at module
-# top), so `import sam2_utils` - which eagerly imports this module - stays usable
-# on a box without torch (e.g. running the coordinate-transform tests). The VRAM
-# probes just report "torch not installed" / NaN in that case.
+# top), so `from sam2_utils import diagnostics` stays usable on a box without
+# torch (e.g. running the coordinate-transform tests). The VRAM probes just
+# report "torch not installed" / NaN in that case.
 
 
 # =============================================================================

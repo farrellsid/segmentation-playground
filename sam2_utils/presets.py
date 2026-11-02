@@ -47,6 +47,11 @@ _PIPELINE = dict(model_size="large", scale=8, save_downscale=8,
                  k_max_neg=3, neg_radius=150, box_margin=10,
                  chain_crop_from_mask=True)
 
+# Fixed neuron subset for the resolution-experiment presets (original_fullres /
+# _tier2forced / _bigimg / _stitch). Baked into the presets, not passed at submit, so
+# every variant runs the IDENTICAL subset and the cross-variant comparison is fair.
+EXP_NEURONS = KEY_NEURONS + ["AVAL"]
+
 PRESETS = {
     "eval": {
         "dataset": "sem-dauer-1",
@@ -69,6 +74,252 @@ PRESETS = {
         "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
         "clean": False, "neurons": KEY_NEURONS[0:3],
         "score_out": None,                         # no cross-worm GT scoring for the target worm
+    },
+
+    # --- resolution experiments (target worm, EXP_NEURONS subset, distinct outputs) ---
+    # A head-to-head of ways to spend the cluster's compute on resolution. All share the
+    # subset, model, and seed knobs so only the resolution strategy differs. See the spec
+    # docs/superpowers/specs/2026-07-06-fullres-resolution-experiments-design.md. NOTE
+    # (verified): SAM2 resizes every frame/crop to its internal image_size (1024 by
+    # default), so "whole image at full res" does NOT raise effective resolution vs
+    # scale-8; only cropping (tier-2/stitch) or raising image_size (bigimg) does.
+    "original_fullres": {
+        # Variant 1: whole frame at full res, no tier-2. Expected equal-or-worse than
+        # scale-8 (SAM2 downsamples the ~9.7k-px frame ~9.5x to 1024); a measured baseline.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "scale": 1, "save_downscale": 1},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_fullres",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": False, "tier2_all": False, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_tier2forced": {
+        # Variant 2: tier-2 crop on EVERY chain with the fallback floor dropped to 0, so
+        # no chain reverts to the scale-8 full frame. The high-res mechanism that actually
+        # works, applied universally.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_tier2forced",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_bigimg": {
+        # Variant 3: raise SAM2's internal input resolution to 2048 and feed scale-4 frames
+        # (~2432 px >= 2048) so the extra pixels are real, no tier-2. RISKY: off-distribution
+        # for the pretrained encoder and may OOM on a 40GB A100 (memory ~quadratic in
+        # image_size x ~300 stored frames). The build self-verifies image_size took effect.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "scale": 4, "save_downscale": 4, "image_size": 2048},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_bigimg",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": False, "tier2_all": False, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_wholeimg_s4": {
+        # Control: whole frame, no tier-2, IDENTICAL to original_fullres but scale=4
+        # (~2432 px) instead of scale=1 (~9728 px), with image_size at its default 1024.
+        # Tests the "SAM2 downsamples every whole-image input to 1024" claim: both feed SAM2
+        # a 1024 view, so the masks should be SIMILAR (not identical: different pre-downsample
+        # filter + JPEG per size). A small delta vs original_fullres confirms the 1024
+        # bottleneck; a large delta would refute it. Pairs with bigimg, which instead CHANGES
+        # image_size, so the two isolate the scale knob from the input-size knob.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "scale": 4, "save_downscale": 4},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_wholeimg_s4",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": False, "tier2_all": False, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_tier2_s1": {
+        # Scale-1 tier-2: read each chain's tier-2 crop at full resolution (chain_crop_scale=1)
+        # with chain_crop_max_px raised to 2048, so a crop under ~2048 tif fills SAM2's 1024
+        # input instead of under-filling it at the default crop_scale=2. Measured median crop is
+        # 1560 tif, and 86% of chains are under 2048, so this lifts effective resolution by ~a
+        # third at no accuracy risk (VRAM is not binding on the cluster). The cheap resolution
+        # win; see the 2026-07-07 tiled-fullres spec for the min(input,1024)/crop_tif reasoning.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_scale": 1, "chain_crop_max_px": 2048},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_tier2_s1",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+
+    # --- follow-up round (2026-07 review): negatives + full-res second pass -------
+    # Two levers layered on the report's two-step baseline (original_tier2forced):
+    # negative seed points, and a full-res second pass (chain_crop_scale 1). Bleed is
+    # the dominant error with negatives off (meeting notes), so negatives is lever one;
+    # the full-res pass is the cheap resolution win layered on top. The fallback floor
+    # is held at 0.0 in BOTH (forced tier-2 everywhere, matching original_tier2forced),
+    # so the only variables vs the baseline are seed_negatives and chain_crop_scale.
+    # seed_negatives feeds the neighbour nodes into the video conditioning frame (the
+    # anchor image prediction already uses them); see orchestrator step 6 / propagate.seed.
+    "original_tier2forced_neg": {
+        # Baseline two-step + negative seed points. Isolates the negatives lever.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_tier2forced_neg",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_tier2_s1forced_neg": {
+        # Baseline two-step + negatives + full-res second pass (crop_scale 1, max_px 2048,
+        # the cheap resolution win). Isolates chain_crop_scale 2 -> 1 on top of the _neg run.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_tier2_s1forced_neg",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_perslice": {
+        # Per-slice reseeding variant: chains processed per-slice with reseeding on
+        # each slice boundary, using the same pipeline knobs as original_tier2_s1forced_neg
+        # (negatives, full-res tier-2). Tests per-slice propagation as an alternative to
+        # whole-chain propagation.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True, "multimask_anchor": True,
+                     "multimask_generous": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_perslice_only": {
+        # Isolation: per-slice re-seeding WITHOUT generous multimask (original_perslice has both),
+        # otherwise identical to original_tier2_s1forced_neg. An A/B against that baseline
+        # attributes the per-slice lever alone.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_only",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_generous_only": {
+        # Isolation: generous-capped multimask WITHOUT per-slice re-seeding (still propagation),
+        # otherwise identical to original_tier2_s1forced_neg. An A/B against that baseline
+        # attributes the generous lever alone.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "multimask_anchor": True, "multimask_generous": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_generous_only",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_perslice_only_guard": {
+        # original_perslice_only + the blow-up guard (Phase 1 close-out). A/B vs the guard-off
+        # tree: does capping the gross per-slice tail cut total_foreign while the clean bulk holds.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True, "blowup_guard": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_only_guard",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_perslice_guard": {
+        # original_perslice (per-slice + generous) + the blow-up guard (Phase 1 close-out).
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True, "multimask_anchor": True,
+                     "multimask_generous": True, "blowup_guard": True},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_guard",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    # --- SAM3 config A/B (2026-07 queued round): does dropping negatives help SAM3? -----
+    # SAM3 is more conservative than SAM2, so negatives may hurt rather than help it. This
+    # is a 2x2 sweep, k_max_neg in {0, 3} x multimask_generous in {False, True}, on the
+    # per-slice + blow-up-guard config (original_perslice_only_guard), run with --backend
+    # sam3 at submit. The other three corners of the grid are already named presets, so only
+    # the two k_max_neg=0 corners are added here:
+    #   k_max_neg=3, generous off -> original_perslice_only_guard   (existing)
+    #   k_max_neg=3, generous on  -> original_perslice_guard        (existing)
+    #   k_max_neg=0, generous off -> original_perslice_only_guard_kneg0   (below)
+    #   k_max_neg=0, generous on  -> original_perslice_guard_kneg0        (below)
+    # k_max_neg=0 fully removes negatives: build_prompts caps them at min(count, k_max_neg)=0
+    # and propagate only seeds negatives when k_max_neg>0, so seed_negatives becomes a no-op.
+    # generous still requires multimask_anchor=True to have any effect (config.py), so the
+    # generous corners set both, matching original_perslice_guard.
+    "original_perslice_only_guard_kneg0": {
+        # A/B partner of original_perslice_only_guard with negatives off (k_max_neg=0).
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True, "blowup_guard": True,
+                     "k_max_neg": 0},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_only_guard_kneg0",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_perslice_guard_kneg0": {
+        # A/B partner of original_perslice_guard (generous multimask) with negatives off.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "seed_negatives": True,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "per_slice_reseed": True, "multimask_anchor": True,
+                     "multimask_generous": True, "blowup_guard": True,
+                     "k_max_neg": 0},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_perslice_guard_kneg0",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
+    },
+    "original_genfirst_negcrop": {
+        # Generous-first-pass, negatives-in-crop bundle (Phase 1 close-out). TIER2_ALL two-pass:
+        # a generous, negative-free _sam first pass sizes the crop (chain_crop_from_mask), then
+        # negatives in the tier-2 crop via the tier2_* overrides. Not generous in the crop pass:
+        # the first pass is generous so the crop is not clipped, the crop pass wants precision.
+        "dataset": "target",
+        "pipeline": {**_PIPELINE, "chain_crop_min_image_score": 0.0,
+                     "chain_crop_scale": 1, "chain_crop_max_px": 2048,
+                     "chain_crop_from_mask": True,
+                     "multimask_anchor": True, "multimask_generous": True,
+                     "k_max_neg": 0, "seed_negatives": False,
+                     "tier2_k_max_neg": 3, "tier2_seed_negatives": True,
+                     "tier2_multimask_generous": False},
+        "output_root": config.OUTPUT_ROOT.parent / "exp_genfirst_negcrop",
+        "frames_root": config.FRAMES_ROOT,
+        "tier2_on_flagged": True, "tier2_all": True, "gif_mode": "all",
+        "clean": False, "neurons": EXP_NEURONS,
+        "score_out": None,
     },
 }
 

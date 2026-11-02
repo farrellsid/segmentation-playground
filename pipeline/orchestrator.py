@@ -18,24 +18,37 @@ from .crop import (
     _prior_queued_z,
 )
 from .frames import FrameStore, TifFrameStore, load_frame_sam
-from .masks import (
-    fill_small_holes,
-    postprocess_mask,
-    remove_small_islands,
-    save_masks,
-    smooth_edges,
-)
+from .masks import clean_mask, save_masks
 from .predict import (
     anchor_crop_predict,
     box_from_mask,
     build_prompts,
+    centreline_by_z,
     image_predict,
     score_anchor,
     select_anchor,
 )
-from .propagate import propagate
+from .propagate import propagate, segment_per_slice
 from .qc import run_qc
 from .state import ChainState, Prompts, _anchor_score_to_dict, load_state
+
+
+def _do_segmentation(cfg, *, image_predictor, video_predictor, frames_dir, frame_to_z,
+                     prompts, anchor_frame_idx, chain, annotate_df, cw, obj_id, **seed_kw):
+    """Choose the segmentation path: per-slice re-seed vs. video propagation.
+
+    Returns the shared `(video_segments, frame_conf, pred_iou)` shape both
+    `segment_per_slice` and `propagate` produce, so `run_chain`'s save/QC/state
+    steps need no branch of their own. `seed_kw` (seed_box, seed_points,
+    seed_negatives, seed_mask, mask_anchor, subtimings) is only meaningful to
+    `propagate`; `segment_per_slice` builds its own per-frame seed instead.
+    """
+    if cfg.per_slice_reseed:
+        centreline = centreline_by_z(chain, annotate_df)
+        return segment_per_slice(image_predictor, frames_dir, frame_to_z, centreline,
+                                 annotate_df, cfg=cfg, obj_id=obj_id, cw=cw)
+    return propagate(video_predictor, frames_dir, prompts, anchor_frame_idx,
+                     obj_id=obj_id, **seed_kw)
 
 
 def run_chain(state: ChainState, *, image_predictor, video_predictor,
@@ -214,12 +227,14 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
                 state.prompts, annotate_df, scale=cfg.scale,
                 crop_size_tif=cfg.crop_size_tif, crop_scale=eff_crop_scale, cw=cw_chain_l,
                 multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
-                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg)
+                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg,
+                select_generous=cfg.multimask_generous)
         else:
             mask_anchor, state.image_score, _logits = image_predict(
                 image_predictor, image_sam, state.prompts,
                 multimask=cfg.multimask_anchor, select_contain_radius_px=contain_r,
-                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg)
+                select_area_bounds=area_bounds, select_exclude_neg=cfg.multimask_exclude_neg,
+                select_generous=cfg.multimask_generous)
             cw, prompts_anchor = None, state.prompts
         image_hw_anchor = mask_anchor.shape[:2]
         if cfg.multimask_anchor:
@@ -347,10 +362,12 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
     print(f"    {state.n_frames} frames  (anchor frame_idx={state.anchor_frame_idx})")
 
     # 7. propagate (seed per the ablation spec; defaults = box+positive = baseline seed)
-    _step(7, "propagate (bidirectional)")
-    video_segments, frame_conf, pred_iou = propagate(
-        video_predictor, state.frames_dir, state.prompts,
-        state.anchor_frame_idx, obj_id=state.obj_id,
+    _step(7, "per-slice re-seed" if cfg.per_slice_reseed else "propagate (bidirectional)")
+    video_segments, frame_conf, pred_iou = _do_segmentation(
+        cfg, image_predictor=image_predictor, video_predictor=video_predictor,
+        frames_dir=state.frames_dir, frame_to_z=state.frame_to_z,
+        prompts=state.prompts, anchor_frame_idx=state.anchor_frame_idx,
+        chain=chain, annotate_df=annotate_df, cw=cw_chain, obj_id=state.obj_id,
         seed_box=(cfg.seed_box != "none"), seed_points=cfg.seed_points,
         seed_negatives=cfg.seed_negatives, seed_mask=cfg.seed_mask,
         mask_anchor=(mask_anchor_seed if cfg.seed_mask else None),
@@ -363,20 +380,16 @@ def run_chain(state: ChainState, *, image_predictor, video_predictor,
         n_changed = 0
         for seg in video_segments.values():
             if state.obj_id in seg:
-                cleaned = postprocess_mask(
+                # open/close/cc/fill, then the size-aware ops (each off at 0). Shared
+                # with the GUI's image-phase re-predict so both apply the same sequence.
+                cleaned = clean_mask(
                     seg[state.obj_id],
                     open_px=cfg.postproc_open_px, close_px=cfg.postproc_close_px,
                     keep_largest_cc=cfg.postproc_keep_largest_cc,
-                    fill_holes=cfg.postproc_fill_holes)
-                # size-aware ops (each off at 0); after the open/close/cc/fill above
-                if cfg.postproc_remove_islands_min_size > 0:
-                    cleaned = remove_small_islands(
-                        cleaned, min_size=cfg.postproc_remove_islands_min_size)
-                if cfg.postproc_fill_small_holes_area > 0:
-                    cleaned = fill_small_holes(
-                        cleaned, area_threshold=cfg.postproc_fill_small_holes_area)
-                if cfg.postproc_smooth_radius > 0:
-                    cleaned = smooth_edges(cleaned, radius=cfg.postproc_smooth_radius)
+                    fill_holes=cfg.postproc_fill_holes,
+                    remove_islands_min_size=cfg.postproc_remove_islands_min_size,
+                    fill_small_holes_area=cfg.postproc_fill_small_holes_area,
+                    smooth_radius=cfg.postproc_smooth_radius)
                 n_changed += int(not np.array_equal(cleaned, seg[state.obj_id]))
                 seg[state.obj_id] = cleaned
         print(f"    post-processed {n_changed}/{len(video_segments)} masks")

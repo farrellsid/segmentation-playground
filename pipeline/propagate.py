@@ -1,13 +1,21 @@
-"""Interruptible SAM2 video propagation: FrameResult, the IoU hook, PropagationSession, propagate."""
+"""Interruptible SAM2 video propagation: FrameResult, the IoU hook, PropagationSession,
+propagate, and segment_per_slice (the per-frame node-anchored image-mode alternative)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 from typing import Callable, Iterator, Optional
 
 import numpy as np
+import pandas as pd
 
+from sam2_utils import alignment
+
+from . import predict as predict_mod
+from .frames import clean_frame_sidecars
+from .predict import build_prompts, centreline_by_z, image_predict, mask_to_low_res_logits
 from .state import Prompts
 
 
@@ -108,6 +116,14 @@ class PropagationSession:
                  offload_video_to_cpu: bool = True):
         self.vp = video_predictor
         self.obj_id = obj_id
+        # SAM2's loader parses every *.jpg stem as an int, so a single macOS AppleDouble
+        # sidecar ("._00036.jpg", written automatically on any exFAT or NTFS drive) aborts
+        # init_state below with a ValueError that names neither the file nor the cause.
+        # Clean first: the sidecars are metadata, and macOS makes new ones when it wants.
+        removed = clean_frame_sidecars(frames_dir)
+        if removed:
+            print(f"[propagate] removed {removed} macOS sidecar file(s) from {frames_dir}; "
+                  f"SAM2's frame loader cannot parse them")
         # offload_video_to_cpu keeps VRAM bounded for long (~340-frame) chains.
         self.inference_state = video_predictor.init_state(
             video_path=frames_dir,                 # already a str (see prepare_video_frames)
@@ -294,3 +310,387 @@ def propagate(video_predictor, frames_dir: str, prompts: Prompts,
         return session.video_segments, session.frame_conf, session.pred_iou
     finally:
         session.close()
+
+
+def propagate_from_verified_masks(video_predictor, frames_dir: str,
+                                  masks_by_frame: dict[int, np.ndarray], *, obj_id: int,
+                                  subtimings: Optional[dict] = None
+                                  ) -> tuple[dict[int, dict[int, np.ndarray]], dict[int, float], dict[int, float]]:
+    """Seed EVERY frame in ``masks_by_frame`` as its own conditioning frame (not just a
+    single anchor), then propagate bidirectionally to fill in the rest. The manually
+    verified/corrected-mask counterpart to ``propagate()``'s single-anchor driver.
+
+    No new SAM2-level mechanism was needed for this, only seeding more than one frame
+    before running the existing bidirectional sweep. Verified against the installed
+    ``sam2_video_predictor.py``: ``propagate_in_video``'s default ``start_frame_idx`` is
+    "the earliest frame with input points/mask" regardless of how many conditioning
+    frames exist, and a frame already in ``cond_frame_outputs`` is returned verbatim
+    during a sweep, never re-predicted. So a normal forward-then-reverse bidirectional
+    sweep rooted at the earliest verified frame correctly threads through and preserves
+    every OTHER verified frame it passes along the way, and that frame's own encoded
+    memory is available (not aged out, conditioning frames never age out of the
+    attention window) for whatever comes after it in the same sweep direction.
+
+    ``masks_by_frame``: {frame_idx (0-based, video-local): mask bool HxW in the
+    propagation space}, at least one entry, every mask already the SAME shape the
+    session's frames use (image_size or the crop size propagation runs in, matching
+    what ``add_mask``/``add_new_mask`` already expects; this function does not resize).
+    Which frames belong in this dict, e.g. only the frames a human actually corrected
+    versus every frame of an existing per-slice run, is a caller decision, not something
+    this function infers.
+
+    Returns the same shape as ``propagate()``: (video_segments, frame_conf, pred_iou).
+    """
+    if not masks_by_frame:
+        raise ValueError("masks_by_frame must have at least one entry")
+    _t = perf_counter()
+    session = PropagationSession(video_predictor, frames_dir, obj_id=obj_id)
+    if subtimings is not None:
+        subtimings["jpeg_load"] = perf_counter() - _t
+    try:
+        for frame_idx, mask in masks_by_frame.items():
+            session.add_mask(int(frame_idx), mask)
+        _t = perf_counter()
+        session.run_bidirectional()
+        if subtimings is not None:
+            subtimings["propagate_only"] = perf_counter() - _t
+        return session.video_segments, session.frame_conf, session.pred_iou
+    finally:
+        session.close()
+
+
+def propagate_directional(video_predictor, frames_dir: str, prompts: Prompts,
+                          seed_frame_idx: int, *, obj_id: int, reverse: bool,
+                          seed_negatives: bool = False, seed_box: bool = True,
+                          seed_points: bool = True,
+                          subtimings: Optional[dict] = None
+                          ) -> tuple[dict[int, dict[int, np.ndarray]], dict[int, float], dict[int, float]]:
+    """Seed ONE frame, propagate in ONE direction only, no return sweep. The building
+    block for an independent directional-disagreement pilot (see
+    experiments/directional_disagreement_pilot.py and eval.merge_metric.
+    directional_disagreement): call this once with seed_frame_idx=0, reverse=False (a
+    forward-only tracing seeded at the chain's own start) and once with
+    seed_frame_idx=n_frames-1, reverse=True (a backward-only tracing seeded at the
+    chain's own end), so the two calls' outputs are two INDEPENDENT tracings of the
+    whole chain, unlike propagate()'s single-mid-anchor run_bidirectional(), which
+    seeds once and sweeps both directions from the SAME frame, covering each frame
+    exactly once (verified against the installed sam2_video_predictor.py: reverse=False
+    covers [start, num_frames-1], reverse=True covers [0, start], strictly disjoint
+    except at start itself), never producing two masks to compare.
+
+    Returns the same shape as propagate(): (video_segments, frame_conf, pred_iou).
+    """
+    _t = perf_counter()
+    session = PropagationSession(video_predictor, frames_dir, obj_id=obj_id)
+    if subtimings is not None:
+        subtimings["jpeg_load"] = perf_counter() - _t
+    try:
+        session.seed(prompts, seed_frame_idx, seed_box=seed_box,
+                     seed_points=seed_points, seed_negatives=seed_negatives)
+        _t = perf_counter()
+        for _ in session.propagate(reverse=reverse):
+            pass
+        if subtimings is not None:
+            subtimings["propagate_only"] = perf_counter() - _t
+        return session.video_segments, session.frame_conf, session.pred_iou
+    finally:
+        session.close()
+
+
+def _node_id_at(annotate_df: pd.DataFrame, catmaid_z: int, x_tif: float, y_tif: float):
+    """The node_id backing a real (non-interpolated) centreline point, or None.
+
+    `centreline_by_z` returns a (x_tif, y_tif) per catmaid_z: for a z with a real
+    chain node it is that node's own coordinates verbatim; for a gap z it is a
+    linear interpolation with no backing row. `build_prompts` needs an actual
+    node_id (it reads the node's CATMAID x/y to rank same-z neighbours by
+    distance), so negatives are only built where a real node exists; an
+    interpolated z degrades to a positive-only seed rather than guessing a
+    neighbour ranking from a synthetic point.
+    """
+    if not len(annotate_df):
+        return None
+    z_col = annotate_df["z"]
+    x_col = pd.to_numeric(annotate_df["x_tif"], errors="coerce")
+    y_col = pd.to_numeric(annotate_df["y_tif"], errors="coerce")
+    # Matches on (z, x_tif, y_tif) alone, not scoped to the chain's own neuron:
+    # relies on node coordinates being effectively unique across annotate_df.
+    match = annotate_df.loc[(z_col == catmaid_z) & (x_col == x_tif) & (y_col == y_tif), "node_id"]
+    return match.iloc[0] if len(match) else None
+
+
+def apply_blowup_guard(video_segments: dict[int, dict[int, np.ndarray]],
+                       frame_conf: dict[int, float], pred_iou: dict[int, float],
+                       *, obj_id: int, area_factor: float, min_accepted: int = 3) -> set[int]:
+    """Replace per-slice masks that blow up (area > area_factor * median non-empty area)
+    with the nearest accepted slice's mask, and flag the guarded frames (frame_conf and
+    pred_iou -> 0.0 so QC queues them). Mutates the dicts in place; returns the guarded
+    frame indices. No-op (returns empty) when fewer than min_accepted non-empty masks exist
+    or the median is 0, so a short or mostly-empty chain sets no spurious baseline."""
+    areas = {fi: int(seg[obj_id].sum()) for fi, seg in video_segments.items() if obj_id in seg}
+    nonempty = {fi: a for fi, a in areas.items() if a > 0}
+    if len(nonempty) < min_accepted:
+        return set()
+    med = float(np.median(list(nonempty.values())))
+    if med <= 0:
+        return set()
+    cap = area_factor * med
+    blown = {fi for fi, a in nonempty.items() if a > cap}
+    accepted = sorted(fi for fi in nonempty if fi not in blown)
+    if not accepted:
+        return set()
+    for fi in blown:
+        nearest = min(accepted, key=lambda j: abs(j - fi))
+        video_segments[fi][obj_id] = video_segments[nearest][obj_id].copy()
+        frame_conf[fi] = 0.0
+        pred_iou[fi] = 0.0
+    return blown
+
+
+def select_second_pass_frames(records: list[dict]) -> set[int]:
+    """z's needing re-segmentation: score_chain-shaped records with empty=True (dropout),
+    n_foreign > 0 (bleed), or own_contained=False (lost its own node). `records` are plain
+    dicts (eval.merge_metric.score_chain's output, computed by the caller), never an eval
+    import here: pipeline/ must never import eval (tests/test_import_direction.py)."""
+    return {
+        int(r["z"]) for r in records
+        if r.get("empty") or r.get("n_foreign", 0) > 0 or not r.get("own_contained", True)
+    }
+
+
+def find_second_pass_neighbour(z: int, flagged: set[int], areas_by_z: dict[int, float],
+                               *, min_area_ratio: float) -> Optional[int]:
+    """Nearest z' (by |z - z'|) that is not itself flagged and whose area is not
+    anomalously small relative to the chain's unflagged median area.
+
+    The area floor guards against a nucleus-capture mask (covers only the nested
+    nucleus, not the cell) being picked as a neighbour: it has own_contained=True,
+    n_foreign=0, and is non-empty, so none of score_chain's three trigger signals catch
+    it, but it is typically much smaller than a correctly-segmented full-cell mask.
+    Returns None if no eligible z' exists (either every z is flagged, or every unflagged
+    z fails the area floor)."""
+    candidates = [zz for zz in areas_by_z if zz not in flagged]
+    if not candidates:
+        return None
+    median = float(np.median([areas_by_z[zz] for zz in candidates]))
+    floor = min_area_ratio * median
+    eligible = [zz for zz in candidates if areas_by_z[zz] >= floor]
+    if not eligible:
+        return None
+    return min(eligible, key=lambda zz: abs(zz - z))
+
+
+def apply_second_pass(
+    image_predictor,
+    frames_dir: str,
+    frame_to_z: dict[int, int],
+    cw: Optional["alignment.CropWindow"],
+    chain: dict,
+    annotate_df: pd.DataFrame,
+    chain_dir: Path,
+    records: list[dict],
+    *,
+    cfg,
+    min_neighbour_area_ratio: float = 0.5,
+) -> dict[int, str]:
+    """Re-segment a finished propagation chain's flagged frames via a neighbour
+    mask-prompt, without touching the video predictor's memory bank.
+
+    `records` are eval.merge_metric.score_chain's output for this chain, computed by
+    the caller (batch.py): pipeline/ must never import eval directly (see
+    tests/test_import_direction.py). Rewrites the touched frames' saved mask PNGs in
+    place and returns {z: "corrected" | "guard_fallback"} for every frame touched; a
+    frame absent from the returned dict was left untouched (either it was never
+    flagged, or no fallback was possible either, e.g. every frame in the chain is
+    flagged).
+    """
+    import cv2
+    import inspect
+
+    from sam2_utils import qc as qc_mod   # lazy: keeps pipeline import free of qc's heavy deps
+
+    flagged = select_second_pass_frames(records)
+    if not flagged:
+        return {}
+
+    # Not every backend's predict() accepts mask_input (e.g. Sam3ImagePredictor has no
+    # such parameter at all). When it is missing, fall back to a point-only re-predict
+    # instead of building a hint image_predict would then have to drop, this still has
+    # real value (a point-only re-predict corrects some flagged frames on its own).
+    supports_mask_input = "mask_input" in inspect.signature(image_predictor.predict).parameters
+
+    chain_dir = Path(chain_dir)
+    masks_dir = chain_dir / "masks"
+    mask_paths = dict(qc_mod._iter_mask_paths(masks_dir))
+    masks_by_z = {z: qc_mod._load_binary(p) for z, p in mask_paths.items()}
+    areas_by_z = {z: float(m.sum()) for z, m in masks_by_z.items()}
+
+    z_to_frame_idx = {z: fi for fi, z in frame_to_z.items()}
+    centreline = centreline_by_z(chain, annotate_df)
+
+    space_ratio = (float(cfg.scale) / float(cw.crop_scale)) if cw is not None else 1.0
+    contain_r = int(round(cfg.qc_skeleton_dilation_px * space_ratio))
+
+    outcomes: dict[int, str] = {}
+    for z in sorted(flagged):
+        corrected = False
+        neighbour_z = find_second_pass_neighbour(
+            z, flagged, areas_by_z, min_area_ratio=min_neighbour_area_ratio)
+
+        if neighbour_z is not None and z in z_to_frame_idx and z in centreline:
+            frame_idx = z_to_frame_idx[z]
+            img_path = Path(frames_dir) / f"{frame_idx:05d}.jpg"
+            raw = cv2.imread(str(img_path))
+            if raw is not None:
+                image = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
+                x_tif, y_tif = centreline[z]
+                pos_sam = alignment.tif_to_sam([x_tif, y_tif], cfg.scale)
+                point_sam = np.asarray([[float(pos_sam[0]), float(pos_sam[1])]])
+                point_pred = cw.sam_to_crop(point_sam) if cw is not None else point_sam
+                prompts = Prompts(points_sam=point_pred, labels=np.asarray([1]))
+                mask_hint = (mask_to_low_res_logits(masks_by_z[neighbour_z])
+                            if supports_mask_input else None)
+
+                new_mask, _score, _logits = image_predict(
+                    image_predictor, image, prompts, mask_input=mask_hint)
+
+                px, py = float(point_pred[0, 0]), float(point_pred[0, 1])
+                if new_mask.any() and predict_mod._point_in_mask(new_mask, px, py, contain_r):
+                    cv2.imwrite(str(mask_paths[z]), (new_mask.astype("uint8") * 255))
+                    masks_by_z[z] = new_mask
+                    areas_by_z[z] = float(new_mask.sum())
+                    outcomes[z] = "corrected"
+                    corrected = True
+
+        if not corrected:
+            accepted = [zz for zz in areas_by_z if zz not in flagged]
+            if accepted:
+                nearest = min(accepted, key=lambda zz: abs(zz - z))
+                fallback_mask = masks_by_z[nearest]
+                cv2.imwrite(str(mask_paths[z]), (fallback_mask.astype("uint8") * 255))
+                masks_by_z[z] = fallback_mask
+                areas_by_z[z] = float(fallback_mask.sum())
+                outcomes[z] = "guard_fallback"
+
+    return outcomes
+
+
+def segment_per_slice(image_predictor, frames_dir: str, frame_to_z: dict[int, int],
+                      centreline_tif: dict[int, tuple[float, float]],
+                      annotate_df: pd.DataFrame, *, cfg, obj_id: int,
+                      cw: Optional["alignment.CropWindow"] = None,
+                      ) -> tuple[dict[int, dict[int, np.ndarray]], dict[int, float], dict[int, float]]:
+    """Per-frame node-anchored image-mode segmentation, no video propagation.
+
+    For each prepared frame, seed image-mode SAM2 from THAT frame's own centreline
+    point (`centreline_tif`, from `predict.centreline_by_z`) instead of propagating
+    one anchor's memory across the whole chain, so a mis-tracked cell can never
+    carry into a later slice (roadmap Phase 1 item 1). Returns the SAME
+    `(video_segments, frame_conf, pred_iou)` shape `propagate()` returns, so
+    save/QC/`chain_masks_in_sam` need no change.
+
+    `cw` is the chain's tier-2 crop window: when set, frames on disk and the
+    returned masks are in `_pcrop` (the space `prepare_chain_crop_frames` wrote);
+    when None, both are `_sam` (the space `prepare_video_frames` wrote). Frames are
+    read by 0-indexed `{frame_idx:05d}.jpg`, exactly the naming `prepare_video_frames`
+    / `prepare_chain_crop_frames` use, so no torch/video-predictor frame loader is
+    needed here, only `cv2.imread`.
+
+    The seed point is built in `_sam` first (`alignment.tif_to_sam`, same as
+    `build_prompts`), then, when `cw` is set, remapped `_sam` -> `_pcrop` via
+    `cw.sam_to_crop` (the `_sam -> _tif -> _crop` chain `anchor_crop_predict` uses
+    for its own prompt remap): no coordinate math is reinvented here. Neighbour
+    negatives, when `cfg.k_max_neg > 0`, are `build_prompts`' own negatives for
+    the frame's real backing node (see `_node_id_at`), mapped through the same
+    `_sam` (-> `_pcrop`) step as the positive, then, when `cw` is set, filtered
+    by the same in-bounds-or-positive rule `anchor_crop_predict` uses: negatives
+    landing outside the crop window are dropped, the positive is always kept.
+
+    Returns
+    -------
+    (video_segments, frame_conf, pred_iou)
+        video_segments : {frame_idx: {obj_id: mask bool}}, in `_pcrop` (cw set) or
+                         `_sam` (cw None), matching `propagate()`.
+        frame_conf     : {frame_idx: float}, mean-foreground-sigmoid proxy over the
+                         image-mode logits, the same proxy `PropagationSession._collect`
+                         computes for the video path.
+        pred_iou       : {frame_idx: float}, SAM2's own predicted-IoU score for the
+                         mask `image_predict` returned (its single-mask score, or the
+                         selected multimask candidate's score).
+    """
+    import cv2
+
+    space_ratio = (float(cfg.scale) / float(cw.crop_scale)) if cw is not None else 1.0
+    contain_r = int(round(cfg.qc_skeleton_dilation_px * space_ratio))
+    area_bounds = (cfg.gate_min_area_frac, cfg.gate_max_area_frac)
+
+    video_segments: dict[int, dict[int, np.ndarray]] = {}
+    frame_conf: dict[int, float] = {}
+    pred_iou: dict[int, float] = {}
+
+    for frame_idx in sorted(frame_to_z):
+        catmaid_z = frame_to_z[frame_idx]
+        img_path = Path(frames_dir) / f"{frame_idx:05d}.jpg"
+        raw = cv2.imread(str(img_path))
+        if raw is None:
+            raise FileNotFoundError(f"frame not found: {img_path}")
+        image = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
+
+        x_tif, y_tif = centreline_tif[catmaid_z]
+        pos_sam = alignment.tif_to_sam([x_tif, y_tif], cfg.scale)     # (2,)
+        points_sam = [[float(pos_sam[0]), float(pos_sam[1])]]
+        labels = [1]
+
+        if cfg.k_max_neg > 0:
+            node_id = _node_id_at(annotate_df, catmaid_z, x_tif, y_tif)
+            if node_id is not None:
+                neg_prompts = build_prompts(
+                    node_id, catmaid_z, annotate_df, scale=cfg.scale,
+                    k_max_neg=cfg.k_max_neg, neg_radius=cfg.neg_radius)
+                neg_labels = np.asarray(neg_prompts.labels)
+                for pt in np.asarray(neg_prompts.points_sam, dtype=float)[neg_labels == 0]:
+                    points_sam.append([float(pt[0]), float(pt[1])])
+                    labels.append(0)
+
+        points_sam_arr = np.asarray(points_sam, dtype=float)
+        labels_arr = np.asarray(labels, dtype=int)
+        if cw is not None:
+            # _sam -> _pcrop, then drop out-of-window negatives (same filter as
+            # anchor_crop_predict's own _sam -> _crop prompt remap): the positive
+            # anchor is kept unconditionally, an out-of-window negative is inert
+            # (and would otherwise raise inside SAM2's predict call).
+            pts_crop = cw.sam_to_crop(points_sam_arr)
+            H_crop, W_crop = image.shape[:2]
+            in_bounds = ((pts_crop[:, 0] >= 0) & (pts_crop[:, 0] < W_crop) &
+                         (pts_crop[:, 1] >= 0) & (pts_crop[:, 1] < H_crop))
+            keep = in_bounds | (labels_arr == 1)
+            points_pred, labels_arr = pts_crop[keep], labels_arr[keep]
+        else:
+            points_pred = points_sam_arr
+        prompts = Prompts(points_sam=points_pred, labels=labels_arr)
+
+        mask, score, logits = image_predict(
+            image_predictor, image, prompts, multimask=cfg.multimask_anchor,
+            select_contain_radius_px=contain_r, select_area_bounds=area_bounds,
+            select_exclude_neg=cfg.multimask_exclude_neg,
+            select_generous=cfg.multimask_generous)
+
+        video_segments[frame_idx] = {obj_id: mask}
+        pred_iou[frame_idx] = float(score)
+        # frame_conf is the same mean-foreground-sigmoid proxy PropagationSession._collect
+        # computes for the video path: the foreground comes from THIS logit array's own
+        # threshold (lg > 0.0), not the full-res `mask` from image_predict. logits is SAM2's
+        # low_res_masks (256x256), a different resolution than mask (full crop res), so
+        # indexing the low-res logits with the full-res mask raises IndexError on real SAM2.
+        lg = np.asarray(logits[0], dtype=float)
+        m_lr = lg > 0.0
+        fg = lg[m_lr]
+        frame_conf[frame_idx] = float((1.0 / (1.0 + np.exp(-fg))).mean()) if fg.size else float("nan")
+
+    if getattr(cfg, "blowup_guard", False):
+        guarded = apply_blowup_guard(video_segments, frame_conf, pred_iou,
+                                     obj_id=obj_id, area_factor=cfg.blowup_area_factor)
+        if guarded:
+            print(f"    [blow-up guard] replaced {len(guarded)} slice(s) over "
+                  f"{cfg.blowup_area_factor}x median area: {sorted(guarded)}")
+    return video_segments, frame_conf, pred_iou

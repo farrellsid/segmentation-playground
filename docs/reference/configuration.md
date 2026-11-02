@@ -13,7 +13,10 @@ Paths and constants that change per machine or per dataset, not per run:
   [../how-to/run-on-narval.md](../how-to/run-on-narval.md).
 - `DATA_DIR`, `CSV_PATH`, `CHAINS_PATH`, `ROOTS_PATH`: the CATMAID-derived inputs (resolved from the
   repo location).
-- `OUTPUT_ROOT`, `FRAMES_ROOT`: the mask-output and JPEG-scratch roots.
+- `OUTPUT_ROOT`, `FRAMES_ROOT`: the mask-output and JPEG-scratch roots. Overridable with
+  `SAM2_OUTPUT_ROOT` and `SAM2_FRAMES_ROOT` env vars, matching how `SAM2_WORM_PATH` overrides
+  `config.WORM_PATH`. Set these instead of editing `sam2_utils/config.py`, which is tracked and will
+  conflict on every pull.
 - The SAM2 checkpoint registry (tiny, small, base_plus, large).
 - CATMAID URL and project id, `STACK_RESOLUTION_NM`, `FILE_Z_OFFSET`.
 - The fitted affine `M_AFFINE` and `T_AFFINE` (see [coordinate-spaces.md](coordinate-spaces.md)).
@@ -24,8 +27,17 @@ Paths and constants that change per machine or per dataset, not per run:
 Everything you would tune for a run lives here, in one place. Defaults reproduce the original
 single-chain run.
 
+- Backend: `backend` (default `"sam2"`) selects the segmentation model. `"sam3"` routes the image
+  and video phases through the HuggingFace SAM3 adapters (`sam2_utils/sam3_backend.py`), which present
+  the SAM2 predictor interface so the rest of the pipeline runs unchanged; `sam3_checkpoint` (default
+  `None`) is the SAM3 HuggingFace checkpoint directory, falling back to `sam3_backend.DEFAULT_CHECKPOINT_DIR`
+  when unset. `batch.py --backend {sam2,sam3}` and `--sam3-checkpoint PATH` set these on the CLI. See
+  [../how-to/run-sam3-on-narval.md](../how-to/run-sam3-on-narval.md).
 - Spaces and resolution: `scale` (SAM2 input downscale), `save_downscale` (on-disk mask downscale;
-  equal to `scale` is canonical, see [ADR 0006](../adr/0006-canonical-mask-space.md)).
+  equal to `scale` is canonical, see [ADR 0006](../adr/0006-canonical-mask-space.md)), `image_size`
+  (override SAM2's internal input resolution, default 1024; None keeps the checkpoint default). SAM2
+  resizes every frame to `image_size`, so raising it is the only in-model way to feed more pixels
+  than scale/cropping give; verified post-build in `setup.py`, memory grows roughly quadratically.
 - Anchor crop (default on): `crop_anchor`, `crop_size_tif`, `crop_scale`. Runs image mode on a
   high-res crop around the node. Off falls back to the full-frame path.
 - Per-chain crop, tier-2 (default off, auto-on for flagged chains): `chain_crop`,
@@ -43,10 +55,35 @@ single-chain run.
   auto-selects one by `(contains the positive node, plausible area, single connected component, SAM
   IoU)`. `multimask_exclude_neg` (default off, only consulted when `multimask_anchor` is on) adds an
   anti-bleed term: among candidates that contain the positive node, prefer one that contains none of
-  the negative neighbour nodes. The `eval` preset turns `multimask_anchor` on. See
-  [ADR 0012](../adr/0012-node-anchored-multimask-selection.md).
+  the negative neighbour nodes. `multimask_generous` (default off, also consulted only when
+  `multimask_anchor` is on) instead changes the tie-break to prefer the LARGER gate-passing candidate,
+  so a soma mask includes the nucleus and reaches the outer membrane; it stays capped by the area gate,
+  so a whole-frame blob does not win while any gate-passer exists. The `eval` preset turns
+  `multimask_anchor` on. See [ADR 0012](../adr/0012-node-anchored-multimask-selection.md).
+- Per-slice re-seeding (default off): `per_slice_reseed` replaces whole-chain video propagation with
+  independent per-slice image-mode segmentation, each slice re-seeded from its own skeleton node inside
+  the chain crop, so SAM2 memory cannot carry the wrong cell across slices. When off, the propagation
+  path is byte-identical. See the Phase 1 spec under `docs/superpowers/specs/`.
+- Per-slice blow-up guard (default off, only takes effect under `per_slice_reseed`): `blowup_guard`
+  runs a post-pass at the end of `segment_per_slice` that rejects any slice whose mask area exceeds
+  `blowup_area_factor` (default 25.0) times the chain's median non-empty-mask area, replaces it with
+  the nearest accepted slice's mask (by frame-index distance), and flags the guarded frames for review
+  by zeroing their `pred_iou` (the QC confidence signal that queues them; `frame_conf` is zeroed too
+  for consistency but does not itself drive a flag). It is a
+  no-op on a chain with too few accepted masks or a zero median, and it has no effect on the
+  video-propagate path. See the close-out spec under `docs/superpowers/specs/`.
 - Prompts and seed: `k_max_neg`, `box_margin`, `box_margin_frac`, `seed_negatives`, plus the seed
-  shape knobs. See [ADR 0008](../adr/0008-video-seed-box-vs-mask.md).
+  shape knobs. See [ADR 0008](../adr/0008-video-seed-box-vs-mask.md). `k_max_neg` caps the negative
+  neighbour points per node, nearest first; `k_max_neg = 0` removes negatives entirely, since
+  `build_prompts` caps them at `min(count, k_max_neg) = 0` and propagation only seeds negatives when
+  `k_max_neg > 0`, so `seed_negatives` becomes a no-op. The SAM3 A/B presets use this to test whether
+  a more conservative model does better without negatives.
+- Per-pass tier-2 seed overrides (default inherit): `tier2_k_max_neg`, `tier2_seed_negatives`, and
+  `tier2_multimask_generous` let the tier-2 rerun (`batch._run_one_chain`, under `tier2_all` or
+  `tier2_on_flagged`) seed differently from the first `_sam` pass. Each defaults to `None`, meaning
+  inherit the base value (current behaviour, unchanged); setting one applies it only to the tier-2
+  crop pass, for example a generous, negative-free first pass that sizes the crop via
+  `chain_crop_from_mask`, then negatives switched on once inside the crop.
 - Anchor gate (observational): `gate_min_area_frac`, `gate_max_area_frac`, `gate_min_largest_cc_frac`.
   Records a verdict; does not branch yet.
 - QC thresholds: `qc_area_ratio_bounds`, `qc_temporal_iou_min`, `qc_pred_iou_min`,
@@ -63,5 +100,56 @@ single-chain run.
 ## Presets
 
 A preset (`sam2_utils/presets.py`) bundles the worm, paths, model, tier-2 settings, and default
-neurons, so a run is `--preset <name> [--neurons ...]` instead of a long flag string. Two ship today:
+neurons, so a run is `--preset <name> [--neurons ...]` instead of a long flag string. The two core presets are:
 `original` (the target worm) and `eval` (the cross-worm GT). Any CLI flag overrides the preset.
+
+The Phase 1 close-out adds three measurement presets, each isolating one lever for the CCDB A/B:
+
+- `original_perslice_only_guard`: per-slice re-seeding plus the blow-up guard, measured against the
+  guard-off `original_perslice_only` tree to see whether the guard cuts the gross per-slice tail
+  without hurting the clean bulk.
+- `original_perslice_guard`: per-slice re-seeding and generous multimask plus the blow-up guard,
+  measured against the guard-off `original_perslice` tree.
+- `original_genfirst_negcrop`: the generous-first, negatives-in-crop bundle. A generous, negative-free
+  first pass sizes the tier-2 crop via `chain_crop_from_mask`, then the `tier2_*` overrides turn
+  negatives on (and generosity off) once inside the crop, so the two passes optimize for coverage and
+  precision respectively.
+
+See `docs/superpowers/specs/2026-07-17-phase1-blowup-guard-and-genfirst-negcrop-design.md` for the
+full design and [roadmap.md](../explanation/roadmap.md) for where this sits in the plan.
+
+The SAM3 config A/B round adds two more, the `k_max_neg = 0` (negatives-off) partners of the two
+per-slice guard presets, so a 2x2 sweep of `k_max_neg` in `{0, 3}` by `multimask_generous` in
+`{off, on}` runs with `--backend sam3`:
+
+- `original_perslice_only_guard_kneg0`: `original_perslice_only_guard` with `k_max_neg = 0`, negatives off.
+- `original_perslice_guard_kneg0`: `original_perslice_guard` (generous multimask) with `k_max_neg = 0`.
+
+The two `k_max_neg = 3` corners of that grid are the existing `original_perslice_only_guard` and
+`original_perslice_guard`. The generous corners set both `multimask_generous` and `multimask_anchor`,
+since generosity only takes effect when the multimask selection is on. See
+[../how-to/queued-sam3-narval-tests.md](../how-to/queued-sam3-narval-tests.md) for the submission plan.
+
+## Membrane metric parameters (`sam2_utils/membrane.py`)
+
+The v1 membrane map and its three detector primitives (`spanning_membrane`, `boundary_on_membrane`,
+`underfill_fraction`) take a small set of tunables, exposed as module constants and forwarded through
+`eval.merge_metric`'s membrane pass:
+
+- `sigmas` (default `(1, 2, 3)`): the Sato ridge-filter scales `membrane_map` runs the dark-ridge
+  response at, before normalising by the response's own 99th percentile.
+- `tau` (default `0.5`): the threshold on the normalised `[0, 1]` membrane map above which a pixel
+  counts as membrane. Shared by all three detectors; also a `merge_metric` CLI flag.
+- `f` (default `0.15`): the minimum area of a component, as a fraction of the mask's own area, for
+  `spanning_membrane` to count it as a border candidate. Filters out membrane-adjacent speckle.
+- `tol` (default `2` px): the dilation radius `boundary_on_membrane` allows between the mask
+  perimeter and a membrane pixel before counting that perimeter pixel as off-membrane. Also a
+  `merge_metric` CLI flag.
+- `k` (default `6` px): the bound on `underfill_fraction`'s outward flood, so a broken ridge leaks
+  only locally rather than into an unrelated neighbour.
+
+All five are resolution-aware for the `_sam` grid the metric runs on (the coarse, scale-8-ish working
+resolution most runs save at), and comparative rather than absolute: they are tuned for grading one
+run against another at a fixed scale, not for asserting a boundary is correct in isolation. See
+[ADR 0016](../adr/0016-membrane-map-border-to-border-bleed-detection.md) for why the spanning
+criterion works border-to-border, and [cli.md](cli.md) for the `merge_metric` flags.

@@ -154,6 +154,19 @@ def test_cropwindow_slice_is_row_col():
     assert (cs.start, cs.stop) == (800, 1200)       # x
 
 
+def test_cropwindow_slice_at_scale_follows_the_downscale():
+    # A frame that was already read at `scale` needs the window divided by that
+    # scale. Slicing a scale-4 frame with full-res _tif offsets reads past the end
+    # and yields an empty crop (the --em-scale 4 GUI backdrop bug).
+    cw = _cw()
+    assert cw.slice_at(1) == cw.slice_tif()          # scale 1 is the _tif case
+    rs, cs = cw.slice_at(4)
+    assert (rs.start, rs.stop) == (150, 250)         # y / 4
+    assert (cs.start, cs.stop) == (200, 300)         # x / 4
+    frame4 = np.zeros((5000 // 4, 6000 // 4, 3), np.uint8)
+    assert frame4[cw.slice_at(4)].shape == (100, 100, 3)
+
+
 def test_cropwindow_point_roundtrip_and_center():
     cw = _cw()
     # the node sits at the crop center
@@ -214,6 +227,26 @@ def test_cropwindow_around_box_clips_at_corner():
         (10.0, 5.0, 100.0, 90.0), pad_tif=64,
         image_hw_tif=(9230, 9216), crop_scale=1, sam_scale=8)
     assert cw.origin_tif == (0.0, 0.0)
+
+
+def test_cropwindow_around_box_snaps_to_scale_grid():
+    # Lucinda's real case: an odd origin (101) and odd width (1913) at crop_scale=2.
+    # Unsnapped, crop_hw rounds w/2 = 956.5 -> 956, so writing back (956*2=1912) drops
+    # the box's last tif pixel, and the odd origin means each mask pixel straddles a
+    # tif pixel pair that does not start on an even boundary either. Snapping origin
+    # down and the far edge up to the crop_scale grid makes both exactly reversible.
+    cw = alignment.CropWindow.around_box(
+        (101.0, 200.0, 2014.0, 1000.0), pad_tif=0,
+        image_hw_tif=(9230, 9216), crop_scale=2, sam_scale=8)
+    x0, y0 = cw.origin_tif
+    w, h = cw.size_tif
+    assert x0 % cw.crop_scale == 0
+    assert y0 % cw.crop_scale == 0
+    assert w % cw.crop_scale == 0
+    assert h % cw.crop_scale == 0
+    # never shrinks below the box that was asked for
+    assert x0 <= 101.0 and x0 + w >= 2014.0
+    assert y0 <= 200.0 and y0 + h >= 1000.0
 
 
 def test_cropwindow_sam_to_crop_matches_tif_path():

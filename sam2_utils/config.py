@@ -14,10 +14,15 @@ from pathlib import Path
 #: Root of the raw EM data (sorted .tif stack). Override with the SAM2_WORM_PATH env
 #: var (used on the cluster, where the stack lives under project storage); unset, it
 #: falls back to the local Windows default so existing local runs are unaffected.
-WORM_PATH = Path(os.environ.get("SAM2_WORM_PATH", r"E:\ZhenLab\Data\SAM2_test_NR_raw"))
+#: Local default is F: (the original E: drive's cable failed, same migration as the
+#: GT paths below; F: contents match the old E: layout).
+WORM_PATH = Path(os.environ.get("SAM2_WORM_PATH", r"F:\ZhenLab\Data\SAM2_test_NR_raw"))
 
-#: Where SAM2 checkpoints are downloaded to. Relative to notebook CWD by default.
-CHECKPOINT_DIR = Path("checkpoints")
+#: Where SAM2 checkpoints are downloaded to. Override with the SAM2_CHECKPOINT_DIR env
+#: var, the same pattern WORM_PATH uses above. The default is relative to the working
+#: directory, so a launcher started from anywhere but the repo root would otherwise look
+#: for checkpoints somewhere the user never put them, and silently re-download.
+CHECKPOINT_DIR = Path(os.environ.get("SAM2_CHECKPOINT_DIR", "checkpoints"))
 
 # -----------------------------------------------------------------------------
 # Pipeline data + output paths (one home, imported by run_aval.py / batch.py)
@@ -33,10 +38,14 @@ CSV_PATH    = DATA_DIR / "aggregate_data_pv.csv"   #: cached CATMAID node table
 CHAINS_PATH = DATA_DIR / "chains.json"             #: per-neuron MLC chains
 ROOTS_PATH  = DATA_DIR / "roots.json"              #: chain roots
 
-#: Where per-chain mask outputs + the manifest/triage CSVs are written.
-OUTPUT_ROOT = Path(r"E:\ZhenLab\Data\output_masks\test2_single")
-#: Parent dir for the SAM2 JPEG frame cache + per-chain link views.
-FRAMES_ROOT = Path(r"E:\ZhenLab\Data")
+#: Where per-chain mask outputs + the manifest/triage CSVs are written. Override with
+#: the SAM2_OUTPUT_ROOT env var, the same pattern WORM_PATH uses above, so a second
+#: machine never edits this tracked file (and never picks up a merge conflict for it).
+OUTPUT_ROOT = Path(os.environ.get(
+    "SAM2_OUTPUT_ROOT", r"F:\ZhenLab\Data\output_masks\test2_single"))
+#: Parent dir for the SAM2 JPEG frame cache + per-chain link views. Override with
+#: the SAM2_FRAMES_ROOT env var.
+FRAMES_ROOT = Path(os.environ.get("SAM2_FRAMES_ROOT", r"F:\ZhenLab\Data"))
 
 # -----------------------------------------------------------------------------
 # Cross-worm ground truth (eval/)  (see eval/README.md)

@@ -1,0 +1,17 @@
+# Review-only install: redraw and verify masks, no model.
+#
+# Deliberately excludes torch and sam2. gui.py's module-level imports pull no
+# torch, `import pipeline` pulls none either, and ensure_predictors is only
+# reached by the model actions that review mode hides. So a reviewer who is
+# redrawing needs none of it, which also removes the hardest part of setting
+# SAM2 up on macOS.
+#
+#   py -3 -m pip install -r requirements-review.txt
+#
+# For the full install (batch runs, re-propagation), see CONTRIBUTING.md instead.
+numpy
+pandas
+opencv-python
+napari[all]
+magicgui
+qtpy

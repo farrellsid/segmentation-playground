@@ -26,11 +26,12 @@ output/
   _manifest.csv               # every chain and its execution status; drives the batch and resume
   _triage.csv                 # queued (intervene) frames across all chains; feeds the GUI
   _review.csv                 # the GUI-owned review-status ledger, separate from the manifest
-  _timing.csv                 # per-chain phase seconds and peak VRAM
+  _timing.csv                 # per-chain phase seconds + peak VRAM; for a tier-2 chain t_total covers both passes and t_pass1 is the first (_sam) pass
   _labels.csv                 # one row per labelled frame (the GUI's training-data exhaust)
   <neuron>/
     chain_00/
       state.json              # the ChainState above
+      meta.json               # portable identity + geometry, readable without importing pipeline
       qc.csv                  # per-frame QC metrics, plus a `queue` column
       masks/mask_<z:04d>.png  # 0/255 uint8, canonical _sam space
     chain_01/ ...
@@ -49,11 +50,63 @@ frames_root/
   chain_views/
     <neuron>_chain<idx>_s<scale>/
       00000.jpg ...           # 0-indexed links into the cache, per chain
+    <neuron>_chain<idx>_pcrop_s<crop_scale>/
+      00000.jpg ...           # tier-2: the chain's own crop, decoded fresh (no shared cache)
+      _prep_meta.json         # what was prepared (z_range, window, frame_to_z); lets an
+                               # identical later call skip the rebuild instead of redoing it
 ```
 
 The decode cache means overlapping chains pay the large imread-and-resize once across the dataset,
 not once per chain. The per-chain views are links (hard-link on Windows, since the cache and views
-share a volume).
+share a volume). Tier-2 views have no shared cache since each chain's crop window is unique. The `_prep_meta.json` sidecar records what was built (z-range, window, anchor), so a repeat call with identical inputs is a no-op instead of a rebuild.
+
+## The review bundle
+
+A bundle is a portable copy of part of an output tree, for a reviewer on another machine:
+
+```
+<bundle>/
+  bundle.json                    schema version, chain index, source tree
+  neurons.csv                    the registry rows this bundle uses
+  data/chains.json               the exported neurons' chain records, complete and in source order
+  data/nodes.csv                 the exported neurons' CATMAID node rows, raw columns
+  <neuron>/chain_00/
+    meta.json
+    state.json                   frames_dir is RELATIVE here, unlike the master tree
+    qc.csv
+    masks/mask_<z:04d>.png
+    frames/00000.jpg ...
+```
+
+`export_bundle.py` writes one, `import_bundle.py` merges a returned one back. Per chain, only
+`masks/` and `qc.csv` travel on the return trip (`bundle.REVIEWER_OWNED`): a bundle's `state.json`
+records a relative `frames_dir` and would break the master tree if copied over it.
+
+Two tree-root ledgers come back as well (`bundle.REVIEWER_LEDGERS`), merged ROW-WISE rather than
+copied. Inside a bundle `output_root` IS the bundle, so the GUI writes a reviewer's chain
+dispositions to `<bundle>/_review.csv` and her per-frame verdicts to `<bundle>/_labels.csv`, and
+four of the ten keys review mode exposes write to nothing else. `_review.csv` holds one row per
+`(neuron, chain_idx)`, so a bundle chain's row replaces the master's and every other row is left
+alone. `_labels.csv` de-duplicates on `(neuron, chain_idx, z)`, the key `LabelStore` itself upserts
+on, and a collision on that key is resolved by the later `ts`. Copying either file wholesale would
+delete the master's rows for chains that were never in the bundle.
+
+The relative `frames_dir` is the point of the format. A master tree bakes an absolute path, which
+does not resolve elsewhere, and `gui.py` then falls back to regenerating frames from the raw EM
+store. `gui.resolve_frames_dir` joins a relative value against the chain directory instead. That
+function, `bundle.validate_bundle` and `export_bundle`'s copy-source check all go through the one
+implementation in `sam2_utils/bundle.py`, because three private copies of the rule is how they
+drifted apart before.
+
+`data/` is what makes a bundle openable at all. `data/chains.json` and `data/aggregate_data_pv.csv`
+are gitignored, so a reviewer who clones the repo has neither, and `ReviewContext` needs both to
+resolve a chain and to build `annotate_df`. The bundle therefore carries its own slice, filtered by
+NEURON: every exported neuron keeps all of its chains, in the source file's order, because
+`chain_idx` is a position in that list and dropping one chain would shift every later index.
+`nodes.csv` ships the raw columns, with no precomputed `x_tif`/`y_tif`, so the coordinate affine
+stays in code and a later correction to it still reaches an already-shipped bundle.
+`ReviewContext` prefers these files when they exist and falls back to the `config` paths when they
+do not, so a normal master-tree session is unchanged.
 
 ## Resume behavior
 

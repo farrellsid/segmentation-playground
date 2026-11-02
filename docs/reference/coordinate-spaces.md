@@ -39,8 +39,13 @@ writes uint16 instance labels, where the foreground pixel value equals the objec
 single-object pipeline uses the former. Instance-label encoding is a multi-object concern.
 
 **The row/column swap is isolated.** The only place that swaps `[y, x]` against `(x, y)` is
-`CropWindow.slice_tif`. Keeping it in one method avoids the off-by-axis bugs that come from scattering
-the swap through the code.
+`CropWindow.slice_at`, which `slice_tif` delegates to. Keeping it in one method avoids the
+off-by-axis bugs that come from scattering the swap through the code.
+
+**Crop a downscaled frame with `slice_at(scale)`, not `slice_tif`.** The window's
+`origin_tif`/`size_tif` are full-res `_tif` px, so cropping a frame that was read at a coarser
+scale (the GUI's `--em-scale`, for instance) needs the same divisor. `slice_tif` on a scale-4
+frame does not raise, it slices past the end and hands back an empty array.
 
 **Tier-2 chains store masks in `_pcrop`.** They persist their `CropWindow` to `state.json`
 (`ChainState.crop_window`), so QC, the read-only viewer, and the GUI all rebuild the crop space.

@@ -4,7 +4,8 @@ gui.py: napari review / triage / correction GUI.
 The one human-facing tool: one triage queue, one review tool. It reads the
 batch's flagged chains, lets a human scrub a chain, inspect
 why frames flagged, edit the SAM2 prompts (positive **and** negative points, plus a
-drawn bounding box), paint an anchor mask, re-run the image phase, and resume
+drawn bounding box), paint an anchor mask (brush, or a freehand lasso that unions
+a new area in), re-run the image phase, and resume
 propagation over the interruptible ``PropagationSession``, then writes the corrected
 masks + QC back to disk and logs every decision as a training label.
 
@@ -72,6 +73,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -86,7 +88,8 @@ import pandas as pd
 warnings.filterwarnings(
     "ignore", message="The plugin infrastructure in", category=FutureWarning)
 
-from sam2_utils import config, alignment, review, review_queue, labels as labels_mod
+from sam2_utils import (config, alignment, bundle as bundle_mod, chain_meta, review,
+                        review_queue, labels as labels_mod)
 import pipeline
 
 
@@ -102,10 +105,124 @@ _MODE_FLAGGED = "flagged only"
 _MODE_EVERYTHING = "everything"
 _MODE_CHOICES = [_MODE_FLAGGED, _MODE_EVERYTHING]
 
+# UI modes. Distinct from _MODE_CHOICES above, which filters WHICH CHAINS the picker
+# lists; these decide WHICH CONTROLS exist at all. A reviewer with no GPU cannot use
+# the model controls, and leaving them on screen only invites a wasted click.
+UI_MODE_REVIEW = "review"
+UI_MODE_RECROP = "recrop"
+UI_MODE_FULL = "full"
+UI_MODES = (UI_MODE_REVIEW, UI_MODE_RECROP, UI_MODE_FULL)
+
+#: Widget groups, in dock order. "model" is the prompt surface (points, box, re-predict,
+#: resume); "recrop" is the crop-window surface (grow, pick region, confirm, cancel).
+#: They are separate panels because they are separately reachable: recrop mode shows the
+#: second without the first.
+PANELS = ("navigation", "drawing", "model", "recrop", "verdict")
+
+#: Keys for the prompt surface: they edit or consume SAM2 prompts.
+PROMPT_KEYS = frozenset({"p", "n", "b", "r", "g"})
+
+#: Keys for the crop-window surface.
+RECROP_KEYS = frozenset({"c", "f"})
+
+#: Keys bound to actions that need a SAM2/SAM3 predictor. Recrop needs one too (it
+#: re-runs the chain), so this stays the union; what differs per mode is which half is
+#: REACHABLE, not which half is free of the model.
+MODEL_KEYS = PROMPT_KEYS | RECROP_KEYS
+
+#: Every key the GUI binds in full mode.
+ALL_KEYS = frozenset({".", ",", "p", "n", "b", "l", "r", "g", "s", "c", "f",
+                      "z", "w", "o", "a", "x", "Control-Z"})
+
+
+def panels_for_mode(mode: str) -> tuple:
+    """Return the widget groups a mode shows, in dock order.
+
+    Parameters
+    ----------
+    mode : str
+        One of :data:`UI_MODES`.
+
+    Returns
+    -------
+    tuple of str
+        Panel names from :data:`PANELS`.
+    """
+    if mode not in UI_MODES:
+        raise ValueError(f"unknown UI mode {mode!r}; expected one of {UI_MODES}")
+    if mode == UI_MODE_FULL:
+        return PANELS
+    if mode == UI_MODE_RECROP:
+        return tuple(p for p in PANELS if p != "model")
+    return tuple(p for p in PANELS if p not in ("model", "recrop"))
+
+
+def keys_for_mode(mode: str) -> frozenset:
+    """Return the keys a mode binds.
+
+    Parameters
+    ----------
+    mode : str
+        One of :data:`UI_MODES`.
+
+    Returns
+    -------
+    frozenset of str
+        Review mode binds no key in :data:`MODEL_KEYS`, so a model action cannot
+        be triggered by a stray keypress on a machine that cannot run it.
+    """
+    if mode not in UI_MODES:
+        raise ValueError(f"unknown UI mode {mode!r}; expected one of {UI_MODES}")
+    if mode == UI_MODE_FULL:
+        return ALL_KEYS
+    if mode == UI_MODE_RECROP:
+        return ALL_KEYS - PROMPT_KEYS
+    return ALL_KEYS - MODEL_KEYS
+
+# Cleanup of the image-phase re-predict. SAM2's raw mask on an EM frame comes back
+# with detached specks and fuzz outside the cell and a frayed, netty boundary; the batch
+# already has a deterministic model-free fix for exactly that (pipeline.clean_mask), which
+# the GUI never applied, so a human previewing a correction saw a dirtier mask than the
+# batch would have delivered. These levels name what the reviewer wants done, and the two
+# sizes stay adjustable because they are in pixels of the displayed frame: a _pcrop chain
+# at a finer crop_scale wants larger numbers than a scale-8 _sam one.
+CLEANUP_OFF = "off (raw SAM2)"
+CLEANUP_SPECKS = "drop specks"
+CLEANUP_LARGEST = "largest blob only"
+CLEANUP_LEVELS = [CLEANUP_OFF, CLEANUP_SPECKS, CLEANUP_LARGEST]
+#: Defaults for a scale-8 _sam frame: 64 px is well under a neurite cross-section, and a
+#: 1 px close-then-open shaves the fray without eroding a thin process.
+CLEANUP_MIN_ISLAND_PX = 64
+CLEANUP_SMOOTH_RADIUS = 1
+
+
+def image_cleanup_kwargs(level: str, *, min_island_px: int = CLEANUP_MIN_ISLAND_PX,
+                         smooth_radius: int = CLEANUP_SMOOTH_RADIUS) -> Optional[dict]:
+    """Keyword arguments for ``pipeline.clean_mask``, or None when cleanup is off.
+
+    ``CLEANUP_SPECKS`` keeps every component at or above ``min_island_px``, so a genuine
+    second cross-section of the cell survives while detached fuzz goes; ``CLEANUP_LARGEST``
+    keeps one component, which is right when the re-predict bled onto a neighbour but WILL
+    erase a real second process. Neither fills large cavities. Pure, so it unit-tests
+    without a viewer.
+    """
+    if level == CLEANUP_OFF:
+        return None
+    if level not in CLEANUP_LEVELS:
+        raise ValueError(f"unknown cleanup level {level!r}; expected one of {CLEANUP_LEVELS}")
+    return dict(open_px=1, close_px=1,
+                keep_largest_cc=(level == CLEANUP_LARGEST),
+                fill_holes=False,
+                remove_islands_min_size=max(0, int(min_island_px)),
+                fill_small_holes_area=max(0, int(min_island_px)),
+                smooth_radius=max(0, int(smooth_radius)))
+
+
 # Box-prompt geometry: convert between an xyxy box (the pipeline.Prompts.box_sam
 # format) and a napari Shapes rectangle's (N, 3) vertices in (t, y, x). Pure and
 # torch/napari-free so they unit-test without a GPU or a viewer.
 _BOX_EDGE_COLOR = "#1f77b4"   # blue, distinct from the green/red prompt points
+_LASSO_EDGE_COLOR = "#ff7f0e"   # orange, distinct from box (blue) and prompts (green/red)
 
 
 def _rect_to_xyxy(verts) -> np.ndarray:
@@ -137,6 +254,28 @@ def _box_on_frame(shapes_data, frame_idx: int) -> Optional[np.ndarray]:
     return box
 
 
+def _rasterize_lasso_fill(mask_hw: np.ndarray, polygon_yx) -> np.ndarray:
+    """Union a freehand lasso polygon's interior into a single-frame (H, W) mask.
+
+    ``polygon_yx`` is an (N, 2) array of (y, x) vertices in the same pixel space as
+    ``mask_hw`` (matching how prompts/box vertices already round-trip in this file).
+    Returns a NEW boolean array; ``mask_hw`` is never mutated. A degenerate polygon
+    (fewer than 3 vertices) returns a copy of ``mask_hw`` unchanged: napari's own
+    add_polygon_lasso mode already drops anything that small before this is ever
+    called from _on_lasso_drawn (confirmed against the installed napari 0.7.0
+    source, Shapes._finish_drawing), so this guard only matters for a direct call,
+    e.g. from a test."""
+    import cv2
+    mask_hw = np.asarray(mask_hw, dtype=bool)
+    polygon_yx = np.asarray(polygon_yx, dtype=float)
+    if len(polygon_yx) < 3:
+        return mask_hw.copy()
+    poly_xy = np.round(polygon_yx[:, ::-1]).astype(np.int32)   # cv2 wants (x, y)
+    filled = np.zeros(mask_hw.shape, dtype=np.uint8)
+    cv2.fillPoly(filled, [poly_xy], 1)
+    return mask_hw | filled.astype(bool)
+
+
 # =============================================================================
 # Light context: annotate_df + chains + lazy predictors
 # =============================================================================
@@ -151,7 +290,8 @@ class ReviewContext:
     """
 
     def __init__(self, output_root: Path, cfg: Optional[pipeline.PipelineConfig] = None,
-                 *, annotate_df: Optional[pd.DataFrame] = None, chains: Optional[list] = None):
+                 *, annotate_df: Optional[pd.DataFrame] = None, chains: Optional[list] = None,
+                 neurons: Optional[list] = None):
         self.output_root = Path(output_root)
         self.cfg = cfg or pipeline.PipelineConfig(
             model_size="large", scale=8, save_downscale=8,
@@ -160,27 +300,78 @@ class ReviewContext:
         self.cfg.output_root = self.output_root
         self._annotate_df = annotate_df
         self._chains = chains
+        self.neurons = list(neurons) if neurons else None
         self.image_predictor = None
         self.video_predictor = None
 
     # -- light -----------------------------------------------------------------
+    def _bundle_data(self, name: str) -> Optional[Path]:
+        """``<output_root>/data/<name>`` when a bundle ships it, else None.
+
+        A review bundle carries its own slice of the CATMAID tables, because both
+        source files (``data/chains.json`` and ``data/aggregate_data_pv.csv``) are
+        gitignored: a reviewer who clones the repo has neither, and the config
+        paths she would otherwise fall back to point at drives she cannot see.
+        Inside a bundle ``output_root`` IS the bundle root, so this is where that
+        slice lands.
+
+        Parameters
+        ----------
+        name : str
+            File name inside the bundle's ``data`` directory.
+
+        Returns
+        -------
+        Path or None
+            The bundle-local path when it exists, else None so the caller keeps
+            its existing config-path behaviour unchanged.
+        """
+        path = self.output_root / bundle_mod.BUNDLE_DATA_DIR / name
+        return path if path.exists() else None
+
     @property
     def annotate_df(self) -> pd.DataFrame:
         """Cached CATMAID node table with the stack→tif affine applied (x_tif/y_tif).
-        Same construction as batch._build_session, minus the predictors."""
+
+        Same construction as batch._build_session, minus the predictors, and read
+        from the bundle's own ``data/nodes.csv`` when the tree being reviewed is a
+        bundle. The bundle ships the RAW columns, so the affine is applied here
+        either way and stays in code rather than baked into shipped data.
+        """
         if self._annotate_df is None:
-            df = pd.read_csv(config.CSV_PATH)
+            src = self._bundle_data(bundle_mod.BUNDLE_NODES_NAME) or config.CSV_PATH
+            df = pd.read_csv(src)
             xy = alignment.catmaid_to_tif(df["x"].values, df["y"].values)
             df["x_tif"], df["y_tif"] = xy[:, 0], xy[:, 1]
             self._annotate_df = df
         return self._annotate_df
 
-    @property
-    def chains(self) -> list:
+    def _chains_from_disk(self) -> list:
+        """The full chain list, cached: chains.json loaded once and reused.
+
+        Prefers the bundle's own ``data/chains.json`` when there is one. That file
+        holds every chain of every EXPORTED neuron, in the source file's order, so
+        ``chain_idx`` (a position within a neuron's chain list) still resolves to
+        the same chain it did on the master machine.
+        """
         if self._chains is None:
-            with open(config.CHAINS_PATH) as f:
+            src = self._bundle_data(bundle_mod.BUNDLE_CHAINS_NAME) or config.CHAINS_PATH
+            with open(src) as f:
                 self._chains = json.load(f)
         return self._chains
+
+    @property
+    def chains(self) -> list:
+        """The chains this context exposes, restricted to ``self.neurons`` when set.
+
+        The launcher scopes a session to the neurons a reviewer ticked, so she is
+        never navigating past chains that are not her assignment.
+        """
+        all_chains = self._chains_from_disk()
+        if not self.neurons:
+            return all_chains
+        wanted = set(self.neurons)
+        return [c for c in all_chains if c.get("cell_name") in wanted]
 
     def find_chain(self, neuron: str, chain_idx: int) -> Optional[dict]:
         """The chain dict for (neuron, chain_idx): the position within that
@@ -210,6 +401,203 @@ class ReviewContext:
 # =============================================================================
 # Frame stack loading (EM JPEGs -> a sliceable (T, H, W, 3) array)
 # =============================================================================
+
+def resolve_frames_dir(recorded, chain_dir):
+    """Resolve a chain's recorded ``frames_dir`` to a usable local path.
+
+    A tree produced by this pipeline bakes an ABSOLUTE ``frames_dir`` into
+    ``state.json``. A review bundle rewrites it RELATIVE (to ``frames/`` inside the
+    chain directory) so the bundle opens on a machine that has none of the original
+    paths, and no raw EM store to regenerate frames from.
+
+    Parameters
+    ----------
+    recorded : str or None
+        The ``frames_dir`` value from ``state.json``.
+    chain_dir : Path
+        The chain directory the state was loaded from.
+
+    Returns
+    -------
+    Path or None
+        ``chain_dir / recorded`` when recorded is relative, the path unchanged when
+        it is absolute, and None when there is nothing recorded.
+
+    Notes
+    -----
+    A thin delegate to :func:`sam2_utils.bundle.resolve_frames_dir`, which is the
+    single implementation of the rule. It is kept under this name because the GUI
+    is where the rule is read from, and because ``export_bundle`` and
+    ``bundle.validate_bundle`` share the same logic; three private copies is how
+    they drifted apart in the first place.
+    """
+    return bundle_mod.resolve_frames_dir(recorded, chain_dir)
+
+
+def _ensure_local_frames(recorded_frames_dir: str, recorded_frame_to_z: dict,
+                         recorded_anchor_idx, *, chain: dict, cw,
+                         cfg: "pipeline.PipelineConfig", annotate_df: pd.DataFrame,
+                         anchor_catmaid_z: int, neuron: str, chain_idx: int,
+                         anchor_only: bool = False, context_frames: int = 0,
+                         chain_dir: Optional[Path] = None
+                         ) -> tuple[str, dict, int]:
+    """(frames_dir, frame_to_z, anchor_frame_idx) actually usable locally: the
+    recorded ones if present and `anchor_only` is not set, else freshly (re)prepared.
+
+    ``context_frames`` widens the anchor_only window symmetrically (anchor_catmaid_z
+    +/- context_frames instead of just the anchor z itself), for reviewing a mask
+    with a couple of neighbouring frames as context without paying for the whole
+    chain. Only takes effect when ``anchor_only`` is also set; ignored otherwise
+    (the full chain is already loaded, "context" is meaningless there). 0 (the
+    default) reproduces the original single-frame anchor_only behaviour exactly.
+
+    ``anchor_frame_idx`` matters as much as ``frame_to_z`` here and is easy to get
+    wrong: a narrowed ``frame_to_z`` (anchor_only) puts the anchor at LOCAL index 0,
+    not wherever it sat in the full chain (found for real: AIAR chain_00's anchor was
+    frame 43 of 88; loading the narrowed 1-frame stack with the recorded
+    ``anchor_frame_idx=43`` left every anchor-detection check in the GUI comparing
+    against an index that no longer exists in the loaded stack).
+
+    `state.json`'s `frames_dir` is an ABSOLUTE path baked in at generation time. For a
+    chain generated on Narval, that is a Slurm scratch path
+    (`/localscratch/<jobid>/frames/...`), deleted the moment that job ended; on Windows
+    a leading `/` in that string also gets misread as "root of the current drive"
+    (`D:\\localscratch\\...`), so the failure is a FileNotFoundError deep in image
+    loading, not an obviously-stale-path message. Regenerating is cheap for a legacy
+    `_sam` chain: the decode cache (`_ensure_cached_frames`) is keyed by z + scale,
+    shared across chains, so only the first chain to touch a given z-range actually
+    re-decodes it. A tier-2 `_pcrop` chain has NO such shared cache (every chain's
+    crop window is unique), so regenerating its full z-range is genuinely the slow
+    part for a long chain, confirmed for real: AIAR chain_00, 88 tier-2 frames, ~45s.
+
+    `anchor_only=True` (the review GUI's `--anchor-only` flag) narrows the prepared
+    range to just the anchor z (`z_range=(anchor_catmaid_z, anchor_catmaid_z)`),
+    skipping that cost entirely for a "only fix the seed" session: real per-frame
+    stack loading was already fast (dask's lazy path, confirmed: ~3s to open a
+    40-frame stack, ~0.05s for the first frame), the slow part was decoding frames
+    nobody was going to look at. `review.load_chain` already drops any saved mask
+    whose z is not in the given `frame_to_z` (see sam2_utils/review.py), so a
+    narrowed `frame_to_z` cascades cleanly into a single-frame session with no
+    other change needed."""
+    # None is a real state, not a bug: import_bundle clears frames_dir when a chain comes
+    # home recropped, precisely so the stale view (same directory name, old window's
+    # frames) is regenerated instead of silently reused.
+    if not recorded_frames_dir:
+        resolved = None
+    else:
+        resolved = (resolve_frames_dir(recorded_frames_dir, chain_dir) if chain_dir
+                    else Path(recorded_frames_dir))
+    # Before background prefetch existed, a view directory either existed complete
+    # or not at all (prep only ever ran synchronously, to completion, on the GUI
+    # thread). Now a directory can hold 00000.jpg without holding every recorded
+    # frame: a daemon prefetch thread killed mid-build leaves a partial directory,
+    # and an --anchor-only session narrows a chain's view down to just its anchor
+    # +/- context frames, including for a chain it never opened itself (the
+    # prefetched next chain) -- if that same chain is later opened in a FULL
+    # session, checking only index 0 would wrongly report the narrow set as the
+    # complete recorded frame_to_z (e.g. 88 entries), producing wrong/missing
+    # frames or an index error. Also checking the LAST recorded index catches a
+    # truncated directory without a full stat-every-frame loop.
+    n_recorded = len(recorded_frame_to_z) if recorded_frame_to_z else 0
+    have_recorded = (resolved is not None and n_recorded > 0
+                     and (resolved / "00000.jpg").exists()
+                     and (resolved / f"{n_recorded - 1:05d}.jpg").exists())
+    if have_recorded and not anchor_only:
+        return str(resolved), recorded_frame_to_z, recorded_anchor_idx
+
+    context = max(0, int(context_frames))
+    z_range = ((anchor_catmaid_z - context, anchor_catmaid_z + context)
+              if anchor_only else None)
+    if not have_recorded:
+        print(f"[gui] recorded frames_dir not found locally ({recorded_frames_dir}), "
+             f"likely a stale Narval scratch path; regenerating from the source tifs"
+             f"{f' (anchor +/- {context})' if anchor_only else ''}...")
+    elif anchor_only:
+        print(f"[gui] --anchor-only: preparing the anchor frame "
+             f"{f'+/- {context} frames of context' if context else '(just the anchor)'} ...")
+    if cw is not None:
+        frames_dir, frame_to_z, anchor_idx, _n = pipeline.prepare_chain_crop_frames(
+            chain, annotate_df, cw, frames_root=cfg.frames_root,
+            anchor_catmaid_z=anchor_catmaid_z, neuron=neuron, chain_idx=chain_idx,
+            z_range=z_range)
+    else:
+        frames_dir, frame_to_z, anchor_idx, _n = pipeline.prepare_video_frames(
+            chain, annotate_df, scale=cfg.scale, frames_root=cfg.frames_root,
+            anchor_catmaid_z=anchor_catmaid_z, neuron=neuron, chain_idx=chain_idx,
+            z_range=z_range)
+    print(f"[gui] frames ready at {frames_dir} ({len(frame_to_z)} frame(s))")
+    return frames_dir, frame_to_z, anchor_idx
+
+
+def _load_chain_state_and_cw(ctx: "ReviewContext", neuron: str, chain_idx: int,
+                             chain_dir: Path
+                             ) -> tuple[Optional[dict], Optional["pipeline.ChainState"],
+                                        Optional["alignment.CropWindow"]]:
+    """(chain dict, parsed state.json, tier-2 CropWindow or None) for (neuron,
+    chain_idx): the lookup open_chain and the background prefetch (_prefetch_next)
+    both need before they can resolve frames.
+
+    ``chain`` is None exactly when this session's chain list does not have
+    (neuron, chain_idx) (see open_chain's LookupError for why that matters:
+    a scope mismatch, not a missing file). That check happens FIRST and short-
+    circuits before state.json is ever read, so a malformed state.json next to
+    a chain outside this session's scope still surfaces as "not in this
+    session," not as a JSON error."""
+    chain = ctx.find_chain(neuron, chain_idx)
+    if chain is None:
+        return None, None, None
+    sp = chain_dir / "state.json"
+    state = pipeline.load_state(sp) if sp.exists() else None
+    cw = None
+    if state is not None and getattr(state, "crop_window", None):
+        cw = alignment.CropWindow.from_dict(state.crop_window)
+    return chain, state, cw
+
+
+def _resolve_chain_frames(state: Optional["pipeline.ChainState"], *, chain: dict, cw,
+                          cfg: "pipeline.PipelineConfig", annotate_df: pd.DataFrame,
+                          neuron: str, chain_idx: int, anchor_only: bool,
+                          context_frames: int, chain_dir: Path
+                          ) -> tuple:
+    """The (frames_dir, frame_to_z, anchor_idx) open_chain actually uses for ``state``.
+
+    This is the caller-side guard, kept separate from _ensure_local_frames so it can
+    be tested on its own: the bug this exists to prevent was in the CONDITION
+    deciding whether to call _ensure_local_frames at all, not in that function
+    itself. An earlier version skipped the call whenever `state.frames_dir` was
+    falsy, on the theory that nothing was recorded, so there was nothing to check.
+    But import_bundle deliberately sets frames_dir to None on every chain a recrop
+    touched, precisely so the stale view (same directory name, old window's frames)
+    is regenerated instead of silently reused (see bundle.merge_geometry). Skipping
+    the call left `frames_dir` at its caller default of None, which review.load_chain
+    then stringifies to the literal text "None" and hands to a JPEG reader, raising
+    FileNotFoundError instead of opening the chain.
+
+    Parameters
+    ----------
+    state : pipeline.ChainState or None
+        The chain's parsed state.json, or None when there is no state.json yet (a
+        chain that was never run). Nothing to resolve in that case.
+    chain, cw, cfg, annotate_df, neuron, chain_idx, anchor_only, context_frames, chain_dir
+        Passed straight through to :func:`_ensure_local_frames`.
+
+    Returns
+    -------
+    tuple
+        ``(frames_dir, frame_to_z, anchor_idx)``, the overrides open_chain passes to
+        :func:`sam2_utils.review.load_chain`. All three are None when there is no
+        state, or the state has no recorded anchor: review.load_chain then falls
+        back to whatever state.json itself carries, unchanged from before this
+        function existed.
+    """
+    if state is None or state.anchor_catmaid_z is None:
+        return None, None, None
+    return _ensure_local_frames(
+        state.frames_dir, state.frame_to_z, state.anchor_frame_idx,
+        chain=chain, cw=cw, cfg=cfg, annotate_df=annotate_df,
+        anchor_catmaid_z=state.anchor_catmaid_z, neuron=neuron, chain_idx=chain_idx,
+        anchor_only=anchor_only, context_frames=context_frames, chain_dir=chain_dir)
+
 
 def _load_frame_stack(frames_dir: str, n_frames: int):
     """Return an array-like (T, H, W, 3) uint8 over the chain's 0-indexed JPEGs.
@@ -261,27 +649,61 @@ class ReviewGUI:
 
     def __init__(self, ctx: ReviewContext, *, reviewer: str = "", viewer=None,
                  point_size: float = 4.0, auto_zoom: bool = True, zoom_pad: float = 3.0,
-                 hires_em: bool = False):
+                 hires_em: bool = False, em_scale: Optional[int] = None,
+                 anchor_only: bool = False, context_frames: int = 0,
+                 ui_mode: str = UI_MODE_FULL):
         """
         point_size : default diameter of prompt/skeleton points, in _sam px (was 10;
                      4 is unobtrusive at scale-8). Tune live via the dock spinbox.
         auto_zoom  : on open and on jump-to-flagged, zoom the camera to the mask's
                      bounding box (+ zoom_pad× margin) so you land on the object,
                      not the whole frame.
-        hires_em   : load the *full-resolution* EM tifs as the background instead of
-                     the scale-8 JPEGs (lazy, opt-in; see _load_hires_stack and the
-                     "Why low-res" note in the header). The MASK stays scale-8 (that
-                     is the only resolution it was propagated/saved at; sharper masks
-                     need the tier-2 per-chain crop), but it is scaled
-                     to overlay the full-res image so the EM context is crisp.
+        hires_em   : shorthand for em_scale=1 (kept for back-compat).
+        em_scale   : load the raw EM tifs as the background at this downscale instead of
+                     the scale-8 JPEGs (lazy, opt-in; see _load_hires_stack). 1 = full res
+                     (crisp, memory-heavy), 2 = half, 4 = quarter (much lighter memory).
+                     None uses the scale-8 JPEGs SAM2 saw. Handy on cluster runs where the
+                     JPEG frames were not saved, so the raw EM is the only backdrop source.
+                     The MASK stays scale-8 either way (the only resolution it was
+                     propagated/saved at; sharper masks need the tier-2 per-chain crop); it
+                     is scaled to overlay whatever EM resolution is loaded.
+        anchor_only : only prepare/load the anchor frame of each chain opened this
+                     session, not the whole chain (see _ensure_local_frames). For the
+                     "only fix the seed" workflow: a real, if unintuitive, savings,
+                     since the per-frame STACK load was already fast via dask's lazy
+                     path, the actual cost was decoding every OTHER frame nobody was
+                     going to look at, especially for a tier-2 chain (no shared decode
+                     cache there, unlike legacy _sam). `,`/`.` frame-stepping and
+                     resume_propagation (`G`) do not make sense with only one frame
+                     loaded; resume_propagation refuses with a clear message instead
+                     of silently doing something degenerate.
+        context_frames : with anchor_only, load this many frames of context on each
+                     side of the anchor (e.g. 2 -> 5 frames total) instead of just the
+                     anchor frame alone, so `,`/`.` can scrub a couple of frames either
+                     way to see how the mask should look. Ignored when anchor_only is
+                     False (the whole chain is already loaded). 0 (default) reproduces
+                     plain anchor_only's original single-frame behaviour.
+        ui_mode    : 'full' (default, every control, unchanged behaviour) or 'review'
+                     (navigation, drawing and verdict only). Review mode omits the 10
+                     controls and 7 keys that need a SAM2/SAM3 predictor, for a
+                     reviewer on a machine that cannot run one.
         """
         import napari
+        if ui_mode not in UI_MODES:
+            raise ValueError(f"unknown UI mode {ui_mode!r}; expected one of {UI_MODES}")
+        self.ui_mode = ui_mode
         self.ctx = ctx
         self.reviewer = reviewer
         self.point_size = float(point_size)
         self.auto_zoom = bool(auto_zoom)
         self.zoom_pad = float(zoom_pad)
-        self.hires_em = bool(hires_em)
+        self.anchor_only = bool(anchor_only)
+        self.context_frames = max(0, int(context_frames))
+        # em_scale selects the raw-EM backdrop downscale: 1 = full res (the old --hires-em),
+        # 2 = half, 4 = quarter. None means the scale-8 JPEGs. An explicit em_scale wins over
+        # --hires-em; --hires-em alone means em_scale=1.
+        self.em_scale = em_scale if em_scale is not None else (1 if hires_em else None)
+        self.hires_em = self.em_scale is not None
         self._em_world = 1.0   # world units (EM px) per _sam px; set per chain in open_chain
         self.viewer = viewer if viewer is not None else napari.Viewer(title="SAM2 review (M4)")
         self.queue = review_queue.ReviewQueue(ctx.output_root)
@@ -298,11 +720,17 @@ class ReviewGUI:
         self.session: Optional[pipeline.PropagationSession] = None  # built lazily on resume
 
         # layers (set in open_chain)
-        self._img = self._mask = self._skel = self._prompts = self._box = None
+        self._img = self._mask = self._skel = self._prompts = self._box = self._lasso = None
+        self._lasso_clear_retries = 0    # bounds _clear_lasso's mid-flight-stroke requeue
         self._lscale = (1.0, 1.0, 1.0)   # _sam->EM world scale of the current chain's layers
         self._populating = False         # re-entrancy guard for the neuron->chain cascade
         self._recrop_picking = False     # True while the full-frame recrop region picker is open
         self._recrop_full_hw = None      # (H, W) _tif of the frame shown in the picker
+        # one Lock per (neuron, chain_idx) ever opened or prefetched this session, so
+        # open_chain and a background _prefetch_next thread can never write the same
+        # chain's view directory at once (see _prefetch_next). dict.setdefault on a
+        # plain (str, int) key is atomic under the GIL, so this needs no lock of its own.
+        self._prep_locks: dict[tuple[str, int], threading.Lock] = {}
 
         self._build_widgets()
         self._bind_keys()
@@ -316,27 +744,67 @@ class ReviewGUI:
 
         self._close_session()
         self.neuron, self.chain_idx = neuron, chain_idx
-        self.chain = self.ctx.find_chain(neuron, chain_idx)
-
-        # rebuild the overlay from disk (one definition of "how a mask is read")
-        self.data = review.load_chain(chain_dir, verbose=True)
-        self.qc_df = self.data.qc if isinstance(self.data.qc, pd.DataFrame) else None
         # the chain's serialized state carries the ORIGINAL seed (prompts.points_sam
         # / labels / box_sam), loaded so we can pre-populate the prompts layer with
         # it rather than starting empty (else "re-run image phase" has no positive
-        # point). Also reused by _anchor_dict.
-        sp = chain_dir / "state.json"
-        self._state = pipeline.load_state(sp) if sp.exists() else None
+        # point). Also reused by _anchor_dict. Loaded BEFORE review.load_chain (not
+        # after, as before) because frames_dir may need regenerating first, see below.
         # tier-2 chains were propagated/saved in a per-chain crop space (_pcrop). The
         # CropWindow (persisted in state.json) is what maps _tif skeleton nodes + drives
         # crop-aware QC. The displayed EM/mask/prompts are ALL _pcrop already (frames_dir
         # points at the crop view, masks are crop-sized), so a click is a _pcrop coord and
         # re-predict/resume need no transform: only skeleton/QC/hires consult the window.
-        self._cw = None
-        if self._state is not None and getattr(self._state, "crop_window", None):
-            self._cw = alignment.CropWindow.from_dict(self._state.crop_window)
+        self.chain, state, cw = _load_chain_state_and_cw(
+            self.ctx, neuron, chain_idx, chain_dir)
+        if self.chain is None:
+            # find_chain returning None is a real, tested state (a neuron this
+            # session's chains.json/scope does not have), not a bug in it: see
+            # test_gui_neuron_filter.py. But letting a None chain flow into frame
+            # regeneration crashes three calls later with a bare "'NoneType' object
+            # is not subscriptable" deep in prepare_chain_crop_frames, useless for
+            # telling a scope mismatch apart from any other failure. The chain DIR
+            # existing (checked above) while find_chain fails means chains.json
+            # itself is missing this chain or this session was scoped without it.
+            raise LookupError(
+                f"{neuron} chain_{chain_idx:02d} has a directory at {chain_dir} but "
+                f"is not in this session's chain list. Likely causes: this "
+                f"session's data/chains.json does not include {neuron}, or the "
+                f"launcher scoped this session to a neuron subset that excludes it.")
+        self._state, self._cw = state, cw
+        if self._cw is not None:
             print(f"[gui] tier-2 crop chain: _pcrop window {self._cw.size_tif} "
                   f"@ crop_scale {self._cw.crop_scale}")
+
+        # frames_dir is an absolute path baked in at generation time; on a different
+        # machine (or after a Narval scratch dir was cleaned up) it may not exist here
+        # any more, regenerate it from the source tifs rather than crash on open. It
+        # can also be None outright: import_bundle clears it on every chain a recrop
+        # touched, exactly so this regenerates instead of reusing the old window's
+        # frames (see _resolve_chain_frames). anchor_only additionally narrows this
+        # to just the anchor z regardless of whether the full recording exists, see
+        # _ensure_local_frames.
+        lock = self._prep_locks.setdefault((neuron, chain_idx), threading.Lock())
+        with lock:
+            frames_dir_override, frame_to_z_override, anchor_idx_override = _resolve_chain_frames(
+                self._state, chain=self.chain, cw=self._cw, cfg=self.ctx.cfg,
+                annotate_df=self.ctx.annotate_df, neuron=neuron, chain_idx=chain_idx,
+                anchor_only=self.anchor_only, context_frames=self.context_frames,
+                chain_dir=chain_dir)
+
+        # rebuild the overlay from disk (one definition of "how a mask is read").
+        # anchor_idx MUST come from the same source as frame_to_z: a narrowed
+        # (anchor_only) frame_to_z puts the anchor at a LOCAL index (0 with no
+        # context_frames, context_frames otherwise), not wherever it sat in the
+        # recorded state.json (real bug caught testing this: AIAR chain_00's anchor
+        # was frame 43 of 88, leaving anchor_idx=43 against a 1-frame stack breaks
+        # every anchor-detection check downstream). prepare_chain_crop_frames /
+        # prepare_video_frames already compute the correct local anchor_idx for
+        # whatever z_range they were given, so no extra offset math is needed here.
+        self.data = review.load_chain(chain_dir, frames_dir=frames_dir_override,
+                                      frame_to_z=frame_to_z_override,
+                                      anchor_idx=anchor_idx_override,
+                                      warn_unmapped=not self.anchor_only, verbose=True)
+        self.qc_df = self.data.qc if isinstance(self.data.qc, pd.DataFrame) else None
 
         # frame stack + dims
         t = max(self.data.video_segments) + 1 if self.data.video_segments else 0
@@ -352,7 +820,7 @@ class ReviewGUI:
         # round-trip (_prompts_for_frame) is unchanged: with scale=(1,s,s), a click's
         # data coordinate is world/s = _sam (see "Why low-res" in the header).
         if self.hires_em:
-            em = self._load_hires_stack(self.data.frame_to_z, t)
+            em = self._load_hires_stack(self.data.frame_to_z, t, self.em_scale)
         else:
             em = _load_frame_stack(self.data.frames_dir, t)
         # world units (EM px) per mask px. Both EM axes are the mask scaled uniformly
@@ -375,6 +843,7 @@ class ReviewGUI:
         self._skel.editable = False
         self._prompts = self._new_prompts_layer(scale=lscale)
         self._box = self._new_box_layer(scale=lscale)
+        self._lasso = self._new_lasso_layer(scale=lscale)
         # pre-load the chain's original seed (points + box) at the anchor frame
         self._seed_prompts_from_state()
 
@@ -388,6 +857,50 @@ class ReviewGUI:
         self._refresh_info()
         print(f"[gui] opened {neuron} chain {chain_idx:02d}: {t} frames, "
               f"{len(self.data.triage_frames)} queued, anchor frame {self.data.anchor_idx}")
+        self._prefetch_next()
+
+    def _prefetch_next(self) -> None:
+        """Fire a background preparation of the chain `next CHAIN` would open
+        right now, so by the time you press it the frame crop/decode is
+        already done. Depth 1: this only ever looks one hop ahead, re-armed
+        every time a chain finishes loading (called at the end of
+        open_chain). A target that errors, or that you never actually open,
+        is harmless: caught and logged here, never raised into the GUI, and
+        an unread prepared view is simply left on disk for next time."""
+        try:
+            # _peek_chain can refresh self.queue from disk (self.queue.refresh()),
+            # which can raise on real disk flakiness this repo has hit before (see
+            # pipeline/frames.py's load_frame_sam retry hardening). open_chain has
+            # already fully succeeded by the time this runs, so a failure here must
+            # degrade to "no prefetch this time," never surface as a crash of a
+            # chain that already opened fine.
+            target = self._peek_chain(+1)
+            if target is None:
+                return
+            neuron, chain_idx = target
+            chain_dir = self.ctx.output_root / neuron / f"chain_{chain_idx:02d}"
+        except Exception as e:
+            print(f"[gui] background prefetch setup failed: {e}")
+            return
+
+        def _run() -> None:
+            try:
+                chain, state, cw = _load_chain_state_and_cw(
+                    self.ctx, neuron, chain_idx, chain_dir)
+                if chain is None or state is None:
+                    return   # never run yet, or outside this session's scope: nothing to do
+                lock = self._prep_locks.setdefault((neuron, chain_idx), threading.Lock())
+                with lock:
+                    _resolve_chain_frames(
+                        state, chain=chain, cw=cw, cfg=self.ctx.cfg,
+                        annotate_df=self.ctx.annotate_df, neuron=neuron, chain_idx=chain_idx,
+                        anchor_only=self.anchor_only, context_frames=self.context_frames,
+                        chain_dir=chain_dir)
+            except Exception as e:
+                print(f"[gui] background prefetch of {neuron} chain_{chain_idx:02d} "
+                      f"failed: {e}")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # -- layer builders --------------------------------------------------------
     def _new_prompts_layer(self, scale=(1.0, 1.0, 1.0)):
@@ -419,6 +932,107 @@ class ReviewGUI:
             face_color="transparent", edge_width=1.0, opacity=0.8)
         return layer
 
+    def _new_lasso_layer(self, scale=(1.0, 1.0, 1.0)):
+        """An empty Shapes layer for freehand loop-and-union mask additions (the 'L'
+        key arms add_polygon_lasso mode for the next stroke). ndim=3 so a loop binds to
+        a specific frame (t, y, x); ``scale`` matches the other layers so a drawn loop's
+        data coords stay _sam (or _pcrop), the same convention _box/_prompts already
+        use. Each finished stroke is consumed immediately by _on_lasso_drawn (unioned
+        into the mask), then removed from this layer one event-loop turn later (via
+        QTimer.singleShot, see _on_lasso_drawn / _clear_lasso for why the removal can't
+        run inline), so it never accumulates drawn loops on screen."""
+        layer = self.viewer.add_shapes(
+            name="lasso", ndim=3, scale=scale, edge_color=_LASSO_EDGE_COLOR,
+            face_color="transparent", edge_width=1.0, opacity=0.8)
+        layer.events.data.connect(self._on_lasso_drawn)
+        return layer
+
+    def _on_lasso_drawn(self, event=None) -> None:
+        """napari Shapes 'data' event handler for self._lasso: on a freshly finished
+        freehand loop (event.action == ActionType.ADDED, napari's own signal that a
+        shape was just completed, not edited or removed), rasterize it and union it
+        into the current frame's mask via Labels.data_setitem (undo-tracked, so
+        Ctrl+Z reverts one lasso stroke exactly like it already reverts one paint
+        stroke), then hand the consumed shape to _clear_lasso (on a deferred timer,
+        see that method for why it cannot run inline here) so the layer stays empty
+        between strokes.
+
+        Filtering on ActionType.ADDED (rather than a re-entrancy flag) is what keeps
+        this callback from re-triggering on the trim _clear_lasso performs: removing
+        the last shape fires REMOVING then REMOVED, never ADDED (confirmed against
+        the installed napari 0.7.0's Shapes.data setter directly), so that self-write
+        is naturally ignored rather than needing a guard flag.
+
+        The guarded body below runs inside a try/finally so the deferred clear always
+        fires, even when a guard returns early: a loop left un-cleared would sit on
+        the layer forever, and it would also keep stretching the viewer's dims
+        T-extent past the mask's real extent (see the frame_idx guard below), which
+        is itself part of how a stroke can end up on an out-of-range frame."""
+        from napari.layers.base import ActionType
+        if event is not None and getattr(event, "action", None) != ActionType.ADDED:
+            return
+        from qtpy.QtCore import QTimer
+        try:
+            if self._lasso is None or self._mask is None or self.data is None:
+                return
+            shapes_data = self._lasso.data
+            if not len(shapes_data):
+                return
+            verts = np.asarray(shapes_data[-1], dtype=float)
+            frame_idx = self._current_frame()
+            if not (0 <= frame_idx < len(self._mask.data)):
+                return
+            on_frame = np.round(verts[:, 0]).astype(int) == frame_idx
+            polygon_yx = verts[on_frame][:, 1:]                # drop t -> (y, x)
+            if len(polygon_yx) >= 3:
+                mask_hw = np.asarray(self._mask.data[frame_idx] == self.data.obj_id)
+                new_mask = _rasterize_lasso_fill(mask_hw, polygon_yx)
+                added = new_mask & ~mask_hw
+                ys, xs = np.nonzero(added)
+                if len(ys):
+                    ts = np.full(len(ys), frame_idx, dtype=int)
+                    self._mask.data_setitem((ts, ys, xs), self.data.obj_id)
+        finally:
+            QTimer.singleShot(0, self._clear_lasso)
+
+    def _clear_lasso(self) -> None:
+        """Drop the consumed shape from self._lasso. Deferred (via
+        QTimer.singleShot(0, ...) in _on_lasso_drawn) rather than run inline in the
+        'data' event: napari's own Shapes.data setter starts with an unconditional
+        _finish_drawing() call, and assigning .data from INSIDE the event that
+        _finish_drawing() itself just emitted re-enters that same _finish_drawing()
+        call while its shape index is already reset to None, crashing with a
+        TypeError on every real stroke (found by the final whole-branch review,
+        reproduced headlessly by replaying napari's real draw sequence against a
+        ViewerModel). Deferring to the next event-loop turn lets the outer
+        _finish_drawing() call complete first, so the nested one it would otherwise
+        trigger never happens.
+
+        Latent-race hardening: if a second stroke is already mid-flight (napari's
+        own _is_creating is True) at the moment this deferred clear fires, wiping
+        self._lasso.data now would pull the rug out from under that in-progress
+        stroke's own _finish_drawing(). No realistic GUI path has been found that
+        triggers this (the deferred timer reliably fires before the next stroke's
+        input dispatch in practice), but re-queuing the clear for the following turn
+        instead of running it is cheap insurance. getattr (not a direct attribute
+        read) so a future napari rename fails toward "clear now" instead of an
+        AttributeError inside a QTimer callback. The requeue itself is bounded (a
+        50ms delay, capped retries) rather than an immediate 0ms resubmit: an
+        unrelated exception earlier in _on_lasso_drawn's try block can leave
+        _is_creating permanently True (napari only clears it after a successful
+        finish), and an unbounded 0ms requeue against a permanently-stuck flag would
+        spin the event loop indefinitely; capping it just means a truly stuck lasso
+        layer stops retrying instead of busy-looping forever."""
+        if self._lasso is not None and getattr(self._lasso, "_is_creating", False):
+            self._lasso_clear_retries += 1
+            if self._lasso_clear_retries <= 20:      # ~1s of retries at 50ms, then give up
+                from qtpy.QtCore import QTimer
+                QTimer.singleShot(50, self._clear_lasso)
+            return
+        self._lasso_clear_retries = 0
+        if self._lasso is not None and len(self._lasso.data):
+            self._lasso.data = self._lasso.data[:-1]
+
     def _seed_prompts_from_state(self) -> None:
         """Pre-load the chain's ORIGINAL seed (state.prompts) at the anchor frame, so
         re-run starts from what the batch used, not an empty layer: points into the
@@ -426,13 +1040,25 @@ class ReviewGUI:
         Coords are _sam (or _pcrop), the layer scale handles overlay, matching the
         round-trips in _prompts_for_frame / _box_for_frame. The box seeds only the
         image phase; resume still propagates the mask, not the box. Best-effort: a
-        chain with no serialized prompts (legacy) just leaves the layers empty."""
+        chain with no serialized prompts (legacy) just leaves the layers empty.
+
+        The seed frame index is ``self.data.anchor_idx``, not
+        ``self._state.anchor_frame_idx``: the latter is the RAW recorded index
+        (e.g. 56 of a 113-frame chain), which is only valid against the recorded
+        frame_to_z. A narrowed load (anchor_only) puts the anchor at local index 0,
+        and placing the seed points/box at the raw 56 instead put them a frame
+        napari's dims slider only reaches because THESE layers stretch its T-extent
+        past the single real image slice: the mask looked right at frame 0, but
+        the prompts/box, sitting invisibly at frame 56, looked missing and the
+        slider read "0/56" (real bug, found from a user report opening AIAL
+        chain_00 with --anchor-only)."""
         st = self._state
-        if st is None or st.prompts is None or st.anchor_frame_idx is None:
+        if (st is None or st.prompts is None or st.anchor_frame_idx is None
+                or self.data is None or self.data.anchor_idx is None):
             return
         pts = np.asarray(st.prompts.points_sam, dtype=float)
         labs = np.asarray(st.prompts.labels, dtype=int)
-        af = int(st.anchor_frame_idx)
+        af = int(self.data.anchor_idx)
         if len(pts):
             data = np.column_stack([np.full(len(pts), af, float), pts[:, 1], pts[:, 0]])  # (t,y,x)
             label_strs = ["positive" if int(l) == 1 else "negative" for l in labs]
@@ -510,14 +1136,25 @@ class ReviewGUI:
         self._box.mode = "add_rectangle"
         print("[gui] box draw mode: drag a rectangle on this frame, then 'R' to re-predict")
 
+    def activate_lasso_draw(self, *_) -> None:
+        """Make the lasso layer active in add_polygon_lasso mode, so the next
+        freehand drag draws a loop that unions into the mask on release (the 'L'
+        key)."""
+        if self._lasso is None:
+            print("[gui] no chain open; nothing to draw a lasso on")
+            return
+        self.viewer.layers.selection.active = self._lasso
+        self._lasso.mode = "add_polygon_lasso"
+        print("[gui] lasso mode: drag a loop over the area to add, release to commit")
+
     # -- view helpers ----------------------------------------------------------
-    def _load_hires_stack(self, frame_to_z: dict, t: int):
-        """Lazy full-res EM stack (T, H_full, W_full, 3) over the chain's frames,
-        read from the original WORM_PATH tifs (NOT the scale-8 JPEGs). Opt-in via
-        ``hires_em``; see the "Why low-res" note in the header: this sharpens only
-        the *underlying image*; the saved masks remain scale-8 (sharper masks need
-        the tier-2 per-chain crop). Falls back to the scale-8 stack if dask is
-        unavailable, so a missing optional dep degrades, not crashes."""
+    def _load_hires_stack(self, frame_to_z: dict, t: int, em_scale: int = 1):
+        """Lazy raw-EM stack (T, H, W, 3) over the chain's frames, read from the original
+        WORM_PATH tifs (NOT the scale-8 JPEGs) and downscaled by ``em_scale`` (1 = full res,
+        2 = half, 4 = quarter). Opt-in via ``em_scale`` / ``hires_em``: this sharpens only
+        the *underlying image*; the saved masks remain scale-8 (sharper masks need the
+        tier-2 per-chain crop). Falls back to the scale-8 JPEG stack if dask is unavailable,
+        so a missing optional dep degrades, not crashes."""
         order = [frame_to_z[i] for i in range(t) if i in frame_to_z]
         if not order:
             return _load_frame_stack(self.data.frames_dir, t)
@@ -526,18 +1163,25 @@ class ReviewGUI:
             from dask import delayed
 
             def _read(z):
-                img, _ = pipeline.load_frame_sam(int(z), scale=1)   # full-res RGB
+                img, _ = pipeline.load_frame_sam(int(z), scale=int(em_scale))   # raw EM at em_scale
                 if self._cw is not None:
-                    img = img[self._cw.slice_tif()]   # tier-2: crop to the chain window
+                    # tier-2: crop to the chain window. The window is _tif px and the
+                    # frame is already downscaled by em_scale, so the slice follows
+                    # that downscale (slice_tif() would read past the end at scale > 1).
+                    img = img[self._cw.slice_at(int(em_scale))]
                 return img
 
             sample = _read(order[0])                                # one eager read for shape/dtype
+            if sample.size == 0:                                    # empty crop: napari would
+                raise ValueError(f"empty EM crop at scale {em_scale} "  # reject the rgb stack
+                                 f"(window {self._cw.size_tif if self._cw else None})")
             lazy = [da.from_delayed(delayed(_read)(z), shape=sample.shape, dtype=sample.dtype)
                     for z in order]
-            print(f"[gui] hires_em: lazy full-res EM {sample.shape[1]}x{sample.shape[0]} per frame")
+            print(f"[gui] em backdrop: lazy raw EM scale-{em_scale} "
+                  f"{sample.shape[1]}x{sample.shape[0]} per frame")
             return da.stack(lazy, axis=0)
         except Exception as e:
-            print(f"[gui] hires_em unavailable ({e}); using scale-{self.ctx.cfg.scale} frames")
+            print(f"[gui] em backdrop unavailable ({e}); using scale-{self.ctx.cfg.scale} frames")
             return _load_frame_stack(self.data.frames_dir, t)
 
     def _zoom_to_mask(self, frame_idx: Optional[int], *, pad: Optional[float] = None) -> None:
@@ -617,13 +1261,43 @@ class ReviewGUI:
         em_sam = self._frame_image_sam(frame_idx)              # (H, W, 3) RGB uint8
         mask, score, _ = pipeline.image_predict(self.ctx.image_predictor, em_sam, prompts)
         self.ctx.image_predictor.reset_predictor()
+        mask, clean_desc = self._clean_predicted(mask)
         self._set_frame_mask(frame_idx, mask)                  # into the mask layer + segments
         seed = (f"{int((prompts.labels == 1).sum())}+/{int((prompts.labels == 0).sum())}- pts"
                 + ("" if prompts.box_sam is None else " + box"))
         print(f"[gui] re-predicted frame {frame_idx} ({seed}): {int(mask.sum())} px, "
-              f"score {score:.3f}, tweak by painting if needed, then 'resume propagation'")
+              f"score {score:.3f}{clean_desc}, tweak by painting if needed, "
+              "then 'resume propagation'")
         self._zoom_to_mask(frame_idx)
         self._refresh_info()
+
+    def _clean_predicted(self, mask):
+        """Post-process a freshly re-predicted mask per the dock's cleanup setting.
+
+        Returns ``(mask, description)``, the description being a printable summary of what
+        cleanup did (empty when it is off), so the reviewer can see in the log whether the
+        mask they are looking at was trimmed and by how much. Only the *preview* is cleaned:
+        the reviewer still paints over the result, and it is the mask layer, not this
+        return value, that seeds the propagation.
+        """
+        def _setting(name, default):
+            # The dock is built in both UI modes, but read defensively: a missing widget
+            # must mean "leave the mask alone", never a silent transformation.
+            return getattr(getattr(self, name, None), "value", default)
+
+        level = _setting("_clean_mode", CLEANUP_OFF)
+        kwargs = image_cleanup_kwargs(
+            level,
+            min_island_px=int(_setting("_clean_island_spin", CLEANUP_MIN_ISLAND_PX)),
+            smooth_radius=int(_setting("_clean_smooth_spin", CLEANUP_SMOOTH_RADIUS)))
+        if kwargs is None:
+            return np.asarray(mask), ""
+        before = int(np.asarray(mask).sum())
+        cleaned = pipeline.clean_mask(mask, **kwargs)
+        after = int(cleaned.sum())
+        return cleaned, (f", cleaned {before}->{after} px "
+                         f"({level}, island<{kwargs['remove_islands_min_size']}, "
+                         f"smooth {kwargs['smooth_radius']})")
 
     def resume_propagation(self, *_) -> None:
         """Re-propagate from the CURRENT frame over a PropagationSession, seeding with
@@ -642,6 +1316,15 @@ class ReviewGUI:
         Then save masks, re-run QC, persist state, and mark the chain CORRECTED.
         """
         if self.data is None or self._recrop_picking:
+            return
+        if self.anchor_only:
+            loaded = ("only the anchor frame's video is loaded" if not self.context_frames
+                     else f"only a narrow +/-{self.context_frames}-frame context window "
+                          "is loaded, not the whole chain")
+            print(f"[gui] resume propagation is disabled in --anchor-only mode ({loaded}, "
+                 "propagating through it would not track anything real); use 'save masks "
+                 "now' to save the painted anchor, and run the actual propagation as a "
+                 "separate step (e.g. experiments/propagate_from_corrected_seed.py).")
             return
         self.ctx.ensure_predictors(need_image=False, need_video=True)
         frame_idx = self._current_frame()
@@ -717,18 +1400,81 @@ class ReviewGUI:
         """Re-run the open chain in ``cw_new`` (an alignment.CropWindow) via the standard
         run path, then reopen it. Shared by grow-recrop and the region picker. Heavy and
         blocking: re-preps the _pcrop frames + re-propagates."""
-        from dataclasses import replace
+        # Both recrop entry points (grow, and the region picker's confirm) funnel through
+        # here, so the guard lives here rather than in each. Recrop re-reads full-res tifs;
+        # without them it fails deep inside a read, minutes in, with nothing naming the
+        # cause.
+        problem = pipeline.raw_em_problem()
+        if problem:
+            print(f"[gui] recrop needs the raw EM tif stack: {problem}. Set 'Raw EM (tif "
+                  f"stack)' in the launcher, then reopen this chain.")
+            return
         old = self._cw.size_tif if self._cw is not None else "(_sam)"
         print(f"[gui] recrop {self.neuron} chain {self.chain_idx:02d}: {old} -> "
               f"{cw_new.size_tif} _tif ({label}), re-running the chain (this is slow)...")
         self.ctx.ensure_predictors(need_image=True, need_video=True)
-        cfg = replace(self.ctx.cfg, chain_crop=True, chain_crop_from_mask=False)
+        # chain_crop_fallback OFF for a human-directed recrop. It is a safety valve for
+        # AUTOMATED runs: a poorly-scoring crop anchor there probably means the crop is
+        # worse than the plain _sam path, so reverting is right. Here a person has just
+        # drawn or grown this window on purpose, and the valve silently threw it away,
+        # rewrote the chain as _sam with crop_window=None, and reopened the full low-res
+        # frame, which reads as "the recrop did nothing" with no error to explain it.
+        # Real session (manual_verify_RIP, 2026-08-25): all three recropped chains fell
+        # back on "score<0.7", and in two of them the _sam recovery scored LOWER than the
+        # crop it replaced, so the valve was not even winning on its own measure. It also
+        # left them non-tier-2, which makes grow-recrop refuse them afterwards.
+        # A genuinely bad anchor is still visible: an empty mask flags the chain as before.
+        # Re-run the chain the way the CHAIN was made, not the way this GUI happens to be
+        # configured. ReviewContext's defaults are backend "sam2" with no negatives, so
+        # building a fresh config here silently downgraded every sam3 chain and dropped its
+        # negative prompts, invisibly, on every recrop. Measured on a real chain in
+        # AIA_for_lucinda. config_for_rerun keeps the chain's settings and takes only this
+        # machine's paths, since a state.json can name cluster directories.
+        recorded = self._state.config if self._state is not None else None
+        cfg = pipeline.config_for_rerun(
+            recorded, base=self.ctx.cfg,
+            chain_crop=True, chain_crop_from_mask=False, chain_crop_fallback=False)
         state = pipeline.ChainState(neuron=self.neuron, chain_idx=self.chain_idx, config=cfg)
         self._close_session()                  # the old _pcrop session is stale
         pipeline.run_chain(
             state, image_predictor=self.ctx.image_predictor,
             video_predictor=self.ctx.video_predictor, annotate_df=self.ctx.annotate_df,
             chain=self.chain, override_crop_window=cw_new)
+        # run_chain sets state.crop_window BEFORE the anchor phase and returns early,
+        # with frame_to_z/frames_dir/n_frames still None, when the anchor mask in the
+        # new window comes up empty (see the "empty anchor mask" branch in
+        # orchestrator.run_chain). Persisting that state here would overwrite this
+        # chain's ONLY recorded frame_to_z with None while masks/ on disk still holds
+        # the OLD window's masks: state.json would then describe a window with no
+        # frames at all, review.load_chain would refuse it ("frame_to_z is required
+        # but is absent"), and there is no master copy to recover from inside a
+        # bundle. Refuse instead and leave every on-disk file exactly as it was; a
+        # human-directed recrop that finds nothing to seed from is not silently
+        # worse than not trying.
+        if state.frame_to_z is None:
+            print(f"[gui] recrop {self.neuron} chain {self.chain_idx:02d}: the recrop "
+                  f"produced no anchor mask in {cw_new.size_tif} ({label}); nothing was "
+                  f"written and the chain is unchanged. Try a larger or "
+                  f"better-centred window.")
+            return
+        # run_chain does NOT persist state; every caller does its own save (batch.py
+        # does it immediately after its own run_chain). Skipping it here left the new
+        # masks on disk in cw_new's space while state.json still described the OLD
+        # window, so the GUI redrew them against the wrong geometry and, worse, the
+        # re-propagation driver rebuilds its CropWindow from state.json and would have
+        # re-run the chain in a window its masks were never in.
+        chain_dir = self.ctx.output_root / self.neuron / f"chain_{self.chain_idx:02d}"
+        # Inside a bundle the new frames must come with it: run_chain leaves them in the
+        # machine's frames cache and records an absolute path, which validate_bundle
+        # rejects and which stops the bundle opening anywhere else. In an output tree the
+        # cache IS where frames belong, and moving them would break the chains that share
+        # it, so this runs only for a bundle.
+        if bundle_mod.is_bundle(self.ctx.output_root) and state.frames_dir:
+            state.frames_dir = bundle_mod.adopt_chain_frames(chain_dir, state.frames_dir)
+        pipeline.save_state(state, chain_dir / "state.json")
+        # meta.json projects mask_space, mask_scale, crop_window and z_range from the
+        # state, and a recrop invalidates all four.
+        chain_meta.refresh_meta(chain_dir, pipeline.state_to_dict(state))
         self.queue.set_status(self.neuron, self.chain_idx, review_queue.CORRECTED,
                               reviewer=self.reviewer)
         print("[gui] recrop complete; reopening the chain in the new window")
@@ -888,6 +1634,27 @@ class ReviewGUI:
     def open_prev_in_queue(self, *_) -> None:
         self._step_chain(-1)
 
+    def _peek_chain(self, direction: int) -> Optional[tuple[str, int]]:
+        """The (neuron, chain_idx) `_step_chain(direction)` would open right now,
+        without opening it or touching any GUI state. None when there is nothing
+        to step to: an empty queue, or the only chain in the list is the one
+        already open. Refreshes the queue first, same as _step_chain always did,
+        so it reflects the current review state (claims/dispositions since the
+        last refresh). Used by _step_chain itself and by the background
+        prefetch (_prefetch_next), so both ask the identical question."""
+        self.queue.refresh()
+        chains = self._mode_chains()                        # mode-aware (see _mode_chains)
+        if not chains:
+            return None
+        cur = (self.neuron, self.chain_idx)
+        if cur in chains:
+            i = (chains.index(cur) + direction) % len(chains)
+        else:
+            i = 0 if direction > 0 else len(chains) - 1
+        if chains[i] == cur and len(chains) == 1:
+            return None
+        return chains[i]
+
     def _step_chain(self, direction: int) -> None:
         """Cycle to the next/prev CHAIN that still needs a human (different chain, vs
         next/prev *flagged FRAME*, which moves between frames within the open chain).
@@ -899,21 +1666,17 @@ class ReviewGUI:
         excluding those made the queue look empty as soon as you'd visited each once.
         Only terminal dispositions (approved / rejected / corrected) drop a chain out
         of the flagged list. Wraps around, relative to the chain currently open."""
-        self.queue.refresh()
-        chains = self._mode_chains()                        # mode-aware (see _mode_chains)
+        target = self._peek_chain(direction)
+        if target is not None:
+            self.open_chain(*target)
+            return
+        chains = self._mode_chains()        # queue was already refreshed by _peek_chain
         if not chains:
             print("[gui] no chains to cycle "
                   f"({self._mode_combo.value}); switch mode or refresh")
-            return
-        cur = (self.neuron, self.chain_idx)
-        if cur in chains:
-            i = (chains.index(cur) + direction) % len(chains)
         else:
-            i = 0 if direction > 0 else len(chains) - 1
-        if chains[i] == cur and len(chains) == 1:
+            cur = (self.neuron, self.chain_idx)
             print(f"[gui] {cur[0]} chain {cur[1]:02d} is the only chain in this list")
-            return
-        self.open_chain(*chains[i])
 
     # =====================================================================
     # Label logging
@@ -1043,11 +1806,13 @@ class ReviewGUI:
     # =====================================================================
     # Widgets / keybindings / info panel
     # =====================================================================
-    def _build_widgets(self) -> None:
-        from magicgui.widgets import (Container, PushButton, ComboBox, Label, LineEdit,
-                                      FloatSpinBox, SpinBox, CheckBox)
+    def _build_navigation_panel(self) -> list:
+        """Reviewer name, chain picker, and within-chain frame nav. Both modes."""
+        from magicgui.widgets import PushButton, ComboBox, Label, LineEdit
 
-        self._info = Label(value="(no chain open)")
+        self._reviewer_edit = LineEdit(label="reviewer", value=self.reviewer)
+        self._reviewer_edit.changed.connect(
+            lambda *_: setattr(self, "reviewer", self._reviewer_edit.value))
 
         # chain picker: a mode toggle + two cascading selectors (neuron, then chain).
         # 'flagged only' lists the review queue (today's behaviour); 'everything' lists
@@ -1075,13 +1840,17 @@ class ReviewGUI:
         nextf = PushButton(text="next flagged FRAME ( . ) ▶")      # same chain, next queued frame
         nextf.changed.connect(self.next_flagged)
 
-        # prompt label toggle (positive / negative) + box draw + reset to saved seed
-        self._prompt_mode = ComboBox(label="new point", choices=_PROMPT_LABELS, value="positive")
-        self._prompt_mode.changed.connect(self._set_prompt_label)
-        box_btn = PushButton(text="▭ draw box (B)")
-        box_btn.changed.connect(self.activate_box_draw)
-        reset_btn = PushButton(text="⟲ reset prompts to original")
-        reset_btn.changed.connect(self.reset_prompts)
+        return [self._reviewer_edit,
+                Label(value=", chains, "), self._mode_combo, self._neuron_combo,
+                self._chain_combo, open_btn, prev_q, next_q, refresh,
+                Label(value=", frames (this chain), "), prevf, nextf]
+
+    def _build_drawing_panel(self) -> list:
+        """Lasso, view controls, and save. Both modes: this is the redraw toolkit."""
+        from magicgui.widgets import PushButton, Label, FloatSpinBox, CheckBox
+
+        lasso_btn = PushButton(text="◯ draw lasso (L)")
+        lasso_btn.changed.connect(self.activate_lasso_draw)
 
         # view controls (point size / auto-zoom)
         self._size_spin = FloatSpinBox(label="point size", value=self.point_size,
@@ -1093,14 +1862,59 @@ class ReviewGUI:
         zoom_btn = PushButton(text="zoom to mask (Z)")
         zoom_btn.changed.connect(lambda *_: self._zoom_to_mask(self._current_frame(),
                                                                pad=self.zoom_pad))
+        save_btn = PushButton(text="💾 save masks (S)")
+        save_btn.changed.connect(self.save_masks_now)
+
+        return [Label(value=", draw, "), lasso_btn,
+                Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
+                Label(value=", save, "), save_btn]
+
+    def _build_model_panel(self) -> list:
+        """Prompts, re-segmentation, and recrop. Full mode only, all need a predictor.
+
+        Always called so `self._prompt_mode` and friends exist for the methods that
+        read them; review mode simply leaves the returned widgets out of the dock.
+        """
+        from magicgui.widgets import PushButton, ComboBox, Label, SpinBox
+
+        # prompt label toggle (positive / negative) + box draw + reset to saved seed
+        self._prompt_mode = ComboBox(label="new point", choices=_PROMPT_LABELS, value="positive")
+        self._prompt_mode.changed.connect(self._set_prompt_label)
+        box_btn = PushButton(text="▭ draw box (B)")
+        box_btn.changed.connect(self.activate_box_draw)
+        reset_btn = PushButton(text="⟲ reset prompts to original")
+        reset_btn.changed.connect(self.reset_prompts)
 
         # correction actions
         rerun = PushButton(text="re-run image phase (R)")
         rerun.changed.connect(self.rerun_image_phase)
         resume = PushButton(text="resume propagation (G)")
         resume.changed.connect(self.resume_propagation)
-        save_btn = PushButton(text="💾 save masks (S)")
-        save_btn.changed.connect(self.save_masks_now)
+
+        # cleanup of what the re-predict returns (see image_cleanup_kwargs). Sizes are in
+        # displayed-frame px, so they are knobs rather than constants: a tier-2 _pcrop chain
+        # is finer than scale-8 _sam and wants larger ones.
+        self._clean_mode = ComboBox(label="clean re-predict", choices=CLEANUP_LEVELS,
+                                    value=CLEANUP_SPECKS)
+        self._clean_island_spin = SpinBox(label="min island (px)", value=CLEANUP_MIN_ISLAND_PX,
+                                          min=0, max=100000, step=16)
+        self._clean_smooth_spin = SpinBox(label="smooth (px)", value=CLEANUP_SMOOTH_RADIUS,
+                                          min=0, max=16, step=1)
+
+        return [Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
+                Label(value=", correct, "), rerun, resume,
+                self._clean_mode, self._clean_island_spin, self._clean_smooth_spin]
+
+    def _build_recrop_panel(self) -> list:
+        """The crop-window surface, separate from the prompt surface above.
+
+        Split out so recrop mode can show it alone. Recrop still re-runs the chain and
+        therefore still needs a predictor; what this split buys is reaching it without
+        the launcher gating the whole session on the model, and without the prompt
+        controls on screen. Always called, so `self._grow_spin` exists in every mode.
+        """
+        from magicgui.widgets import PushButton, Label, SpinBox
+
         # tier-2 recrop: grow this chain's crop window by N _tif px/side and re-run it
         # (for a window that auto-sized too small). Only meaningful on a tier-2 chain.
         self._grow_spin = SpinBox(label="grow crop (tif px)", value=512, min=0, max=8192, step=64)
@@ -1114,6 +1928,13 @@ class ReviewGUI:
         cancel_recrop = PushButton(text="✗ cancel recrop")
         cancel_recrop.changed.connect(self.cancel_recrop)
 
+        return [Label(value=", recrop, "), self._grow_spin, recrop,
+                pick_region, confirm_recrop, cancel_recrop]
+
+    def _build_verdict_panel(self) -> list:
+        """Error type and chain disposition. Both modes: this is the review verdict."""
+        from magicgui.widgets import PushButton, ComboBox, Label
+
         # the error type used by 'mark wrong' (W key) and 'reject'. The per-frame
         # mark ok/wrong buttons were dropped to declutter the dock; the W/O keys remain.
         self._err_mode = ComboBox(label="error type", choices=list(labels_mod.ERROR_TYPES),
@@ -1124,24 +1945,27 @@ class ReviewGUI:
         approve.changed.connect(self.approve_chain)
         reject = PushButton(text="✗ reject CHAIN (X)")
         reject.changed.connect(self.reject_chain)
+        return [Label(value=", disposition, "), self._err_mode, approve, reject]
 
-        self._reviewer_edit = LineEdit(label="reviewer", value=self.reviewer)
-        self._reviewer_edit.changed.connect(
-            lambda *_: setattr(self, "reviewer", self._reviewer_edit.value))
+    def _build_widgets(self) -> None:
+        """Assemble the dock from the panels this UI mode shows."""
+        from magicgui.widgets import Container, Label
 
-        panel = Container(widgets=[
-            self._reviewer_edit,
-            Label(value=", chains, "), self._mode_combo, self._neuron_combo, self._chain_combo,
-            open_btn, prev_q, next_q, refresh,
-            Label(value=", frames (this chain), "), prevf, nextf,
-            Label(value=", prompts, "), self._prompt_mode, box_btn, reset_btn,
-            Label(value=", view, "), self._size_spin, self._zoom_chk, zoom_btn,
-            Label(value=", correct, "), rerun, resume, save_btn,
-            Label(value=", recrop, "), self._grow_spin, recrop,
-            pick_region, confirm_recrop, cancel_recrop,
-            Label(value=", disposition, "), self._err_mode, approve, reject,
-            self._info,
-        ], labels=True)
+        self._info = Label(value="(no chain open)")
+
+        built = {
+            "navigation": self._build_navigation_panel(),
+            "drawing": self._build_drawing_panel(),
+            "model": self._build_model_panel(),
+            "recrop": self._build_recrop_panel(),
+            "verdict": self._build_verdict_panel(),
+        }
+        widgets = []
+        for name in panels_for_mode(self.ui_mode):
+            widgets.extend(built[name])
+        widgets.append(self._info)
+
+        panel = Container(widgets=widgets, labels=True)
         # Wrap in a scroll area so a tall panel never buries buttons below the fold
         # (napari's dock does not scroll on its own); see the no-dock-scroll note in docs.
         from qtpy.QtWidgets import QScrollArea
@@ -1152,50 +1976,72 @@ class ReviewGUI:
 
     def _bind_keys(self) -> None:
         v = self.viewer
+        allowed = keys_for_mode(self.ui_mode)
 
-        @v.bind_key(".", overwrite=True)
+        def _bind(key):
+            """Register a key only if this UI mode allows it."""
+            def deco(fn):
+                if key in allowed:
+                    v.bind_key(key, overwrite=True)(fn)
+                return fn
+            return deco
+
+        @_bind(".")
         def _nf(_v): self.next_flagged()
 
-        @v.bind_key(",", overwrite=True)
+        @_bind(",")
         def _pf(_v): self.prev_flagged()
 
-        @v.bind_key("p", overwrite=True)
+        @_bind("p")
         def _pos(_v): self._set_prompt_label("positive")
 
-        @v.bind_key("n", overwrite=True)
+        @_bind("n")
         def _neg(_v): self._set_prompt_label("negative")
 
-        @v.bind_key("b", overwrite=True)
+        @_bind("b")
         def _box(_v): self.activate_box_draw()
 
-        @v.bind_key("r", overwrite=True)
+        @_bind("l")
+        def _lasso_key(_v): self.activate_lasso_draw()
+
+        @_bind("r")
         def _rerun(_v): self.rerun_image_phase()
 
-        @v.bind_key("g", overwrite=True)
+        @_bind("g")
         def _resume(_v): self.resume_propagation()
 
-        @v.bind_key("s", overwrite=True)
+        # viewer-level Ctrl+Z fallback: Labels.undo is a LAYER keybinding, so it only
+        # fires while the mask layer itself is active. The lasso tool deliberately
+        # leaves the Shapes layer active across strokes, which would otherwise make
+        # Ctrl+Z a no-op there. Layer bindings win over viewer bindings, so when the
+        # mask layer IS active napari's own native undo still handles it, unchanged.
+        @_bind("Control-Z")
+        def _undo_mask(_v):
+            if self._mask is not None:
+                self._mask.undo()
+
+        @_bind("s")
         def _save(_v): self.save_masks_now()
 
-        @v.bind_key("c", overwrite=True)
+        @_bind("c")
         def _recrop(_v): self.recrop_chain()
 
-        @v.bind_key("f", overwrite=True)
+        @_bind("f")
         def _pickregion(_v): self.enter_recrop_picker()
 
-        @v.bind_key("z", overwrite=True)
+        @_bind("z")
         def _zoom(_v): self._zoom_to_mask(self._current_frame(), pad=self.zoom_pad)
 
-        @v.bind_key("w", overwrite=True)
+        @_bind("w")
         def _markw(_v): self.mark_frame_wrong()
 
-        @v.bind_key("o", overwrite=True)
+        @_bind("o")
         def _marko(_v): self.mark_frame_ok()
 
-        @v.bind_key("a", overwrite=True)
+        @_bind("a")
         def _approve(_v): self.approve_chain()
 
-        @v.bind_key("x", overwrite=True)
+        @_bind("x")
         def _reject(_v): self.reject_chain()
 
     def _set_prompt_label(self, value=None) -> None:
@@ -1343,24 +2189,87 @@ class ReviewGUI:
 def launch(output_root: Optional[Path] = None, *, neuron: Optional[str] = None,
            chain_idx: Optional[int] = None, reviewer: str = "",
            cfg: Optional[pipeline.PipelineConfig] = None, block: bool = True,
-           point_size: float = 4.0, auto_zoom: bool = True, hires_em: bool = False) -> ReviewGUI:
+           point_size: float = 4.0, auto_zoom: bool = True, hires_em: bool = False,
+           em_scale: Optional[int] = None, anchor_only: bool = False,
+           context_frames: int = 0, source: Optional[Path] = None,
+           ui_mode: str = UI_MODE_FULL, neurons: Optional[list] = None) -> ReviewGUI:
     """Open the review GUI. With ``neuron``/``chain_idx`` it opens straight onto a
     chain; otherwise it opens on the first pending chain (or an empty viewer if the
     queue is empty). ``block=True`` runs napari's event loop (call from a script);
     pass False from an interactive napari/IPython session that already has one.
 
-    ``point_size`` / ``auto_zoom`` / ``hires_em`` forward to ReviewGUI (smaller
-    prompt points, zoom-to-mask on open, full-res EM background; see ReviewGUI)."""
+    ``point_size`` / ``auto_zoom`` / ``hires_em`` / ``anchor_only`` / ``context_frames``
+    forward to ReviewGUI (smaller prompt points, zoom-to-mask on open, full-res EM
+    background, only-load-the-anchor-frame, +/- N frames of context around it; see
+    ReviewGUI). ``neurons`` restricts the review queue to those neurons; ``None``
+    (the default) means every neuron under ``output_root``.
+
+    ``source``, when given together with ``neuron``, auto-provisions ``output_root``
+    from ``source`` via experiments.make_review_tree the FIRST time that neuron is
+    opened (this used to be a required separate manual step,
+    ``py -3 experiments/make_review_tree.py ...``, before every ``gui.py`` open).
+    Idempotent and safe by construction: only runs when ``output_root / neuron``
+    does not already have at least one chain directory, so an already-provisioned
+    (possibly already corrected) neuron is never re-copied and never loses work.
+    Requesting a genuinely fresh copy is still the explicit manual script, this is
+    strictly a "set it up if it is missing" convenience, not a "keep it in sync"
+    one; the working copy diverges from `source` on purpose the moment you correct
+    something in it."""
+    if ui_mode not in UI_MODES:
+        raise ValueError(f"unknown UI mode {ui_mode!r}; expected one of {UI_MODES}")
+    if ui_mode in (UI_MODE_FULL, UI_MODE_RECROP):
+        # Torch BEFORE napari, which imports Qt. On Windows, Qt ships DLLs that shadow
+        # torch's, so a torch first imported after Qt fails with WinError 1114 on
+        # c10.dll even though torch is installed and working. That import used to
+        # happen lazily at the first R/G/C, which is exactly where it would fail.
+        # Recrop mode needs this as much as full mode: recrop re-runs the chain, so it
+        # builds a predictor too. Review mode skips it: it never builds one, and a
+        # review-only machine has no torch to load.
+        from sam2_utils import setup as _setup
+        problem = _setup.torch_problem()
+        if problem:
+            action = "recrop (C/F)" if ui_mode == UI_MODE_RECROP else "re-segmentation (R/G/C)"
+            print(f"[gui] {ui_mode} mode needs torch and it did not load: {problem}. "
+                  f"{action} will fail when you run it; everything else still works.")
     import napari
-    ctx = ReviewContext(Path(output_root) if output_root else config.OUTPUT_ROOT, cfg)
+    output_root = Path(output_root) if output_root else config.OUTPUT_ROOT
+    if source is not None and neuron is not None:
+        if (Path(output_root) / neuron).exists():
+            print(f"[gui] {neuron} already provisioned at {output_root}, "
+                 f"not re-copying from --source (would lose any correction in progress)")
+        else:
+            print(f"[gui] {neuron} not found at {output_root}, provisioning from {source} ...")
+            from experiments.make_review_tree import make_review_tree
+            make_review_tree(Path(source), [neuron], Path(output_root))
+    ctx = ReviewContext(Path(output_root), cfg, neurons=neurons)
     gui = ReviewGUI(ctx, reviewer=reviewer, point_size=point_size,
-                    auto_zoom=auto_zoom, hires_em=hires_em)
+                    auto_zoom=auto_zoom, hires_em=hires_em, em_scale=em_scale,
+                    anchor_only=anchor_only, context_frames=context_frames,
+                    ui_mode=ui_mode)
     if neuron is not None and chain_idx is not None:
         gui.open_chain(neuron, int(chain_idx))
     else:
         pend = gui.queue.pending(include_in_review=True)
+        if neuron is not None:
+            # --neuron alone (no --chain) used to be silently ignored here: pend[0]
+            # opened the first pending chain in the WHOLE queue regardless of which
+            # neuron was asked for, real bug, caught opening a different neuron than
+            # requested. Filter to the requested neuron; fall back to its first chain
+            # on disk (not necessarily "pending") if it has no flagged/pending chains,
+            # so --neuron always opens something from that neuron, never a stranger.
+            pend = [p for p in pend if p[0] == neuron]
+            if not pend:
+                chain_idxs = sorted(
+                    int(p.name.split("_")[-1])
+                    for p in (ctx.output_root / neuron).glob("chain_*") if p.is_dir())
+                if chain_idxs:
+                    print(f"[gui] {neuron} has no pending/flagged chains, "
+                         f"opening its first chain ({chain_idxs[0]}) instead")
+                    pend = [(neuron, chain_idxs[0])]
         if pend:
             gui.open_chain(*pend[0])
+        elif neuron is not None:
+            print(f"[gui] no chains found for neuron {neuron} under {ctx.output_root}")
         else:
             print("[gui] review queue is empty (no chains with manifest status 'flagged' "
                   "left undisposed). Open one manually via the queue picker.")
@@ -1379,11 +2288,35 @@ def main() -> None:
     ap.add_argument("--point-size", type=float, default=4.0, help="prompt/skeleton point diameter (_sam px)")
     ap.add_argument("--no-auto-zoom", action="store_true", help="don't zoom to the mask on open/jump")
     ap.add_argument("--hires-em", action="store_true",
-                    help="full-res EM background (lazy; mask stays scale-8, see gui.py header)")
+                    help="full-res EM background (lazy; mask stays scale-8, see gui.py header). "
+                         "Shorthand for --em-scale 1.")
+    ap.add_argument("--em-scale", type=int, default=None,
+                    help="raw-EM backdrop downscale: 1=full (= --hires-em), 2=half, 4=quarter "
+                         "(lighter memory). Wins over --hires-em when both are given.")
+    ap.add_argument("--anchor-only", action="store_true",
+                    help="only load the anchor frame of each chain opened this session, "
+                         "not the whole chain (fast open, no frame-stepping/resume-propagation; "
+                         "for an 'only fix the seed' workflow, see gui.py's ReviewGUI docstring)")
+    ap.add_argument("--context-frames", type=int, default=0,
+                    help="with --anchor-only, load this many frames of context on each side "
+                         "of the anchor (e.g. 2 = 5 frames total) instead of just the anchor "
+                         "frame alone, so ,/. can scrub a little context; ignored without "
+                         "--anchor-only")
+    ap.add_argument("--source", type=str, default=None,
+                    help="original tree to auto-provision --neuron from into --output-root "
+                         "if it is not there yet (skips experiments/make_review_tree.py as a "
+                         "separate manual step; never touches an already-provisioned neuron)")
+    ap.add_argument("--ui-mode", choices=list(UI_MODES), default=UI_MODE_FULL,
+                    help="'review' hides the model controls (prompts, re-run, resume, recrop) "
+                         "for a redraw-only session; 'full' is every control (default)")
     args = ap.parse_args()
     launch(Path(args.output_root) if args.output_root else None,
            neuron=args.neuron, chain_idx=args.chain, reviewer=args.reviewer,
-           point_size=args.point_size, auto_zoom=not args.no_auto_zoom, hires_em=args.hires_em)
+           point_size=args.point_size, auto_zoom=not args.no_auto_zoom, hires_em=args.hires_em,
+           em_scale=args.em_scale, anchor_only=args.anchor_only,
+           context_frames=args.context_frames,
+           source=Path(args.source) if args.source else None,
+           ui_mode=args.ui_mode)
 
 
 if __name__ == "__main__":

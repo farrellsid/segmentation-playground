@@ -1,0 +1,28 @@
+<!doctype html><meta charset=utf-8><title>SAM3 dense per-frame labelmap</title>
+<body style='font-family:sans-serif;background:#111;color:#eee;max-width:1400px;margin:auto'>
+<h2>SAM3 per-slice masks merged into one dense per-frame labelmap</h2>
+<p>Every neuron's per-slice mask remapped from its crop into a common scale-8 frame and stacked by neuron id (0 = background). Left: raw merge (a pixel claimed by 2+ neurons keeps the higher-id neuron). Right: optional argmax arbitration (contested pixels reassigned to the nearest mask centroid). No claim that arbitration is better here; it is shown so the effect is visible. Validating against the merge metric is a TODO. No model runs.</p>
+<p><b>10 frames</b>, 124 neuron ids. Contested pixels: 4152 across 10/10 frames (1090106 labeled px total). Render scale 8.</p>
+<table border=1 cellpadding=4 style='border-collapse:collapse;font-size:13px'>
+<tr><th>z</th><th>neurons</th><th>labeled px</th><th>contested px</th><th>max claimants</th><th>sec</th></tr>
+<tr><td>1440</td><td>117</td><td>107865</td><td>162</td><td>2</td><td>4.61</td></tr>
+<tr><td>1444</td><td>117</td><td>101927</td><td>545</td><td>2</td><td>4.59</td></tr>
+<tr><td>1448</td><td>116</td><td>110583</td><td>336</td><td>2</td><td>4.54</td></tr>
+<tr><td>1452</td><td>116</td><td>103977</td><td>357</td><td>2</td><td>4.44</td></tr>
+<tr><td>1456</td><td>117</td><td>110157</td><td>683</td><td>2</td><td>4.29</td></tr>
+<tr><td>1460</td><td>117</td><td>108850</td><td>422</td><td>2</td><td>4.54</td></tr>
+<tr><td>1464</td><td>117</td><td>111058</td><td>345</td><td>2</td><td>4.26</td></tr>
+<tr><td>1468</td><td>116</td><td>110008</td><td>154</td><td>2</td><td>4.3</td></tr>
+<tr><td>1472</td><td>116</td><td>119056</td><td>345</td><td>2</td><td>4.26</td></tr>
+<tr><td>1476</td><td>116</td><td>106625</td><td>803</td><td>2</td><td>4.22</td></tr>
+</table>
+<h3>z = 1440</h3><img src='dense_z1440.png' style='max-width:100%'>
+<h3>z = 1444</h3><img src='dense_z1444.png' style='max-width:100%'>
+<h3>z = 1448</h3><img src='dense_z1448.png' style='max-width:100%'>
+<h3>z = 1452</h3><img src='dense_z1452.png' style='max-width:100%'>
+<h3>z = 1456</h3><img src='dense_z1456.png' style='max-width:100%'>
+<h3>z = 1460</h3><img src='dense_z1460.png' style='max-width:100%'>
+<h3>z = 1464</h3><img src='dense_z1464.png' style='max-width:100%'>
+<h3>z = 1468</h3><img src='dense_z1468.png' style='max-width:100%'>
+<h3>z = 1472</h3><img src='dense_z1472.png' style='max-width:100%'>
+<h3>z = 1476</h3><img src='dense_z1476.png' style='max-width:100%'>

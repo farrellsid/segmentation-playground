@@ -75,6 +75,9 @@ def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
     instead of once per chain. (`key` == file_z for the tif store, == slice z for the
     GT png store; the cache name scheme is unchanged for the target worm.)
     """
+    import os
+    import threading
+
     import cv2
     from tqdm import tqdm
 
@@ -86,7 +89,50 @@ def _ensure_cached_frames(subset, cache_dir: Path, scale: int) -> None:
     for key, src_path in tqdm(missing, desc="caching JPEG frames", unit="frame"):
         img = cv2.imread(str(src_path))          # BGR, fine for grayscale EM (tif or png)
         img = _downscale_image(img, scale)       # match image-mode coord space
-        cv2.imwrite(str(cache_dir / f"z{key}.jpg"), img)
+        # write via a temp file + atomic rename (same pattern as prepare_chain_crop_frames'
+        # sidecar): this cache is SHARED across all chains keyed by z+scale, and since
+        # gui.py's background prefetch thread (_prefetch_next) can now call this
+        # concurrently with the GUI thread on an overlapping z-range, a direct imwrite to
+        # the final name would let a reader's exists() check see a partially-written file,
+        # or leave a truncated frame behind forever if the process exits mid-write.
+        #
+        # The temp name is unique PER CALL (pid + thread id), not just per key: two
+        # different chains with overlapping z-ranges have different _prep_locks keys, so
+        # this function is NOT serialized across them, and both can find z{key}.jpg
+        # missing and start writing at the same time. A temp name shared by key alone
+        # would let one writer's in-progress file be exposed by the other's rename
+        # (POSIX) or make the losing rename raise (Windows sharing violation). With a
+        # unique temp file per writer, the two writes never touch the same inode; a
+        # losing write/rename is then just two writers racing to produce the same,
+        # byte-identical destination (both decoded the same source frame), so it's a
+        # benign no-op when the destination is already there, not an error. (pid is
+        # included too, not just the thread id, since a bare thread id is only unique
+        # within one process; this feature only ever races within one GUI process, but
+        # the extra margin is free.) The ".part" infix (not a ".tmp" suffix) is required
+        # because cv2.imwrite picks its codec from the final extension and does not
+        # recognize ".jpg.tmp".
+        dst = cache_dir / f"z{key}.jpg"
+        tmp = cache_dir / f"z{key}.{os.getpid()}.{threading.get_ident()}.part.jpg"
+        try:
+            # the write (cv2.imwrite, which can raise cv2.error -- NOT an OSError
+            # subclass -- or just return False on a silent encode failure) and the
+            # rename share one cleanup path below: either failure can leave `tmp`
+            # behind, and either one is harmless exactly when some writer's attempt
+            # already landed `dst`. Caught broadly (not just OSError/cv2.error) so no
+            # failure mode of either step can skip the "don't orphan `tmp`" cleanup.
+            ok = cv2.imwrite(str(tmp), img)
+            if not ok:
+                raise IOError(f"cv2.imwrite failed to encode frame for z={key} -> {tmp}")
+            tmp.replace(dst)
+        except Exception:
+            if dst.exists():
+                # another writer (a different, overlapping-z chain) already produced
+                # z{key}.jpg from the same source frame; our own failure is then
+                # redundant, not wrong.
+                tmp.unlink(missing_ok=True)
+            else:
+                tmp.unlink(missing_ok=True)   # don't leave an orphan .part.jpg behind
+                raise
 
 
 def _link_frame(src: Path, dst: Path) -> None:
@@ -95,12 +141,28 @@ def _link_frame(src: Path, dst: Path) -> None:
     Tries symlink, then hard-link, then a plain copy. On Windows bare symlinks
     need Developer Mode or admin, so the hard-link branch is the usual one -> it
     requires src and dst on the same volume (both live under frames_root, so OK).
+
+    `src` is made ABSOLUTE first, and its existence checked, because neither is
+    guaranteed by the caller and both fail silently when violated. A symlink stores
+    its target verbatim and resolves it relative to the LINK'S OWN directory, so a
+    relative `src` produces a link pointing at
+    `<dst's dir>/<src>`, which is not where the cache is. Every frame in the view
+    then dangles, and the failure only surfaces later as a FileNotFoundError from
+    whatever opens `00000.jpg`. This is not hypothetical: `SAM2_FRAMES_ROOT` left at
+    its Windows default makes `F:\\ZhenLab\\Data` a RELATIVE directory name on Linux,
+    which is how all 15 legacy `_sam` chains of the 2026-08-21 reprop arrays died on
+    Narval while all 209 tier-2 chains passed (tier-2 writes real JPEGs, never links).
     """
+    import os
+
+    src = Path(src)
+    if not src.exists():
+        raise FileNotFoundError(f"cannot expose missing cache frame: {src}")
+    src = Path(os.path.abspath(src))
     try:
         dst.symlink_to(src)
     except OSError:
         try:
-            import os
             os.link(src, dst)                    # hard-link fallback (no privilege)
         except OSError:
             import shutil
@@ -161,6 +223,101 @@ class TifFrameStore(FrameStore):
         return sorted([(k, f) for (k, f) in out if lo <= k <= hi], key=lambda kf: kf[0])
 
 
+#: macOS writes an AppleDouble sidecar beside each real file whenever it touches a
+#: filesystem with no resource forks, which is every external drive formatted exFAT or
+#: NTFS. The sidecar carries Finder metadata for its sibling, never image data, and macOS
+#: recreates it on demand, so deleting one loses nothing.
+APPLEDOUBLE_PREFIX = "._"
+
+
+def clean_frame_sidecars(frames_dir) -> int:
+    """Delete AppleDouble sidecars from a prepared frames directory, returning how many.
+
+    SAM2's video loader globs every ``*.jpg`` in the directory and parses each stem as an
+    int (``sam2/utils/misc.py``), so one ``._00036.jpg`` aborts ``init_state`` with
+    ``ValueError: invalid literal for int() with base 10: '._00036'`` and takes the GUI
+    down with it. Reported from a real review session with the bundle on a LaCie drive.
+    The upstream loader is not ours to change, so the directory has to be clean before it
+    is handed over.
+
+    Only the ``._`` prefix is matched. ``.DS_Store`` and other dotfiles are left alone:
+    they do not break the loader, and deleting files nobody asked about is not this
+    function's business.
+
+    Parameters
+    ----------
+    frames_dir : path-like
+        A prepared frames directory. A missing one is not an error, since this runs on the
+        way into a propagation and must not invent a failure ahead of the real one.
+
+    Returns
+    -------
+    int
+        How many sidecars were removed.
+
+    Raises
+    ------
+    RuntimeError
+        If a sidecar cannot be deleted, naming ``dot_clean``. Better than letting the
+        cryptic upstream ValueError happen a moment later.
+    """
+    d = Path(frames_dir)
+    if not d.is_dir():
+        return 0
+    removed, stuck = 0, []
+    for f in list(d.glob(f"{APPLEDOUBLE_PREFIX}*")):
+        try:
+            f.unlink()
+            removed += 1
+        except OSError as exc:
+            stuck.append(f"{f.name}: {exc}")
+    if stuck:
+        raise RuntimeError(
+            f"{d} holds macOS sidecar files that could not be removed, and SAM2's frame "
+            f"loader cannot parse them: {'; '.join(stuck[:3])}. Run `dot_clean \"{d}\"` "
+            f"in a terminal, or copy the frames to a local folder.")
+    return removed
+
+
+def raw_em_problem(worm_path=None) -> Optional[str]:
+    """None when ``worm_path`` looks like the raw EM tif stack, else why it does not.
+
+    The stack is a flat directory of ``..z{file_z}.tif`` files, parsed by
+    :func:`_parse_file_z`. This lives here because this module owns that naming
+    convention; the launcher's preflight and the GUI's recrop guard both call it, so
+    the rule cannot drift between what is reported and what is enforced.
+
+    A directory of unrelated tifs deliberately does NOT pass. That case looks
+    configured and then fails one frame lookup at a time, which is the worst of both
+    worlds: recrop is offered and then dies deep inside a read.
+
+    Parameters
+    ----------
+    worm_path : path-like, optional
+        Defaults to :data:`sam2_utils.config.WORM_PATH`.
+
+    Returns
+    -------
+    str or None
+        A human-readable problem, or None when the path is usable.
+    """
+    if worm_path is None:
+        worm_path = config.WORM_PATH
+    if not str(worm_path).strip():
+        return "raw EM path is not set"
+    path = Path(worm_path)
+    if not path.is_dir():
+        return f"{path} is not a directory"
+    for f in path.glob("*.tif"):
+        try:
+            _parse_file_z(f)
+        except (ValueError, IndexError):
+            continue
+        return None
+    return (f"{path} holds no ..z<number>.tif frames, so it is not the raw EM stack "
+            f"(expected names like 1301____z1300.0.tif)")
+
+
 def load_frame_sam(catmaid_z: int, *, scale: int,
                    frame_store: Optional[FrameStore] = None
                    ) -> tuple[np.ndarray, tuple[int, int]]:
@@ -172,12 +329,34 @@ def load_frame_sam(catmaid_z: int, *, scale: int,
     `frame_store` selects the EM source; the default (TifFrameStore) is the original
     tif-stack path. Lift from: parse_file_z + tif glob + cv2.imread + downscale_image.
     """
+    import time
+
     import cv2
 
     fs = frame_store or TifFrameStore()
     src_path = fs.file_for_z(catmaid_z)
 
-    image_full = cv2.cvtColor(cv2.imread(str(src_path)), cv2.COLOR_BGR2RGB)
+    # Real, recurring failure mode reading these ~9216x9230 full-res frames from the
+    # network-mounted EM store (F:), confirmed at least twice under different root
+    # causes: transient F: read failures (imread returns None, the same file reads
+    # fine in isolation moments later) and system RAM exhaustion under concurrent
+    # heavy jobs (imread raises an explicit OutOfMemoryError; each frame is ~255MB).
+    # A retry-with-backoff absorbs both: it rides out a brief disk hiccup, and it
+    # gives a concurrent process time to finish and release memory. It does NOT fix
+    # sustained RAM pressure by itself, avoid running more than one heavy render/
+    # score job at a time on this machine (19.7GB total RAM measured 2026-08-14).
+    n_attempts = 8
+    raw = None
+    for attempt in range(n_attempts):
+        raw = cv2.imread(str(src_path))
+        if raw is not None:
+            break
+        if attempt < n_attempts - 1:
+            time.sleep(3.0)
+    if raw is None:
+        raise IOError(f"cv2.imread returned None for {src_path} after {n_attempts} attempts")
+
+    image_full = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
     H_full, W_full = image_full.shape[:2]
     image_sam = _downscale_image(image_full, scale)
     return image_sam, (H_full, W_full)

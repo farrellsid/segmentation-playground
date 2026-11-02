@@ -23,6 +23,38 @@ so existing cross-references from code comments, the README, and other notes sti
 ---
 
 ## Contents
+- [2026-10-01, the review GUI starts cropping your next chain before you ask for it](#r-2026-10-01-next-chain-prefetch)
+- [2026-09-15, a tracking sheet had typos, so a reprop batch shipped 123 chains short](#r-2026-09-15-reprop-protocol)
+- [2026-09-09, eight Lucinda bundles, a full-tree scan nobody meant to run, and a chain that could not be found](#r-2026-09-09-lucinda-bundles-index-chains)
+- [2026-08-27, a second reviewer's machine, and a recrop that survives the round trip](#r-2026-08-27-machine-setup-recrop)
+- [2026-08-26, the GUI re-predict now gets the cleanup the batch already had](#r-2026-08-26-gui-image-cleanup)
+- [2026-08-26, a video and a Blender mesh from a corrected bundle](#r-2026-08-26-review-render)
+- [2026-08-25, GUI recrop silently threw away the window the reviewer drew](#r-2026-08-25-gui-recrop-fallback)
+- [2026-08-24, why 15 reprop chains died on Narval: a Windows path, a relative symlink, and a silent dangling link](#r-2026-08-24-legacy-sam-dangling-links)
+- [2026-08-21, merged render fix: a per-chain tour instead of one whole-worm window, a chain drawn in grey, a latent full_hw unit bug](#r-2026-08-21-merged-render-tour)
+- [2026-08-18, portable review: neuron id registry, chain meta.json, review bundle, launcher, GUI modes](#r-2026-08-18-portable-review)
+- [2026-08-14, re-propagation comparison report: mask-seed vs box-seed, a real underfill fix found, transient F:/RAM read failures hardened](#r-2026-08-14-reprop-comparison)
+- [2026-08-12, review-session follow-ups: a shared before/after crop window, --anchor-only context frames](#r-2026-08-12-review-followups)
+- [2026-08-12, lasso-add mask tool: a freehand loop unions into the current frame's mask, undo-compatible with the paint brush](#r-2026-08-12-lasso-add)
+- [2026-08-12, `--anchor-only` prompt-seeding bug: prompts/box placed off the narrowed frame, explaining a "0/56" report](#r-2026-08-12-anchor-only-seed-bug)
+- [2026-08-10, propagation from manually verified multi-frame seeds: mechanism verified, driver built](#r-2026-08-10-propagate-from-verified)
+- [2026-08-09, spill/overfill documentation prep: real membrane-pass cost measured, a stale CSV trap found, micro_sam and square-mask spot-checks](#r-2026-08-09-spill-doc-prep)
+- [2026-08-06, propagation second pass: full-scope validation, a real verdict](#r-2026-08-06-second-pass-fullscope)
+- [2026-08-04, NucleoNet recall gap found, MitoNet mitochondria detector spot-checked](#r-2026-08-04-mitonet)
+- [2026-07-30, propagation second pass: neighbour-seeded re-segmentation lands, SAM3 crash found and fixed, accept-gate gap flagged](#r-2026-07-30-second-pass)
+- [2026-07-29, organelle blob suppression: the intensity/texture filter lands, calibrated against real EM, the floor still does not move](#r-2026-07-29-organelle-blob)
+- [2026-07-29, z-to-z consistency metric: a temporal ruler for the merge metric's per-frame blind spot](#r-2026-07-29-z2z)
+- [2026-07-29, nucleus-capture detector: GUI label added, NucleoNet spot-checked and verdicted](#r-2026-07-29-nucleus)
+- [2026-07-29, temporal membrane projection: register/project crops land, a gate confound found and corrected](#r-2026-07-29-temporal)
+- [2026-07-29, SAM3-vs-SAM2 scorecard consolidated, default backend decided](#r-2026-07-29)
+- [2026-07-23, sharded parallel scoring, the SAM3 config A/B presets, and a documentation sweep](#r-2026-07-23)
+- [2026-07-21, SAM3 Phase 2: `--backend sam3` switch, cluster wiring, and the Narval runbook](#r-2026-07-21-sam3-cluster)
+- [2026-07-21, SAM3 vs SAM2 bake-off: HF-transformers PVS adapters + 2x2 comparison](#r-2026-07-21-sam3)
+- [2026-07-21, per-frame segmentation: two approaches, an AMG tuner, membrane-aware arbitration](#r-2026-07-21)
+- [2026-07-20, Phase 1 close-out: blow-up guard + generous-first/negatives-in-crop bundle](#r-2026-07-20)
+- [2026-07-17, Phase 2 foundation: membrane map + membrane-aware bleed detection](#r-2026-07-17)
+- [2026-07-15, negatives round + measurement-first roadmap redesign](#r-2026-07-15)
+- [2026-07, research passes + resolution experiments + specs](#r-2026-07)
 - [2026-06, review tooling + post-processing pass](#r-2026-06)
 - [old §2, Milestone-by-milestone build narrative (M1 → M4 review-testing pass)](#old-2)
 - [old §5, Known issues: full resolution stories](#old-5)
@@ -31,6 +63,1869 @@ so existing cross-references from code comments, the README, and other notes sti
 - [old §9, Raw field notes from first GUI use (pre-reorg, verbatim)](#old-9)
 
 ---
+
+<a id="r-2026-10-01-next-chain-prefetch"></a>
+## 2026-10-01, the review GUI starts cropping your next chain before you ask for it
+
+Opening the next chain in `--anchor-only` review always blocked on re-cropping that chain's
+frames, even for a window as small as the anchor plus two frames of context. The real cost
+was `prepare_chain_crop_frames`: a tier-2 chain has no cross-chain decode cache, and the
+function rebuilt its view directory from scratch on every call, even when an identical one
+had just been built.
+
+Two changes. `prepare_chain_crop_frames` now writes a small sidecar recording what it
+actually built (z-range, crop window, anchor), and skips the rebuild entirely when a later
+call asks for the exact same thing. On top of that, `gui.py`'s `open_chain` now fires a
+background thread, once a chain finishes loading, that prepares whatever `next CHAIN` would
+open next, using the session's own `--anchor-only`/`--context-frames` settings. A lock per
+`(neuron, chain_idx)` keeps that thread and a later real open from writing the same
+directory at once. No new flag: this is always on, and a mistargeted or failed prefetch is
+silently harmless.
+
+The prefetch thread can also decode into `pipeline/frames.py`'s shared, non-tier-2 JPEG
+cache (used by legacy `_sam` chains), which is keyed by z and scale rather than by chain, so
+two different chains with overlapping z-ranges can now race to produce the same frame. That
+cache writes through a per-writer, uniquely named temp file before an atomic rename instead
+of straight to the final name, so a losing or interrupted write can no longer corrupt or
+orphan a frame other chains depend on.
+
+Full design in
+[next-chain-frame-prefetch-design.md](superpowers/specs/2026-10-01-next-chain-frame-prefetch-design.md).
+
+<a id="r-2026-09-15-reprop-protocol"></a>
+## 2026-09-15, a tracking sheet had typos, so a reprop batch shipped 123 chains short
+
+The 2026-09-09 reprop batch decided which chains to include by intersecting a data-driven
+pixel diff with `SegmentationNotes.csv`'s "Initial Corrected" column. The sheet marked AIMR,
+RIBR, RMHR and AVHL as not yet corrected, so all four were dropped, and the AIM, RIB and RMH
+bundles shipped to Lucinda with only one side of their neuron pair.
+
+The sheet was wrong. Re-run against the actual metadata, the same `find_corrected_chains.py`
+pixel diff already used for every other side, all four had real corrected chains: AIMR 39,
+RIBR 38, RMHR 38, AVHL 8, 123 total, three of the four counts matching exactly what an
+earlier, separately-abandoned manifest (the 429-chain one from 2026-09-02) already had for
+them. The sheet is a human's coordination note, written by hand, and can be wrong; the pixel
+diff is a direct read of what is actually on disk.
+
+New protocol, written up in
+[repropagation-round-protocol.md](how-to/repropagation-round-protocol.md): decide what to
+repropagate from the metadata, never a tracking sheet; verify the reprop output is complete
+and unbroken before treating a job as done, the same discipline
+[export-a-lucinda-bundle.md](how-to/export-a-lucinda-bundle.md) already required at the
+bundle-export stage; and never ship a bundle covering only one side of a neuron pair,
+since that shape of gap is the direct symptom of skipping step 1.
+
+A part-2 manifest and upload bundle for the 123 missing chains were built and pushed the
+same day; the reprop job itself is pending Narval submission as of this writing.
+
+<a id="r-2026-09-09-lucinda-bundles-index-chains"></a>
+## 2026-09-09, eight Lucinda bundles, a full-tree scan nobody meant to run, and a chain that could not be found
+
+Building the first Lucinda bundles for AIM, AVH, FLP, RIB, RIH, RIM, RIP and RMH (the
+2026-09 reprop batch, 326 corrected chains overlaid on the whole-neuron base trees) surfaced
+three real bugs, none of them in the reprop itself.
+
+**`bundle.index_chains` globbed the whole tree, not the neurons it was asked for.** The base
+tree is a 129-neuron symlink forest. Every export, regardless of `--neurons`, read every
+state.json under `output_root` and filtered to the wanted names afterward, so two exports
+(AIM, AVH) succeeded while five others (FLP, RIB, RIM, RIP, RMH) died on an `OSError` from a
+file that had nothing to do with the neuron being exported. A targeted read of every
+`RIBL/chain_*/state.json` in isolation succeeded cleanly, which is what gave this away: the
+failure was elsewhere in the tree, not in the neuron the log blamed. Fixed by scoping the
+glob to `output_root/<neuron>/chain_*/state.json` for each wanted name when `neurons` is
+given (`sam2_utils/bundle.py`, see `test_bundle_index_chains_scoped_glob.py`). This also
+makes a scoped export much faster: no more reading thousands of unrelated chains to
+keep a handful.
+
+**RIH has no local base tree.** Its own `PROVENANCE.txt` names
+`target_tier2_s1forced_neg_sam3_merged` as the source, but that merged tree does not carry
+RIH locally (confirmed by listing it directly), so `--output-root` pointed there fails with
+"no chains found." RIH's real base is `manual_verify_RIH` itself; export from that instead,
+still with the reprop tree as `--overlay`.
+
+**A drive disconnect can leave a bundle claiming success while incomplete.** The laptop went
+to sleep mid-export, and the AIM bundle's log printed `wrote 41 chain(s)` while only 8 of
+the 41 `state.json` files, and no `bundle.json`, actually existed on the external drive
+afterward. Writes were still in the OS cache when the drive dropped. Lesson generalized into
+[export-a-lucinda-bundle.md](how-to/export-a-lucinda-bundle.md): always call
+`bundle.validate_bundle()` and count real files after an export, never trust the log's
+success line alone, and do not run one of these exports across a laptop sleep.
+
+**Lucinda's real crash, reproduced and fixed.** Opening AIZL chain_03 crashed with
+`TypeError: 'NoneType' object is not subscriptable` deep inside
+`prepare_chain_crop_frames`. Traced to `ReviewContext.find_chain` returning `None` (a real,
+tested state for a chain outside a session's chains.json/neuron scope, not a bug in it) and
+`gui.open_chain` letting that `None` flow three calls deeper before anything checked it. The
+underlying cause of why her session diverged is still open (her copy of `chains.json` did
+not include AIZL, and the currently correct local bundle at
+`F:\Lucinda_Review\bundles\AIZ\` has all 65 AIZL chains, so whatever she has is stale or was
+never rebuilt through `export_bundle.py`), but `open_chain` now raises a `LookupError`
+naming the neuron and chain right where the mismatch is known, instead of crashing three
+calls later with no useful message.
+
+**The pixel-offset Lucinda diagnosed by hand, confirmed and fixed at the source.**
+`CropWindow.around_box` computed `x0/y0/x1/y1` from a padded, clipped box with no snapping to
+the `crop_scale` grid. An odd origin or odd width silently lost up to `crop_scale - 1` px on
+the write-back through `crop_hw`'s rounding (her real example: width 1913 at scale 2 rounds
+to 956, which is 1912 going back, not 1913). Fixed by snapping the near edge down and the
+far edge up to the nearest multiple of `crop_scale` before the final image-bounds clip.
+Affects future crops only; nothing already on disk needs correction.
+
+<a id="r-2026-08-27-machine-setup-recrop"></a>
+## 2026-08-27, a second reviewer's machine, and a recrop that survives the round trip
+
+A review bundle opens on a machine that has none of this project's data, and it does that
+well. What never travelled is everything the model needs: the raw EM tif stack that recrop
+re-reads, the frames cache it writes to, and the checkpoint. All three were env vars only a
+shell could set, so recrop was unreachable on a reviewer's own machine, and full mode
+unlocked on a bare `import torch`, which meant a laptop with torch and no checkpoint
+offered the reprop controls and failed minutes later at predictor build.
+
+The launcher now records all three and runs a preflight that says what is missing and how
+to fix it, including which device SAM2 would actually use. On Apple Silicon that is MPS,
+which works, is slow, and is preliminary upstream, so a reviewer comparing her masks
+against the batch's deserves to be told. A missing checkpoint is reported as a pass with
+its download size, because `ensure_checkpoint` downloads rather than failing, and the raw
+EM does not gate the model at all: recrop needs it, re-predict and resume propagation do
+not.
+
+**The part that was not asked for.** Recrop rewrites a chain's geometry, and geometry is
+exactly what the round trip did not carry. `import_bundle` moves masks and qc.csv and
+deliberately never copies state.json, because it holds a bundle-relative frames_dir. A
+recrop in a bundle therefore came home as masks alone, into a master tree whose state.json
+still described the old window, and every consumer placed the new pixels at the old offsets
+with nothing to signal it. The same failure `_recrop_to_window`'s own comments warn about,
+one level out.
+
+Sharper still: `prepare_chain_crop_frames` namespaces its view directory by neuron, chain
+and crop scale, so a new window at the same scale reuses the same directory name. The
+master's recorded frames_dir would still exist, still holding the old window's frames.
+Nothing would be missing, and the GUI would draw the new masks on the old pixels. So the
+import clears it, and a cleared frames_dir became a state the GUI has to handle rather than
+crash on.
+
+Two decisions worth keeping. **No schema bump**: the bundles already delivered are version
+1, and gating the geometry merge on a version would silently drop a recrop made in a bundle
+a reviewer already holds. Import compares geometry per chain instead. **Geometry merges,
+`config` never does**: state.json embeds the whole PipelineConfig, including output_root and
+frames_root, so copying it back would write a reviewer's Mac paths into the master tree. The
+allowlist is the mechanism that prevents that, which is why it is a named constant with a
+test that asserts its exact contents.
+
+<a id="r-2026-08-26-gui-image-cleanup"></a>
+## 2026-08-26, the GUI re-predict now gets the cleanup the batch already had
+
+Re-running the image phase in the GUI wrote SAM2's raw mask straight into the layer. On an EM
+frame that mask carries detached fuzz outside the cell and a frayed boundary, and the reviewer
+had to paint all of it away by hand.
+
+The fix needed no new algorithm. `pipeline.postprocess_mask` and the three size-aware ops beside
+it have handled exactly this for the batch since the postproc A/B, and the orchestrator ran them
+as an inline sequence that nothing else could reach. That sequence is now `pipeline.clean_mask`,
+the orchestrator calls it, and so does the GUI, so the preview a human corrects matches what a
+batch run would have delivered instead of being dirtier than it.
+
+The dock gets one dropdown and two spin boxes. **drop specks**, the default, keeps every
+component at or above the island floor, which matters because a genuine second cross-section of
+the cell is common and `keep_largest_cc` would silently erase it. That aggressive option is still
+there as **largest blob only** for a re-predict that bled onto a neighbour, and the docs say what
+it costs. Neither level fills large cavities.
+
+The two sizes are knobs rather than constants because they are in pixels of the displayed frame,
+and a tier-2 `_pcrop` chain is finer than a scale-8 `_sam` one, so the same physical size is a
+different pixel count. The defaults, 64 px islands and a 1 px smooth, are sized for scale-8. This
+is the same unit trap as the render nm-per-pixel inversion, one level down.
+
+Only the preview is cleaned. Propagated masks, painted pixels, and anything on disk are
+untouched, and the log line after each `R` reports the pixel count before and after so the
+cleanup is never invisible.
+
+**Measured on real masks before shipping the defaults.** Over 91 masks sampled across the AIA
+review bundle, 21 were multi-component and the default settings collapsed nearly all of them to
+one blob while changing area by a median of 0.00 percent. No mask was ever emptied. The worst
+case, minus 20 percent, is a 176 px mask losing a detached 33 px fragment, which is the island
+floor doing its job; the 1 px smooth on that same tiny mask cost 3 px. So the defaults are
+conservative on masks that are already clean, which is the property that matters for a control
+that is on by default.
+
+<a id="r-2026-08-26-review-render"></a>
+## 2026-08-26, a video and a Blender mesh from a corrected bundle
+
+A reviewer corrects a bundle one crop window at a time and never sees the neuron whole.
+`render_review.py` adds the two views that were missing: one video per neuron, every chain
+in z order captioned with chain and z, and one PLY per neuron.
+
+It runs from a bundle or an output tree behind one command, reached from `launcher.py` with
+a Render button so the reviewer keeps the entry point she already knows. Two facts made that
+cheap. `napari` already declares `scikit-image` and `imageio` as hard dependencies, so
+marching cubes costs no new install on the machine where macOS setup was the original
+friction. And bundles and trees share the `<neuron>/chain_NN/state.json` layout, so
+`bundle.index_chains` and `pipeline.chain_masks_in_sam` already read either; the only real
+difference is that a bundle ships its own `frames/`, which is isolated in `chain_frames`.
+
+Meshing bakes the anisotropy in, `spacing=(50, 128, 128)` in `(z, y, x)`, so vertices are
+nanometres and Blender gets true proportions. Note z is the FINER axis at scale 8, the
+opposite of the usual EM intuition. Smoothing is Taubin rather than Laplacian because
+Laplacian shrinks thin tubes and a neurite is mostly thin tube. The default preset is
+`faithful`, since the purpose is finding mistakes and smoothing removes the z-to-z jitter
+that marks a bad slice. Real quadric decimation needs `trimesh` or `open3d`, which the review
+install does not have, so `smooth` coarsens through marching cubes `step_size` instead. That
+is a stated limitation rather than an implied capability.
+
+**Four defects the review caught that the tests as first written did not.** Worth recording,
+because three of the four are the same shape: a value that is silently plausible.
+
+The volume compacted the z axis. It mapped whatever z values had masks onto consecutive
+planes while `marching_cubes` treats every step as exactly 50nm, so any dropped mask pulled
+its neighbours together. That is not hypothetical, mask dropout here runs from about 5 to
+about 30 percent over propagation distance. The volume now spans min to max z with gaps left
+empty, so a real gap reads as a real gap.
+
+The nm per pixel normalisation was inverted. `crop_scale` is a downscale, so a larger value
+means a coarser chain, and `finest / crop_scale` shrank the coarse chain that should have
+grown. It now normalises to the coarsest, which also means nothing is ever upscaled past the
+detail it has.
+
+The video paired masks and EM from different spaces. Masks were sourced through
+`chain_masks_in_sam`, which exists for cross-chain aggregation and remaps onto the shared
+scale-8 grid. On a real bundle chain the frame and its own mask PNG are both 1096x1208, while
+the aggregation path yields about 274x302. Display now reads the chain's own PNG for a
+bundle, and uses the aggregation path with its x0/y0 offsets for a tree, so the mask source
+always matches the frame source.
+
+And `video_viz` emits only frames whose index is a key in `segments`, so recording a frame
+only when it had a mask silently dropped mask-less frames from the video.
+
+Every one of those was caught by asking a reviewer to trace specific arithmetic rather than
+to look for problems in general, and each fix carries a test that was confirmed to fail
+against the old behaviour first.
+
+---
+
+<a id="r-2026-08-25-gui-recrop-fallback"></a>
+## 2026-08-25, GUI recrop silently threw away the window the reviewer drew
+
+Two symptoms reported from a real review session: recrop "sometimes defaults to the big low
+res full-frame", and the region picker "goes out to the big frame and does not return". They
+are one cause.
+
+`gui._recrop_to_window` re-runs the chain with `chain_crop=True` but left
+`chain_crop_fallback` at its default `True`. That valve exists for AUTOMATED batch runs,
+where a poorly-scoring crop anchor means the crop is probably worse than the plain `_sam`
+path, so reverting is the right call. In the GUI the premise is inverted: a person has just
+drawn or grown that window on purpose. When the valve fired it rewrote the chain as `_sam`
+with `crop_window=None` and the GUI reopened the full low-res frame, which is indistinguishable
+from the picker never coming back.
+
+The fallback records itself, so the session left evidence. All three chains recropped in
+`manual_verify_RIP` on 2026-08-25 came back `fell_back_to_sam=True`, reason `score<0.7`, with
+`crop_window` gone: RIPL chain_25 (crop 0.64 -> `_sam` 0.53), RIPL chain_27 (0.29 -> 0.23),
+RIPR chain_01 (0.63 -> 0.68). In two of the three the `_sam` recovery scored LOWER than the
+crop it replaced, so the valve was not winning on its own measure either. There is a
+second-order harm as well: the chain is no longer tier-2, so grow-recrop refuses it
+afterwards, which removes the other recrop path from that chain.
+
+Recrop now passes `chain_crop_fallback=False`. A genuinely bad anchor is still visible, an
+empty anchor mask flags the chain exactly as before; what changes is that a score below the
+floor no longer discards the reviewer's window without saying so.
+
+Two regression tests capture the config `run_chain` actually receives, since the bug was
+entirely in what was passed rather than in what was computed.
+
+The three chains already flattened keep their masks but have no crop window; recropping them
+again through the picker now works, and the picker handles a `_sam` chain by defaulting its
+rectangle to the skeleton bbox.
+
+519 passed, 1 skipped; ruff clean; no dashes.
+
+---
+
+<a id="r-2026-08-24-legacy-sam-dangling-links"></a>
+## 2026-08-24, why 15 reprop chains died on Narval: a Windows path, a relative symlink, and a silent dangling link
+
+The 2026-08-21 reprop arrays (AIB 84, AIZ 88, AUA 52) finished 209 of 224. The 15
+failures separate perfectly: every one is a legacy `_sam` chain, every legacy chain
+failed, and no tier-2 `_pcrop` chain did. AIA and AIY were entirely tier-2, which is why
+this path had never actually run despite `propagate_from_corrected_seed.py` claiming to
+handle both.
+
+Each failure is the same `FileNotFoundError` out of SAM2's `init_state`, on
+`F:\ZhenLab\Data/chain_views/AIBL_chain12_s8/00000.jpg`. A Windows path, on Linux.
+
+Three things had to line up. `cluster/run_reprop_corrected_seed.sh` exported
+`SAM2_WORM_PATH` but not `SAM2_FRAMES_ROOT`, unlike `run_array.sh` and `run_exp.sh`
+which both pass `--frames-root "$SLURM_TMPDIR/frames"`. `config.FRAMES_ROOT` therefore
+kept its default `F:\ZhenLab\Data`, which on Linux is not an absolute path at all but a
+perfectly legal RELATIVE directory name, created under the repo without complaint. And
+`_link_frame` built the per-chain view with `dst.symlink_to(src)` where `src` was that
+relative cache path. A symlink stores its target verbatim and resolves it against the
+link's own directory, so every frame pointed at
+`chain_views/<chain>/F:\ZhenLab\Data/frames_cache_s8/z1468.jpg`. Opening a dangling
+symlink raises `FileNotFoundError`, indistinguishable from a frame that was never
+written.
+
+Tier-2 escaped because `prepare_chain_crop_frames` writes real JPEGs with `cv2.imwrite`
+and never links. The relative root was equally wrong for it; it just did not care.
+
+Fixed on both sides, since either alone would have left the trap armed. `_link_frame`
+now rejects a missing source instead of linking to nothing, and makes the target
+absolute before symlinking, so a relative `frames_root` can no longer produce a view of
+dangling links. The cluster script exports
+`SAM2_FRAMES_ROOT=${SLURM_TMPDIR:-/tmp}/frames`, matching where the other two jobs put
+their frame cache, which is also node-local and faster than writing into the repo on
+shared storage.
+
+The lesson worth keeping: a machine-specific default path that is absolute on one OS is
+a relative path on another, and the filesystem will accept it silently. Guarding the
+link step is what turns that into a loud failure.
+
+`tests/test_link_frame_relative_root.py` reproduces the dangling link from a relative
+root and guards the absolute case, the deep-nesting case, and the missing-source case
+(4 cases, torch-free).
+
+511 passed, 1 skipped; ruff clean; no dashes.
+
+---
+
+<a id="r-2026-08-21-merged-render-tour"></a>
+## 2026-08-21, the whole-neuron merged render was framing the wrong thing, and one chain was drawn in grey
+
+The reprop report's per-chain triples hold up. The whole-neuron "merged" render sitting next to them
+did not, and the reason was a mismatch between how these chains are laid out in z and how the render
+framed them.
+
+**Four things were checked and cleared first, so they do not need checking again.** The z ranges are
+identical across the before, mask-seed and box-seed trees for every chain, 0 of 45 AIA and 0 of 42
+AIY differ. GIF frame count matches on-disk mask count in all 261 per-chain renders, so
+`build_reprop_docx_report._farthest_frame_index` was seeking to the frame it meant to. The reprop
+seeded on the right slice: IoU between the working tree's corrected anchor mask and the reprop mask
+at `anchor_z` runs 0.988 to 0.997, and `anchor_z` is the argmax over the whole chain. And the EM
+these renders draw on is the right slice: scoring boundary darkness over dz in -2 to +2 on
+human-corrected anchor masks picks dz=0 in 8 of 10 cases, the two exceptions being near-ties on tiny
+masks.
+
+**The merged render's window was the whole worm.** A median of one chain is present at any given z,
+while the masks travel 500 to 700px down the stack, so a single union window over every reprop'd
+chain came out at 622x1031 (AIAL) to 727x1152 (AIAR) against per-chain windows of median 262x273.
+The mask covered a median 0.11 to 0.27 percent of the frame, and AIAR had 84 of its 176 frames under
+0.1 percent. The middle-frame thumbnail `add_merged_render_section` drops into the docx landed on a
+frame that reads as blank.
+
+`neuron-gif-triple` now renders a tour instead: one static window per chain, chains visited in z
+order, every window padded out to a single common size so the frames still form one animation. The
+chain and the z are burned into each frame, since a tour cuts about 20 times per neuron and is hard
+to follow without them, and any neighbouring chain falling inside the current window is drawn too,
+which is the context a merged view is for.
+
+Measured on the re-rendered files, mask-seed side, old window and median coverage against new:
+
+| neuron | window | median mask coverage | frames showing nothing |
+|---|---|---|---|
+| AIAL | 622x1031 to 386x425 | 0.25% to 1.68% | 24 to 0 |
+| AIAR | 727x1152 to 434x445 | 0.11% to 0.61% | 84 to 0 |
+| AIYL | 833x1152 to 382x535 | 0.19% to 0.83% | 39 to 0 |
+| AIYR | 665x1152 to 337x397 | 0.27% to 1.53% | 31 to 0 |
+
+Frame counts go up (AIAR 176 to 243) because a z shared by two chains is now visited once per chain,
+in each one's own window, rather than once in a window belonging to neither.
+
+**One chain was being drawn in grey, on greyscale EM.** `sam2_utils/video_viz._PALETTE` was
+matplotlib's tab10, whose 8th entry is (0.498, 0.498, 0.498). AIAL's chain_16 is obj_id 17, and 17 %
+10 is 7, so all 22 of its frames showed nothing at all. Every consumer of that palette alpha-blends
+onto EM, where an achromatic entry cannot work, so it now filters out any colour whose channels sit
+within 0.15 of each other rather than hand-pruning the one index. Zero-coverage frames in the AIAL
+merged render went from 24 to 0 for both reprop variants. The frames still showing nothing on the
+before side (4 on AIAL, 6 on AIAR, 17 on AIYL, 7 on AIYR) are real pre-reprop dropouts, which is
+the underfill the 2026-08-14 round already measured, not a rendering artifact.
+
+**The window was sized from the mask's ARRAY, not from the mask.** `_compute_window` took each
+mask's placement rectangle (`x0, y0, x0 + w, y0 + h`) as its extent. `chain_masks_in_sam` hands back
+a crop-sized array for a tier-2 `_pcrop` chain but a whole-frame array at `x0=y0=0` for a legacy
+`_sam` one, so the window ended up sized by which space a chain happened to live in rather than by
+how big the neuron is. AIZL chain_26 is a 126x95 blob on a 1154x1152 array, and on its own it
+dragged a 44-chain tour to full frame, producing a 550MB gif. Since `padded_window`'s margin is
+proportional to the bbox it fed an oversized pad on top of that. Now it takes the bbox of the
+nonzero pixels. AIZL's common window goes 1154x1152 to 265x506, AUAL to 360x313, AUAR to 454x478,
+and the AIA/AIY chains that were already tight get tighter still (AIAL's median per-chain window
+265x290 to 88x102), so this improves every render in the module, not just the legacy-space ones.
+
+**A latent unit bug in the same file, fixed.** `pipeline.load_frame_sam(z, scale=8)` returns
+`(image_sam, full_hw)` where `full_hw` is the shape BEFORE downscaling (9216x9230), not the shape of
+the image it hands back (1152x1154). `build_view`, `render_before_after` and `render_reprop_triple`
+all passed that where the `_sam` canvas size belongs, and as `padded_window`'s clip bound. It
+allocated a 64x oversized bool canvas per z per chain, a plausible contributor to the RAM-exhaustion
+`imread` failures these renders hit in the first place. It would also have let a mask near the frame
+edge take a window running past the EM, at which point `_overlay` resizes the mask down onto the
+shorter EM crop and it stops lining up with the background. No AIA or AIY chain sits near an edge
+(0 of 87), so that second failure caused nothing here, but a chain closer to the border would have
+hit it.
+
+**`--box-tree` is now optional across the whole reprop report path**, not just on
+`neuron-gif-triple`. A `VARIANT=mask` cluster run writes no box
+tree at all, and the old code called `render()` on it regardless, where `build_view` raises
+SystemExit on an empty tree and `render_reprop_report.py` catches that and drops all three gifs for
+the chain. The tour also reads each EM frame once and shares it across every variant instead of
+re-reading per tree, since the window at a frame depends only on which chain is being visited. That
+cuts full-res reads by 3x, and it forces the outputs to share a frame index to (chain, z) mapping by
+construction rather than by coincidence.
+
+`render_reprop_report.py` and `build_reprop_docx_report.py` take the sides they are given rather
+than three fixed ones, so a VARIANT=mask run yields a two-up gif set and a two-up docx table instead
+of a hard failure and a column of blanks. The AIB, AIZ and AUA arrays submitted on 2026-08-21 are all
+mask-seed only, so without this there would have been nothing to render when they land.
+
+Sizing those shared windows moved into `reprop_window`, which fixes a second dict-merge bug of the
+same shape as the tour's: `{**mask_masks, **box_masks}` is keyed by z, so box-seed's mask replaced
+mask-seed's at every z they both cover, which is all of them. The window came from box-seed alone
+while the comment above it claimed a union. It now unions the variants' windows as boxes, and it
+still refuses to let the before tree influence the frame, since the before tail is the thing under
+test and letting it size the crop would hide the overfill the comparison exists to show.
+
+`neuron-gif-tour` (new subcommand) is the single-tree counterpart, for a neuron with nothing to
+compare against yet. `tests/test_report_tour_windows.py` covers the tour geometry, content-based
+windowing, the shared reprop window, the palette, and the optional-box-tree CLI wiring (25 cases,
+torch-free and data-free, `sam_hw` stubbed so none of it needs the EM store).
+
+507 passed, 1 skipped; ruff clean; no dashes.
+
+---
+
+<a id="r-2026-08-18-portable-review"></a>
+## 2026-08-18, portable review: neuron id registry, chain meta.json, review bundle, launcher, GUI modes
+
+A second reviewer (Lucinda) is joining on a Mac with no GPU. Everything in this entry exists to make
+that a `pip install` and a zipped folder instead of a day of setup.
+
+**The first real export found a bug nothing else could.** Twelve task reviews and a whole-plan review
+all passed, and the export still shipped unusable bundles. A pilot run over AIYL finished in 29
+seconds when it should have taken minutes, and every one of its 18 chains carried exactly 5 frames,
+for chains needing anywhere from 1 to 43. Sixteen of the eighteen were short and nothing warned.
+
+The cause was an asymmetry. Export copied a recorded `frames_dir` whenever the directory existed,
+testing existence only, while the completeness check guarded the destination on the resume path. Each
+chain's recorded directory had been rewritten to hold just the anchor plus or minus two by a
+`gui.py --anchor-only --context-frames 2` session during the correction pass, which is where every
+one of those 5-frame directories came from.
+
+Counting cannot repair this. A directory of numbered jpgs records nothing about which z each frame
+is, so a narrowed set that happens to be the right size cannot be told from a complete one, and two
+AIYL chains genuinely need exactly 5. Export now regenerates unconditionally and never copies, which
+also retired the working-directory resolution bug the copy path had been patched for. Measured cost
+on real data: 9.6 seconds per chain, not the 45 estimated from an unusually long one. The re-run gave
+42 AIY chains at 456 frames and 733 MB, every chain's frame count matching its mask count, and a
+chain opened with the repo's CATMAID tables pointed at paths that do not exist.
+
+The lesson is worth keeping: a green suite over synthetic fixtures is not evidence that an exporter
+works.
+
+**Why identity had to stop being a render-time accident.** A mask's numeric id used to come from
+`experiments/dense_overlay.py`'s `{n: i + 1 for i, n in enumerate(neurons)}`, so a neuron's id was
+its position in whatever subset happened to be rendered that time. Fine for a throwaway figure, not
+fine for a VAST segment number or a Blender material, which need to mean the same thing every time.
+`data/neuron_registry.csv` fixes this: 247 neurons, ids 1 to 247, built once from `data/chains.json`
+sorted by name, append-only after that ([ADR 0018](adr/0018-frozen-neuron-id-registry.md)). Every
+chain also gained a `meta.json`: registry id, crop window, and the rest of its portable identity,
+readable without importing `pipeline`.
+
+**Three things made a chain impossible to open on a second machine, all removed.** Paths were
+hardcoded straight into tracked source (`sam2_utils/config.py`), so a second machine meant editing a
+file under version control. Every real chain's `state.json` carries an absolute `frames_dir`, and
+across every merged tree those turned out to be dead Compute Canada Narval `/localscratch` paths.
+And `gui.py`'s fallback for a missing `frames_dir` was to regenerate frames from the raw EM store,
+which a review laptop with no access to the lab's drives cannot do.
+
+**Two findings made the fix cheap instead of a rewrite.** `ensure_predictors`, the one place a
+SAM2/SAM3 predictor gets built, has exactly three callers, and all three are model actions (re-run
+image phase, resume propagation, recrop). Neither `gui.py`'s module-level imports nor `import
+pipeline` pull in torch. So a reviewer who is only redrawing masks never touches torch at all:
+`requirements-review.txt` lists numpy, pandas, opencv-python, napari, magicgui, and qtpy, and leaves
+torch and sam2 out on purpose (see [how-to/review-on-a-mac.md](how-to/review-on-a-mac.md)).
+
+**`gui.py` gained a `review`/`full` UI mode** (`--ui-mode`, or `launch(ui_mode=...)`). Of the 28
+controls `_build_widgets` creates, 10 need a predictor; of the 17 keys `_bind_keys` binds, 7 do.
+Review mode drops the whole model panel and withholds those 7 keys, so a stray keypress on a
+GPU-less machine cannot reach an action that would just raise. `launcher.py` (new, built on qtpy,
+which napari already pulls in) turns the same choice into a picker instead of a flag: point it at a
+bundle, it lists the neurons inside and how many chains of each are already reviewed, and it disables
+the reprop option outright when torch does not import. Settings persist in
+`~/.sam2review/profile.json`, outside the repo.
+
+**The review bundle** (`export_bundle.py`, `import_bundle.py`, `sam2_utils/bundle.py`) is a portable
+copy of part of an output tree: `meta.json`, `state.json`, `qc.csv`, and a set of frames, zipped and
+handed to a reviewer, later merged back with `import_bundle.py --dry-run` followed by a real run.
+Frames in a bundle are regenerated from the raw EM store rather than copied, because every real
+chain's recorded `frames_dir` is one of the dead Narval paths above; copying it forward would have
+produced a bundle with no canvas to draw on. Only `masks/` and `qc.csv` travel back on the return
+trip, since a bundle's `state.json` records a relative `frames_dir` that would break the master tree
+if copied over it.
+
+**Known gap, recorded rather than fixed.** The design says the pipeline writes `meta.json` for new chains. It does not: only `backfill_meta.py` and `export_bundle.py` write one, so a chain straight out of the batch has no sidecar until one of those runs over it. Wiring it into `batch.py` is out of scope for the fix pass and is not done.
+
+429 passed, 1 skipped; ruff clean; no dashes.
+
+---
+
+<a id="r-2026-08-14-reprop-comparison"></a>
+## 2026-08-14, re-propagation comparison report: mask-seed vs box-seed, a real underfill fix found, transient F:/RAM read failures hardened
+
+Report tooling for the AIA/AIY re-propagation job (2026-08-13, `cluster/run_reprop_corrected_seed.sh`
+run on 45 AIA + 42 AIY corrected chains, mask-seed and box-seed variants each): compares the two
+seeding strategies against each other and against the pre-reprop tail.
+
+**`experiments/report_assets.py` gained `render_reprop_triple`/`chain-gif-triple` and
+`neuron-gif-triple`.** Renders before/mask-seed/box-seed to ONE shared crop window per chain (or,
+for `neuron-gif-triple`, per neuron, every reprop'd chain overlaid in one crop), computed from the
+union of both reprop trees' masks since neither variant is more "correct" a priori. Also gained
+`metrics_reprop`/`metrics-reprop`, a merge-metric comparison restricted to a manifest's reprop'd
+chains (not a neuron's full chain list, which would average in dozens of untouched chains and make
+the comparison meaningless). `experiments/render_reprop_report.py` (new) batches the per-chain
+triples from a manifest CSV, idempotent (skips a chain whose three gifs already exist).
+`experiments/build_reprop_docx_report.py` (new) assembles the actual `.docx`: a per-chain table
+keyed to each variant's own FARTHEST-from-anchor frame (not the anchor frame, identical across all
+three trees by construction, so it would show no difference at all), plus a whole-neuron "Merged
+Render" section (middle-frame snapshot, since a multi-chain merge has no single anchor or far end to
+key off).
+
+**Real finding: both reprop variants score WORSE than the pre-reprop tail on the Phase-0 bleed
+metrics, consistently across all 4 sides (AIAL/AIAR/AIYL/AIYR), but this reads backwards without the
+membrane pass.** `foreign_frame_rate`/`total_foreign_nodes` go up in every case (e.g. AIYR
+mask-seed: 0.150 -> 0.339). Enabling `membrane_source="auto"` (off by default in the earlier
+`metrics_before_after`, on here) surfaces the real story: `mean_underfill_fraction` drops 6-8x in
+every case (AIAL: 2.10 -> 0.26; AIYR: 1.69 -> 0.25), and `mean_boundary_on_membrane` improves too
+(+0.09 to +0.12). The pre-reprop tail was badly underfilled (visually confirmed: AIYL chain_03's
+farthest frame was a thin sliver before, a properly cell-sized mask after, both variants), and reprop
+fixes that at the cost of the mask now genuinely reaching neighbouring territory it previously missed
+by being wrong in a different way. **Mask-seed beats box-seed on overfill in all 4 sides** while
+matching it on the underfill fix, so it remains the better default of the two.
+
+**`pipeline/frames.py::load_frame_sam` gained a bounded retry (8 attempts, 3s apart) around
+`cv2.imread`.** Confirmed under real load from this report's whole-neuron merged renders (176-364
+full-res ~9216x9230 frames read per run): two distinct failure modes hit the same call site, transient
+F: read failures (`imread` returns `None`, the identical file reads fine moments later) and system
+RAM exhaustion under concurrent heavy jobs (`imread` raises an explicit `OutOfMemoryError`, one frame
+is ~255MB; this machine has 19.7GB total). The retry absorbs both by construction (rides out a disk
+hiccup, or gives a concurrent process time to finish and free memory), but does not fix sustained RAM
+pressure by itself: avoid running more than one heavy render/score job (including gui.py) at a time.
+
+**Delivery gap found and fixed**: the docx's "Renders" column note pointed at a local F: path
+("the real files are under F:\...\<neuron>\"), useless to a supervisor who does not have that drive.
+Fixed in both `build_reprop_docx_report.py` and the earlier `build_docx_report.py` to say the gif
+files travel alongside the document instead. Delivered as `AIA_reprop_report.zip` /
+`AIY_reprop_report.zip` (docx + every referenced gif at the right relative paths, verified by
+listing the zip's own root entries against the note text). One correction worth recording: Google
+Docs CAN autoplay an animated GIF, but only via "Insert Image > By URL" (a live reference), never for
+an uploaded file or a docx import, which always flattens to a static raster; Word never animates a
+GIF regardless of insertion method.
+
+343 passed, 1 skipped; ruff clean; no dashes.
+
+---
+
+<a id="r-2026-08-12-review-followups"></a>
+## 2026-08-12, review-session follow-ups: a shared before/after crop window, --anchor-only context frames
+
+Two small requests from a real AIAL/AIAR review pass, both landed the same day as the lasso tool.
+
+**`experiments/report_assets.py`'s before/after renders now share one crop window, computed from the
+AFTER (revised) tree.** Previously `chain-gif`/`neuron-gif` each computed their own window from
+whichever tree they were rendering: the union of that tree's own mask extent across every z, padded.
+Called once for a before tree and once for an after tree, as the module's own usage examples showed,
+the two windows could drift apart the moment a correction changed the mask's footprint (the lasso tool
+extending it outward, or a box-seed re-predict pulling it in), cropping the before render short of
+where the after mask now reaches, or vice versa. `_load_chains_masks`/`_compute_window` are pulled out
+of `build_view` as their own functions; `build_view`/`render` take an optional `window` (wx0, wy0, wx1,
+wy1 in _sam px) and use it as-is instead of recomputing one; a new `render_before_after` computes the
+window once from the AFTER tree and renders both sides to it. Two new CLI subcommands,
+`chain-gif-pair` and `neuron-gif-pair`, wrap this for the common case (the old single-tree
+`chain-gif`/`neuron-gif` are unchanged, still compute their own window, for anyone rendering just one
+side). Verified against real data (AIAL chain_00, before tree
+`resolution_experiments/target_perslice_only_guard_sam3_merged`, after tree
+`manual_verify_AIAL_AIAR`): both renders come back at the identical `378x375`, 113 frames each, not a
+coincidence of the code, the shared window forces it.
+
+**`gui.py --anchor-only` gained `--context-frames <n>`.** A real gap surfaced while reviewing: seeing
+only the anchor frame in isolation makes it hard to judge whether a correction actually matches how
+the mask should look a slice or two either way. `--context-frames n` widens the prepared z_range from
+`(anchor_z, anchor_z)` to `(anchor_z - n, anchor_z + n)`, so `,`/`.` can scrub a little context around
+the seed without paying for the whole chain's regeneration cost `--anchor-only` exists to avoid.
+Threaded through `_ensure_local_frames` (only takes effect when `anchor_only` is also set, ignored
+otherwise) down to `ReviewGUI.__init__`, `launch()`, and a new `main()` CLI flag. No new bug this
+time: `prepare_chain_crop_frames`/`prepare_video_frames` already compute the correct LOCAL anchor
+index for whatever `z_range` they are given (this is the same code path `anchor_only`'s single-frame
+case already exercised, just with a wider range), so nothing downstream needed the kind of anchor-index
+offset fix the 2026-08-12 `--anchor-only` seed-prompting bug (below) needed. Verified against real
+data (AIAL chain_03, anchor z=1518, `--context-frames 2`): exactly 5 frames prepared,
+`{0: 1516, 1: 1517, 2: 1518, 3: 1519, 4: 1520}`, anchor at local index 2.
+
+`docs/reference/cli.md`'s `gui.py` table also picked up `--anchor-only` and `--source`, both landed
+earlier in the day but never documented there.
+
+343 passed, 1 skipped; ruff clean; no dashes.
+
+---
+
+<a id="r-2026-08-12-lasso-add"></a>
+## 2026-08-12, lasso-add mask tool: a freehand loop unions into the current frame's mask, undo-compatible with the paint brush
+
+Long boundary-stretch corrections were tedious with brush-only painting: extending a mask along a
+wandering membrane meant many small brush strokes instead of one gesture. Addition only, by design:
+subtraction already has the eraser, and lasso plus eraser should feel like the same pairing as brush plus
+eraser.
+
+The tool is a new `self._lasso` Shapes layer, built by `_new_lasso_layer` alongside `_box` and
+`_prompts` in `open_chain`. `activate_lasso_draw` arms `add_polygon_lasso`, napari's own freehand-loop
+mode, so a drag needs no custom mouse handling. Two ways in: a "draw lasso (L)" dock button next to the
+box button, and the `l` key. The button is the one to trust. `Shapes.class_keymap` itself holds nothing
+for `l` (only `Shift`), so the shadowing does not come from a per-layer keymap at all: it comes from
+napari's app-model shortcut registry (`get_settings().shortcuts.shortcuts`), which separately maps `L`
+to `napari:activate_add_line_mode` on a Shapes layer and to `napari:activate_labels_picker_mode` on a
+Labels layer. Plain `l` is already claimed twice over there, so the viewer-level `l` binding loses in
+exactly the states you tend to be in, right after opening a chain or right after a brush correction. A
+button click never enters that resolution chain.
+
+On release, `_on_lasso_drawn` (connected to the layer's `data` event) rasterizes the finished loop with
+the standalone, already-tested `_rasterize_lasso_fill` helper and writes the added pixels into the mask
+through `Labels.data_setitem`, the same call the brush uses, so the stroke lands in the mask layer's own
+undo history. A bounds check on the frame index sits in front of that write, since the dims slider can
+run past the mask's real T extent whenever some other layer stretches it, which the lasso layer itself
+briefly does while a shape sits on it.
+
+Clearing the consumed shape has to wait a turn. A final whole-branch review caught that doing it inline
+crashed every real stroke. napari's `Shapes.data` setter opens with an unconditional `_finish_drawing()`
+call, so assigning `.data` from inside the `data` event that `_finish_drawing()` had itself just emitted
+re-entered that same call while its shape index was already reset to `None`, raising `TypeError: list
+indices must be integers or slices, not NoneType`. The mask edit had landed by then, but the drawn loop
+stayed on screen and the layer was left wedged with `_is_creating` still true, which broke the following
+stroke as well. `_clear_lasso` now runs on `QTimer.singleShot(0, ...)`, one event-loop turn later, after
+the outer `_finish_drawing()` has returned.
+
+`Ctrl+Z` needed a second binding to work the way this entry claims it does. `Labels.undo` is a
+layer-level keybinding, so it fires only while the mask layer is active, and the lasso deliberately
+leaves the Shapes layer active across consecutive strokes. A viewer-level `Control-Z` binding now calls
+`self._mask.undo()` as a fallback. Layer bindings outrank viewer bindings, so with the mask layer active
+napari's native undo still handles the key exactly as before, and nothing else is shadowed: neither
+Shapes, Points, nor Image binds `Ctrl+Z` natively in this version.
+
+The event filtering leans on a real napari 0.7.0 behavior: removing that last shape fires `REMOVING`
+then `REMOVED`, never `ADDED`, so filtering the callback on `event.action == ActionType.ADDED` is enough
+to ignore the deferred clear's own self-write, without a re-entrancy flag.
+
+`tests/test_gui_lasso.py` now covers the event wiring, not just the pure helper. The plan had written
+that wiring off as untestable without a display, which is how the crash shipped in the first place. A
+`napari.components.ViewerModel` plus real Shapes and Labels layers turns out to be enough to replay the
+actual draw sequence (`initiate_polygon_draw`, the drag vertices, `_finish_drawing`) with no Qt widgets,
+no display, and no GPU. Five tests exercise that wiring (the crash regression itself, an out-of-range
+frame, the deferred clear actually firing, and two guard-trip cases below), all failing against the
+pre-fix code and passing after it. napari is not in this project's CI extras, so each of the five is
+skipped there rather than failing the build; the three pure-helper tests carry no such guard and still
+run everywhere.
+
+A re-review of the fix caught two more gaps: an early-return guard (the frame bounds check, or
+`self._mask`/`self.data` being `None`) returned before the deferred clear was scheduled, leaving that stroke's
+loop stuck on the layer forever, which is itself self-sustaining since a stuck shape is exactly the kind
+of thing that stretches the dims T-extent past the mask's own range. `_on_lasso_drawn`'s guarded body now
+runs inside `try`/`finally` so the clear is always scheduled, verified with two more tests that trip each
+guard and confirm the layer still ends up empty. The other gap was this doc: the how-to
+(`docs/how-to/review-flagged-chains.md`) never mentioned the lasso layer, the `L` key, or the button, so
+the feature existed without being discoverable; both its layer table and its keyboard-shortcut table
+cover it now.
+
+One more hardening pass: the latent-race requeue in `_clear_lasso` (a second stroke mid-flight when the
+deferred clear fires) originally resubmitted itself every 0ms, which is fine for the ordinary case where
+`_is_creating` clears within a turn or two, but an unrelated exception earlier in `_on_lasso_drawn` can
+leave `_is_creating` stuck permanently true (napari only resets it after a successful finish), and an
+unbounded 0ms resubmit against a permanently stuck flag spins the event loop forever. The requeue is now
+a capped, spaced retry (50ms, 20 attempts) instead, and reads `_is_creating` through `getattr` so a future
+napari rename fails toward clearing the layer rather than raising inside a timer callback.
+
+`py -3 -m pytest -q`: 343 passed, 1 skipped. `ruff check gui.py tests/test_gui_lasso.py`: all checks
+passed. The live-GUI smoke test (drag a real loop, confirm the mask extends and `Ctrl+Z` reverts it) is
+still open for a human at a real display.
+
+---
+
+<a id="r-2026-08-12-anchor-only-seed-bug"></a>
+## 2026-08-12, `--anchor-only` prompt-seeding bug: prompts/box placed off the narrowed frame, explaining a "0/56" report
+
+Real user report opening AIAL chain_00 with `--anchor-only`: the dims slider read "0/56", every frame
+past the first was blank, the seed points and box were nowhere to be seen, and a yellow skeleton dot
+looked like it might mean something (it does not, `_skel` is always drawn `face_color="yellow"`, that
+is just the fixed marker colour for CATMAID chain nodes, unrelated to propagation state).
+
+All three symptoms traced to one bug in `gui.py`'s `_seed_prompts_from_state`: it placed the chain's
+saved seed points and box at `self._state.anchor_frame_idx`, the RAW recorded index against the FULL
+chain (56, AIAL chain_00's position in its 113-frame recording), not `self.data.anchor_idx`, the index
+already correctly narrowed to 0 for `--anchor-only`'s single-frame load (the narrowing itself, added
+2026-08-10, was working correctly: the on-disk `_pcrop` view really does hold exactly one JPEG).
+napari's dims slider spans the largest T-extent among all loaded layers, so a Points/Shapes layer with
+data sitting at t=56 stretched the slider to 56 even though the Image/Labels layers only had one real
+slice, frame 0. That produced exactly what was reported: a slider reading "0/56", frames 1 through 56
+blank (no image data was ever prepared for them), and the seed prompts/box invisible while parked on
+frame 0 (they were real, just sitting 56 frames away). The mask shown at frame 0 was the correct
+original anchor mask the whole time; only the prompt overlay and the slider range were wrong.
+
+Fixed by reading the seed frame index from `self.data.anchor_idx` instead of the raw state value,
+matching the pattern `_ensure_local_frames` already established for `anchor_idx` itself (2026-08-10).
+`reset_prompts` needed no separate fix, it calls the same method. Verified: `py -3 -m pytest` still
+335 passed, 1 skipped; `ruff check gui.py` clean.
+
+A stray cache directory turned up alongside the correct one during this investigation
+(`chain_views/AIAL_chain00_s8`, 113 files, legacy `_sam` naming) next to
+`chain_views/AIAL_chain00_pcrop_s2` (1 file, tier-2 naming, freshly rebuilt by the anchor-only prep).
+Its origin: `AIAL_chain00_s8`'s naming matches `SCALE=8`, `prepare_video_frames`'s legacy view-dir
+pattern, so it dates from before `propagate_from_verified.py`/`propagate_from_corrected_seed.py`
+gained their tier-2 branch (2026-08-10, same day). It is not read by any current code path
+(`_ensure_local_frames` only calls the legacy branch when `crop_window` is absent, and AIAL chain_00
+has one) and was not the cause of this bug. Left in place rather than deleted mid-investigation; safe
+to clear manually if disk space matters.
+
+---
+
+<a id="r-2026-08-10-propagate-from-verified"></a>
+## 2026-08-10, propagation from manually verified multi-frame seeds: mechanism verified, driver built
+
+Student wants to test propagation quality when every conditioning mask is human-confirmed instead of
+automatic, generalising the existing "manual seed-layer confirmation" roadmap lever (previously scoped
+to a single anchor frame) to MULTIPLE verified frames per chain. Split into two parallel tracks: a
+working copy of AIYL and AIYR's SAM3 per-slice output
+(`resolution_experiments/target_perslice_only_guard_sam3_merged`) for the student to hand-correct via
+`gui.py`, and the not-yet-existing pipeline support for propagating from several verified masks at once,
+built in parallel.
+
+**Working tree set up first**, so review could start immediately: copied AIYL (41 chains) and AIYR (43
+chains), plus `_run_meta.json`, to `F:\ZhenLab\Data\output_masks\manual_verify_AIYL_AIYR`, a fresh tree,
+the source per-slice output is untouched. `py -3 gui.py --output-root
+"F:\ZhenLab\Data\output_masks\manual_verify_AIYL_AIYR" --neuron AIYL` opens it directly.
+
+**The real mechanism checked against source before building anything.** `sam2_video_predictor.py`'s
+`add_new_mask` treats any frame not yet tracked as its own conditioning frame regardless of how many
+other conditioning frames already exist, and `propagate_in_video`'s default start frame is "the earliest
+conditioning frame"; a frame already conditioned is returned verbatim during a sweep, never re-predicted.
+Together this means a normal forward-then-reverse bidirectional sweep, rooted at whichever verified frame
+is earliest, correctly threads through and preserves every OTHER verified frame it passes, and that
+frame's own encoded memory feeds everything downstream of it in the same sweep direction. No new SAM2-level
+mechanism was needed, only seeding more than one frame before the existing sweep, `PropagationSession`
+already exposed `add_mask(frame_idx, mask)` for exactly this, just never called more than once per chain
+before.
+
+**Landed:** `pipeline.propagate.propagate_from_verified_masks(video_predictor, frames_dir,
+masks_by_frame, obj_id=...)`, the multi-seed counterpart to the single-anchor `propagate()` driver.
+4 real unit tests (`tests/test_propagate_from_verified_masks.py`) against a fake video predictor built
+to mirror the verified real behaviour (default start frame, verbatim conditioning-frame readback),
+confirming multi-frame seeding, full bidirectional coverage, and that conditioned frames read back as
+the seeded mask rather than getting overwritten. Full suite: 335 passed (up from 331), 1 skipped.
+
+**Also landed:** `experiments/propagate_from_verified.py`, a runnable driver: reads the current on-disk
+masks at chosen CATMAID z's from a corrected working tree, places each into a full `_sam` canvas (via
+`pipeline.chain_masks_in_sam`'s per-crop mask + offset), prepares fresh `_sam`-scale video frames
+(`pipeline.crop.prepare_video_frames`), seeds all the verified frames, propagates, and writes the result
+to a SEPARATE output tree (`pipeline.masks.save_masks` + a `ChainState`/`state.json`), refusing to run
+if `--out` equals `--tree` so the verified-mask source can never be edited in place. Runs at legacy
+full-frame `_sam` scale (`crop_anchor=False`) specifically so the verified per-slice masks and the fresh
+propagation frames share one coordinate system with no remapping code needed, the same reason
+`experiments/ab_seed.py` holds that scale constant when isolating a seed variable. Does not run QC
+(`run_qc`)/write `qc.csv`; score the output tree afterward with `eval.merge_metric` like any other tree.
+
+Not yet run end to end, no real corrected frames exist yet to feed it. Once the student has corrected a
+few frames in `manual_verify_AIYL_AIYR`, run e.g.:
+
+```
+py -3 experiments/propagate_from_verified.py \
+    --tree "F:\ZhenLab\Data\output_masks\manual_verify_AIYL_AIYR" \
+    --neuron AIYL --chain 0 --verified-z <corrected z's> \
+    --out "F:\ZhenLab\Data\output_masks\propagated_from_verified_AIYL_AIYR"
+```
+
+**Same day, real pivot after using the working tree for the first time.** Three real problems found,
+each fixed before it cost more time than it already had:
+
+**The GUI opened empty.** `sam2_utils/review_queue.py`'s `ReviewQueue` (what `gui.py` uses to build its
+chain list) reads `_manifest.csv` and `_triage.csv` from the tree root; the first working-copy setup only
+copied the neuron directories and `_run_meta.json`, so the queue had nothing to show, silently, not an
+error. Fixed with a general, repeatable tool, `experiments/make_review_tree.py`: copies the requested
+neurons' chain directories plus `_manifest.csv`/`_triage.csv` filtered to just those neurons (so the GUI's
+queue is populated correctly, not referencing chains that do not exist in the copy) and `_run_meta.json`
+verbatim; deliberately does NOT copy `_labels.csv`/`_review.csv` (review-state accumulators, a fresh
+working copy should start a clean review session, not inherit disposition rows from whatever review
+already happened on the source). Re-ran it for `manual_verify_AIYL_AIYR`, verified with
+`ReviewQueue(...).refresh()` directly: 84 manifest rows (41 AIYL + 43 AIYR), matching the chain counts.
+
+**The actual workflow needed is narrower than the multi-frame design above.** Student's real intent:
+correct ONLY the anchor/seed frame per chain (not scattered frames through the chain), and the runs
+happen on Narval/CCDB, not locally, propagation is too expensive to do interactively on this laptop's
+GPU. This also surfaces a real technical fact worth recording, verified against the installed
+`sam2_video_predictor.py` before it shaped anything: `add_new_mask` explicitly skips the memory encoder
+(`run_mem_encoder=False`), and a sweep returns an already-conditioned frame's STORED output verbatim
+without re-encoding it either, so a chain seeded on EVERY frame never runs the memory encoder at all,
+no propagation effect happens, identical to plain per-slice. The multi-frame machinery above is not
+wrong, just not what this specific workflow needs, "only fix the seed" is the single-anchor case
+`pipeline.propagate.propagate()` already handled before tonight, no new pipeline code required for the
+seeding mechanism itself.
+
+**"Which chains need repropagating" also turned out to be simpler than it looked once traced
+properly.** `_manifest.csv`'s status does get set to `"corrected"`, but only by `resume_propagation`
+(the `G` key), which runs its OWN local video-propagation immediately, so by the time a chain shows that
+status its whole tail has already changed, not just the one frame a human painted, there is no clean
+record of "this single frame was hand-edited" recoverable from that signal. Since only the anchor is
+ever meant to change now, the robust fix skips GUI-state entirely: `experiments/find_corrected_chains.py`
+does a direct pixel comparison of each chain's anchor-frame mask, working tree vs. source tree (placed
+into a full `_sam` canvas so a differing crop offset cannot produce a false negative). Real test against
+`manual_verify_AIYL_AIYR`: 0 corrected chains found, correct, nothing has been touched yet.
+
+**Landed:** `experiments/propagate_from_corrected_seed.py`, driven by that comparison, re-propagates a
+chain from its corrected anchor in TWO variants for comparison (student's own idea, "for a more
+comprehensive comparison"): MASK-seed (the corrected mask fed directly, `propagate(seed_mask=True,
+mask_anchor=...)`) and BOX-seed (a box derived from the corrected mask via the already-existing
+`box_from_mask`, fed alongside the chain's original point prompts, `propagate(seed_box=True,
+seed_points=True, ...)`). Both variants reuse `propagate()` completely unchanged. Writes each variant to
+its own output tree; the working tree is only ever read.
+
+**Also landed (not yet smoke-tested on Narval):** `cluster/run_reprop_corrected_seed.sh`, a Slurm ARRAY
+job following `cluster/run_exp.sh`'s exact structure (same module set, same account/gres pattern), one
+task per row of `find_corrected_chains.py --out-csv`'s manifest, each task running both propagation
+variants for one chain. Lint/syntax-checked locally (`bash -n`); written to match established convention
+closely to minimize risk, but genuinely unverified against real Slurm/Narval from this session, needs a
+one-task smoke test before trusting the full array, same discipline every other job in `cluster/` already
+expects. The full round trip this is one leg of: generate per-slice on Narval (already documented, no new
+script) -> pull to local (`rsync -L`) -> correct anchors in `gui.py` -> `find_corrected_chains.py` ->
+push the working tree back -> this array job -> pull the two variant trees back.
+
+**Also landed:** `experiments/report_assets.py`, headless render/metrics generation for the
+"Pipeline Report" deliverable template (`neuron-gif`/`chain-gif`/`metrics` subcommands). Reuses
+`sam2_utils.video_viz.to_gif`/`to_mp4`, the same functions `gui_neuron.py`'s "export overlay" button
+calls, so no napari import is needed. Real end-to-end test against `manual_verify_AIYL_AIYR` chain_00
+caught a real bug on the first try: rendering the whole raw `_sam` frame made a small chain's mask
+imperceptible (the same "invisible mask at full-frame scale" problem this session already hit once with
+a micro_sam spot-check), fixed by cropping to a fixed window covering every mask across every z in the
+chain (padded), computed once so the whole render stays registered; a second pass then also raised the
+default `preview_scale` from `to_gif`'s own default of 4 down to 1, since a window this small does not
+need the extra downscale a full-frame render would.
+
+**Same day, first real GUI attempt against this data surfaced two more real bugs, both fixed in
+`gui.py` itself, not this session's new scripts.**
+
+**Crash: `state.json`'s `frames_dir` is a stale Narval scratch path, and this is universal, not
+specific to AIAL/AIAR.** Checked AIYL chain_00 too, same problem: `frames_dir` recorded at generation
+time as `/localscratch/fsid.<jobid>.0/frames/...`, a Slurm scratch directory deleted the moment that
+Narval job ended. On Windows the leading `/` also gets misread as "root of the current drive"
+(`D:\localscratch\...`), so the crash is a bare `FileNotFoundError` deep inside image loading, not an
+obviously-stale-path message. This also surfaced that these chains are NOT all the legacy full-frame
+`_sam` case this session's new propagation scripts assumed: AIYL chain_00 itself is a tier-2 `_pcrop`
+chain (`crop_scale=1`). Fixed with `gui.py`'s new `_ensure_local_frames`: checks whether the recorded
+path actually exists locally, and if not, regenerates it from the source tifs via
+`pipeline.prepare_chain_crop_frames` (tier-2) or `pipeline.prepare_video_frames` (legacy), whichever
+`state.json`'s `crop_window` calls for. `open_chain` now loads `state.json` and resolves this BEFORE
+calling `review.load_chain` (previously after), so the resolved path can be passed straight in. Real
+test against the exact failing chain (AIAR chain_00, tier-2, 88 frames): confirmed missing beforehand,
+regenerated in ~45s, frame 0 present afterward. The shared decode cache
+(`pipeline.frames._ensure_cached_frames`) means only the first chain touching a given z-range pays this
+cost again locally.
+
+**Wrong neuron opened: `--neuron` alone (no `--chain`) was silently ignored.** `launch()`'s branch only
+opened a specific chain when BOTH `--neuron` and `--chain` were given; with just `--neuron`, it fell
+through to opening the first pending chain in the WHOLE tree's queue, regardless of neuron, which is
+how `--neuron AIAL` opened an AIAR chain instead. Fixed: `--neuron` alone now filters the pending queue
+to that neuron first, falling back to that neuron's first chain on disk if it has nothing
+pending/flagged, and prints a clear message rather than silently substituting a different neuron. Real
+headless test against the actual queue: unfiltered, `AIAR` chains come first (reproducing the bug
+exactly); filtered to `AIAL`, correctly lands on `('AIAL', 0)`.
+
+**That gap is now closed, same day, called out as priority #1.** `propagate_from_corrected_seed.py`
+(the script actually in use for the real "only fix the seed" workflow) and `propagate_from_verified.py`
+both now check `state.json`'s `crop_window` and branch to `prepare_chain_crop_frames` (tier-2) or
+`prepare_video_frames` (legacy) accordingly, matching `_ensure_local_frames`'s pattern. The bigger fix
+was how the corrected/verified mask itself gets read: both scripts previously went through
+`chain_masks_in_sam`, which downscales a tier-2 mask to the shared `_sam` aggregation grid, fine for
+cross-chain merging, wrong for feeding a mask back into a fresh propagation that now runs at the
+chain's own native `_pcrop` resolution. Fixed to read the saved mask PNG directly
+(`sam2_utils.qc._load_binary`), which for a tier-2 chain is already sized to the full crop window with
+no offset math needed; `state.json`'s `prompts` needed no change at all, confirmed from
+`pipeline/orchestrator.py`'s own comment that a tier-2 chain's seed stays in `_pcrop` space throughout
+despite the "_sam" field naming. Output `state.json`s now also carry the source chain's `crop_window`
+forward (previously hardcoded `None`), so a tier-2 output tree stays tier-2-aware for later reading.
+
+Real, CPU-only verification against the exact chain that exposed this (AIYL chain_00, tier-2,
+`crop_scale=1`, not run through the GPU to avoid contending with the live GUI session): the native
+anchor mask reads back at shape `(1624, 1416)`, and `prepare_chain_crop_frames` independently produces
+frame 0 at `(1624, 1416, 3)`, an exact match, confirming mask and frames now genuinely share one
+coordinate system. `find_corrected_chains.py` needed no change, its `chain_masks_in_sam`-based
+comparison is a same-space-both-sides diff either way, downscaling both trees to `_sam` equally is
+fine for detecting whether something changed, just not for feeding a mask into a new propagation.
+
+**Same day, two more real usability requests, both landed.**
+
+**Auto-provisioning: `gui.py --source` fixes a real bug in `make_review_tree.py` along the way.**
+Previously every new neuron needed a separate manual `py -3 experiments/make_review_tree.py` call
+before `gui.py` could open it. `gui.py` now accepts `--source <original tree>`; combined with
+`--neuron`, it auto-runs `make_review_tree` the first time that neuron is opened, and never again,
+the check is a plain "does `output_root/neuron` already exist", so an already-provisioned (possibly
+already corrected) neuron is never re-copied and never loses work. Building this surfaced a real bug
+in `make_review_tree.py` itself: `_manifest.csv`/`_triage.csv` were being overwritten wholesale with
+just the newly-requested neurons' rows, so calling it a second time for a different neuron (exactly
+what repeated `gui.py --source` calls now do) silently erased every previous neuron's manifest rows.
+Fixed to merge (replace only the requested neurons' rows, keep everyone else's). Real test: AIZL
+(65 chains, new) added to the existing `manual_verify_AIAL_AIAR` tree (AIAL 37, AIAR 29, already
+provisioned), manifest correctly reads 131 rows total, all three neurons intact, confirmed via
+`ReviewQueue.refresh()` directly.
+
+**`--anchor-only`: real 56x speedup for the "only fix the seed" workflow, and a real bug caught
+building it.** The GUI's per-frame STACK loading was already fast (dask's lazy image path, confirmed
+directly: ~3s to open a 40-frame stack, ~0.05s to materialize the first frame), the actual slow part
+for a long chain was this same day's `_ensure_local_frames` fix decoding every OTHER frame nobody was
+going to look at, especially costly for a tier-2 chain, which has no shared decode cache (every
+chain's crop window is unique, unlike legacy `_sam`). `--anchor-only` narrows frame prep to just the
+anchor z (`z_range` param, new on both `prepare_video_frames` and `prepare_chain_crop_frames` in
+`pipeline/crop.py`, backward compatible, `None` keeps every existing caller's whole-chain behaviour
+unchanged). `review.load_chain` already drops any saved mask whose z is not in the given `frame_to_z`
+(sam2_utils/review.py), so the narrowing cascades into a clean single-frame session on its own, no
+deeper GUI refactor needed. Real, measured: AIAR chain_00 (the same tier-2 chain that took ~45s to
+fully regenerate earlier this same day) now prepares in 0.8s.
+
+Building it caught a real bug before it shipped: the anchor's frame index has to come from the SAME
+narrowed source as `frame_to_z`, not the recorded `state.json` value, an early version passed the
+recorded `anchor_frame_idx` (43, AIAR chain_00's position in the full 88-frame chain) alongside the
+narrowed single-frame `frame_to_z`, which would have broken every anchor-detection check downstream
+against a stack that only has index 0. Fixed by returning `anchor_frame_idx` from the same prep call
+that builds the narrowed `frame_to_z`, and passing both together into `review.load_chain`. Verified
+directly: `anchor_idx` now reads `0`, matching the actual loaded stack. `resume_propagation` (`G`)
+refuses with a clear message in `--anchor-only` mode instead of silently propagating through a
+one-frame video (meaningless); the real propagation step for this workflow is the separate
+`experiments/propagate_from_corrected_seed.py`/cluster job, not local resume.
+
+---
+
+<a id="r-2026-08-09-spill-doc-prep"></a>
+## 2026-08-09, spill/overfill documentation prep: real membrane-pass cost measured, a stale CSV trap found, micro_sam and square-mask spot-checks
+
+Prep work for the PI's spill/overfill documentation ask (roadmap item 16, §4.9): real examples of
+propagation spill need both the foreign-node signal (already scored, Phase-0) and the mild-bleed
+signal (the membrane pass, never run on the SAM3 propagation trees, since the 2026-08-06 full-scope
+validation used `--no-membrane` for speed).
+
+**Real per-frame membrane-pass cost measured, not assumed.** An isolated micro-benchmark of
+`membrane.membrane_map` alone read ~0.14s/frame, optimistic and misleading: timing the real
+`eval.merge_metric` CLI end to end (frame I/O, mask I/O, all detector passes) on 1,038 real frames
+from two neurons gave 1.046s/frame, confirming the older ~0.9s/crop figure this document already
+carried rather than the cheaper isolated number. At the full tree's 66,532 frames that is
+~19 hours single-threaded, locally, per tree, too long for a documentation task that does not need
+the whole tree.
+
+**A stale, mismatched CSV found at `resolution_experiments/target_tier2_s1forced_neg_sam3_merged`.**
+Its `_merge_metric.csv` lists 129 neurons and 66,532 frames, but only 18 neuron directories actually
+exist on disk there now, 108 of the CSV's neurons are gone. The real, consistent 129-neuron,
+66,532-frame full-scope propagation tree lives one level up, at
+`output_masks/target_tier2_s1forced_neg_sam3_merged` (not under `resolution_experiments/`), verified
+by checking the CSV's neuron set against the directory listing directly (exact match, no mismatch).
+Anyone reading numbers from the `resolution_experiments/` copy of this tree should regenerate them
+first; the cached file there predates whatever repurposed that directory for a smaller run and was
+never cleaned up.
+
+**`experiments/overnight_membrane_scan.py` (new): a resumable wrapper for unattended runs.**
+`eval.merge_metric.score_run`'s per-chain loop has no error handling and writes its CSV once at the
+end, so a single unreadable frame (F: dropped twice earlier this same evening) loses the entire run,
+however many hours it had already spent. This scores one neuron at a time into its own shard CSV
+(`_merge_metric.membrane_shard_<neuron>.csv`, stitchable later with `eval.concat_merge_shards
+--shard-glob`), retries a failed neuron up to 3 times with a 30s backoff, and skips any neuron whose
+shard already exists, so re-running the script after a crash resumes instead of redoing work.
+
+**Scoped to the 20 highest-bleed neurons instead of the full tree**, chosen directly from the
+existing Phase-0 `total_foreign` counts (`SAAVL`, `AVM`, `SIADL`, `ALA`, `AVKR`, `SIBDR`, `SMBDL`,
+`RIVR`, `PVWL_or_R_3`, `SABD`, `SIADR`, `AVKL`, `SDQR`, `PVWL_or_R_1`, `AVJR`, `SIBVR`, `AVL`,
+`SIAVR`, `SMDDL`, `SIAVL`), 12,067 frames, ~3.5 hours: enough real, already-known-to-bleed examples
+for the documentation task, launched overnight rather than a random or full-tree scope. Smoke-tested
+clean on one neuron (SDQR, 409 frames, 343s, `mild_bleed_rate=0.022`) before launching the full
+batch. All 20 neurons finished clean, 0 failures, in ~63 minutes total (faster than the ~3.5h
+estimate, likely because stopping the concurrent square-mask scan freed up F: I/O). Stitched with
+`eval.concat_merge_shards --shard-glob "_merge_metric.membrane_shard_*.csv"` into
+`_merge_metric_membrane_subset.csv`: 485 chains, 12,067 frames, `foreign_frame_rate=0.458`,
+`dropout_rate=0.236`, `total_foreign=8,476`, `mild_bleed_rate=0.019`, `spanning_merge_rate=0.066`,
+`boundary_on_membrane=0.927`, `underfill=0.625`. Both signals now exist together for these 20
+neurons. `mild_bleed_rate` reads lower than the high `foreign_frame_rate` might suggest, expected
+rather than contradictory: they measure different things, mild bleed is a boundary crossing a
+membrane without reaching a foreign centreline, foreign-node containment is the severe case.
+
+**Four real example frames rendered** (`experiments/spill_examples.py`), then substantially
+revised after a real methodology problem surfaced: the first pass picked the single worst FRAME
+by foreign-node count per example and paired it with "the next chronological frame" for a fourth
+panel. Direct feedback that two of those pairs "were already problematic" led to actually checking
+each example chain's full timeline from its own anchor (`anchor_catmaid_z`, read straight from
+`state.json`) outward, which found the real reason: all three original picks
+(`SAAVL chain_17`, `SMDDL chain_03`, `AVJR chain_03`) already had a foreign node AT THE ANCHOR
+FRAME ITSELF. There was no clean-to-bled transition to show, because none of them ever started
+clean, "the next frame" was just more of the same by construction.
+
+That distinction became the real finding. The examples now split into two real kinds, found by
+checking data, not by assumption:
+
+- **`bad_seed`** (the anchor itself is already contaminated): `SAAVL chain_17`, anchor z=1460,
+  already touches 1 foreign node there; 108 frames out at z=1568 the mask has grown into a long
+  band along what reads as body wall muscle, engulfing 9 foreign nodes and losing its own node
+  entirely (`own_contained=False`, confirmed against the CSV). A small seed-level contamination
+  compounding into a severe, own-target-losing chronic bleed. `AVJR chain_03`, anchor z=1610, is
+  worse at the seed itself (6 foreign nodes already) and stays in the same range (8 at z=1607), a
+  mask that was never on-target rather than one that drifted there.
+- **`drift`** (the anchor is genuinely clean): real search across the 20-neuron subset's full
+  per-chain timelines found 137 chains with a clean anchor (own node contained, zero foreign
+  nodes) that bleed later. `SABD chain_25` (anchor z=1407) stays completely clean for 77
+  propagated frames before its first foreign-node hit at z=1330; `SIADR chain_06` (anchor z=1404)
+  stays clean for 23 frames before onset at z=1427. Both render as a genuine transition pair, last
+  clean frame vs. first bled frame: a tight mask inside a real, clearly bounded compartment, then
+  a small bulge crossing a real (often locally weaker) membrane boundary into the neighbour. This
+  is the clean "propagation caused this" story the `bad_seed` chains cannot tell.
+
+**Two rendering bugs found and fixed while building these, both real, not cosmetic.** First, node
+markers only drew a green star for an own node found INSIDE the mask, but `score_chain`'s actual
+own_contained logic checks ANY of a neuron's own nodes at that z (a neuron can have more than one
+branch point sharing a z, e.g. AVJR had three distinct nodes at z=1607); the fix draws every own
+node, hollow when the mask misses it, filled when contained, which is what surfaced the SAAVL
+own-target-loss finding above, an earlier version would have shown nothing there at all. Second,
+letting an own node's position expand the crop window blew the window out to include an unrelated
+distant branch, shrinking the actual mask to an unreadable speck; fixed to size the window from
+the mask and foreign nodes only, with the axes limits explicitly locked before any off-window node
+is scattered (an unlocked matplotlib scatter call was silently auto-expanding the whole view to
+fit the far-away point, the same shrink-to-speck symptom from a second, unrelated cause).
+
+Still open: a systematic survey beyond these four (137 real `drift` candidates exist to pick from
+if more are wanted), and how common `bad_seed` is relative to `drift` across the tree as a whole,
+not established by four hand-picked chains.
+
+Stitching hit a real bug in `eval.concat_merge_shards`: its shard-sort key assumed the cluster's
+numeric shard index (`shard_<i>.csv`) and crashed with a `ValueError` on this driver's
+neuron-named shards (`membrane_shard_SDQR.csv`). Fixed with a sort key that falls back to
+alphabetical ordering for a non-numeric suffix (`_shard_sort_key`, `eval/concat_merge_shards.py`);
+ordering is cosmetic either way, concatenation is a plain row union. Full test suite still passes
+(331 passed, 1 skipped), and `tests/test_concat_merge_shards.py` specifically still passes (7/7).
+
+**Narval/CCDB considered and set aside for this round.** No cluster script runs `eval.merge_metric`
+today, only mask generation (`cluster/run_array.sh`); building one, uploading these mask trees to
+project storage, and working around the precedent of the `retro_sam3` cluster scoring job's earlier
+12-hour timeout would cost more setup time than the ~19 hours it would save on a one-off, and the
+targeted local subset above sidesteps needing the full tree at all. Worth revisiting if this becomes
+a repeated need.
+
+**`experiments/microsam_spotcheck.py` (new): micro_sam as a zero-shot comparison baseline.** Same
+single node-point prompt fed to both our SAM2 pipeline and micro_sam's `vit_l_em_organelles`
+checkpoint (the only EM-domain micro_sam checkpoint that actually exists in the installed registry;
+an earlier assumption of an `em_boundaries` checkpoint, based on micro_sam's own documentation, does
+not match `micro_sam.util.models()`'s real contents, checked directly). One frame (AIYL, z=1456):
+our SAM2 mask landed on the prompt point as expected; micro_sam's mask did not, it captured an
+unrelated organelle-like blob well away from the point. Not a verdict from n=1, but consistent with
+this document's existing prediction that an organelle-trained checkpoint would struggle on a neurite
+prompt, and a sharper failure than expected, the prompt barely seemed to matter. Getting there also
+surfaced a real, unrelated bug: the installed `segment_anything` predictor's `.cpu().numpy()` call
+has no bfloat16 support, and this GPU runs the checkpoint in bfloat16; forcing the micro_sam
+predictor onto CPU sidesteps it for a one-frame spot-check.
+
+**Square-mask ("actual squares filling their crop") check re-run with the corrected metric.**
+`check_square_masks.py` (session scratchpad) measures `mask.sum() / mask.size`, the mask's own
+assigned crop window, not its tight bounding box (an earlier version of this check measured the
+wrong ratio against the mask's own tight bounding box instead, which reads high for any compact
+blob and does not distinguish a real square-crop-fill from an ordinary round mask). Real interim
+result: 0 of 25,735 masks in the propagation tree hit `crop_fill >= 0.9`, no
+evidence of literal square-filled-crop masks there under this metric. The secondpass tree's scan is
+still incomplete, interrupted twice by F: dropping mid-scan.
+
+---
+
+<a id="r-2026-08-06-second-pass-fullscope"></a>
+## 2026-08-06, propagation second pass: full-scope validation, a real verdict
+
+Retro-scored the plain-propagation and propagation+second-pass trees fresh (Phase-0,
+`eval.merge_metric --no-membrane`), full 133-neuron target scope on both, identical 4,041 chains
+and 66,532 frames, a clean apples-to-apples comparison rather than the one curated chain the
+2026-07-30 landing verified. Bleed rate 27.2% to 17.4% (-36% relative), dropout rate 14.0% to 2.7%
+(-81% relative), total foreign nodes 23,993 to 19,537 (-18.6%), mean z-to-z IoU 0.681 to 0.668
+(flat, the temporal-consistency advantage is not traded away for this). Substantially stronger than
+the one-chain spot check suggested, and it holds despite the still-open accept-gate gap from that
+landing (the gate only checks the re-predicted mask contains its own node, not that the specific
+foreign node which triggered the flag is gone), so the true improvement is likely larger than these
+numbers, not smaller. The propagation second-pass feature now reads as a validated win at full
+scope, not an uncalibrated first signal. Also surfaced along the way: the full-scope
+plain-propagation bleed rate (27.2%) is meaningfully higher than the 21.7% quoted elsewhere in this
+document and the presentation deck, which came from a curated 15-neuron matched-comparison subset;
+not a regression, just a different, harder, more representative population, the two numbers measure
+different things and should not be compared as before/after.
+
+Also hit two real problems getting to this data. `cluster/stage_download.sh`'s idempotent skip
+check was presence-only (`-f`, not integrity-checked), so a tarball truncated by an earlier timeout
+would be silently trusted on the next run; fixed to verify with `tar -tzf` and retar on failure
+(caught two previously-unknown corrupt archives on its first real run under the fix, not just the
+one known-truncated tree, see the 2026-08-04 entry below). Separately, local extraction of the two
+big target trees hit F:'s known physical flakiness mid-write ("No such device"), unrelated to the
+tar fix; resolved by reconnecting the drive and retrying cleanly, with the partial extraction
+removed first so the retry was not overlaying stale files.
+
+---
+
+<a id="r-2026-08-04-mitonet"></a>
+## 2026-08-04, NucleoNet recall gap found, MitoNet mitochondria detector spot-checked
+
+A human visual re-check of the NucleoNet renders from the 2026-07-29 gate run (z=1456, z=1472)
+confirmed the "no false positives" verdict but surfaced a gap the original writeup did not carry:
+z=1456 has at least one visible nucleus NucleoNet did not detect. The GATE VERDICT stands (NucleoNet
+generalizes, no false positives on organelles), but the roadmap's NucleoNet section
+(`docs/explanation/roadmap.md` §4.5) now carries an explicit recall caveat: this detector can miss
+real nuclei, not just avoid flagging non-nuclei, worth remembering before treating its output as a
+complete nucleus census for anything downstream.
+
+Separately, a naive round-plus-dark-mask heuristic proposed as a possible detector for organelle
+capture turned out, on clarification, to target mitochondria rather than nuclei: small, dark,
+round-to-elongated blobs, the same class of structure the membrane ridge map already misfires on
+(`sam2_utils/membrane.py`, see the 2026-07-29 organelle blob suppression entry below). Rather than
+build a circularity/intensity heuristic from scratch, this session checked whether a pretrained
+mitochondria detector already exists in the same registry NucleoNet came from. It does:
+`empanada-napari` ships `MitoNet_v1`, trained on the CEM-MitoLab dataset, config confirmed against
+`empanada_napari/configs/MitoNet_v1.yaml` (fetched 2026-08-04), which also closes part of the
+NucleoNet provenance gap by confirming `nms_threshold`/`nms_kernel`/`confidence_thr` are real
+training-time values, not inference-engine defaults carried over unmodified.
+`experiments/mitonet_spotcheck.py` (new, mirrors `nucleonet_spotcheck.py`'s vendoring approach) ran
+on the same two target-worm frames used for NucleoNet: 74 instances detected at z=1456, 71 at
+z=1472, both plausible mitochondria counts for a worm cross-section. A human visual check of both
+renders found the same pattern as NucleoNet: accurate on what it catches, incomplete on what it
+misses. GATE VERDICT: MitoNet generalizes for detection. Of the candidate uses raised (ridge-map
+suppression, SAM-mask mitochondrion-capture detection, a general organelle classifier), ridge-map
+suppression was picked first since it is the one with a documented open failure: the 2026-07-29
+organelle blob suppression entry below found the classical Otsu/shape detector calibrated to ~96%
+single-pixel noise and moved the real bleed floor by exactly zero. See roadmap item 2f (§4.5).
+
+`experiments/organelle_pretrained.py` (new) unions MitoNet's and NucleoNet's full-frame instance
+masks into one boolean mask (both organelle types by default, one forward pass each per frame, not
+per neuron crop) and `experiments/dense_membrane_fill.py` gained `--organelle-source
+{classical,pretrained}` so `grow_all` can slice a neuron's region out of that precomputed mask
+instead of calling `detect_organelle_blobs` on its local crop. Same real gate as the classical run
+(z=1456, 117 neurons, `new_bleed` = cells that only start engulfing a foreign node after being
+grown): baseline (no suppression) and the classical detector both land on `new_bleed=7` at the
+canonical `uf_min=0.6, cap=5x` gate; the pretrained mask (3.2% of the frame flagged, vs. the
+classical detector's much noisier ~15% per-crop footprint) lands on `new_bleed=6`. The full
+`uf_min` sweep (`0.00`/`0.40`/`0.50`/`0.60`/`0.70`) shows the same story: baseline 34/14/11/7/3
+vs. pretrained 33/14/11/6/3, a one-cell dent at best, zero at most gates. This is a materially
+different result from the classical detector's flat zero, since it is a semantically real
+organelle mask rather than 96% Otsu noise, and it still barely moves the floor. That points away
+from organelle contamination of the ridge map as the dominant driver of `new_bleed` and back toward
+the scale-8 leaky-wall problem already flagged by the 2026-07-27 dense-frame membrane-fill sweep
+(the flat ~40% bleed-per-fill rate, attributed there to the membrane map's resolution, not
+organelle noise).
+
+---
+
+<a id="r-2026-07-30-second-pass"></a>
+## 2026-07-30, propagation second pass: neighbour-seeded re-segmentation lands, SAM3 crash found and fixed, accept-gate gap flagged
+
+Phase 1.5's re-anchoring lever. A finished propagation chain's flagged frames (dropout or foreign-node
+bleed, from `eval.merge_metric.score_chain`) now get a targeted re-segmentation pass instead of being
+discarded or forcing a full chain re-run: `select_second_pass_frames` and `find_second_pass_neighbour`
+(`pipeline/propagate.py`) find the flagged z's and their nearest unflagged neighbour in the same
+chain, and `apply_second_pass` re-predicts each flagged frame from that neighbour's mask plus the
+frame's own skeleton-node point, falling back to `apply_blowup_guard`'s existing neighbour-copy when
+the result fails a sanity check or no unflagged neighbour exists. This needed a new `mask_input`
+parameter on `image_predict` (`pipeline/predict.py`) and a `mask_to_low_res_logits` helper to convert
+a saved boolean mask into SAM2's expected low-res logits. Both gated off by default:
+`PipelineConfig.second_pass: bool = False` and `second_pass_min_neighbour_area_ratio: float = 0.5`,
+driven by new `batch.py --second-pass`/`--second-pass-min-neighbour-area-ratio` flags, folded into
+each chain's `qc.csv` as a `second_pass` column recording which tag applied, `"corrected"` or
+`"guard_fallback"`. Because `pipeline/propagate.py` is inside the
+enforced library boundary and cannot import `eval`, the trigger's `score_chain` call lives in
+`batch.py` instead, with the resulting records passed into `apply_second_pass` as plain dicts. Full
+design, including the diagnostic that motivated it (propagation's `foreign_frame_rate=0.252` against
+SAM3 per-slice's `0.087`, same backend, per ADR 0017) and the nucleus-capture neighbour guard's
+stated limits (it only helps when nucleus-capture affects a minority of a chain's frames, and cannot
+catch a structurally trapped point prompt), see
+`docs/superpowers/specs/2026-07-30-propagation-second-pass-design.md`.
+
+Real verification against one chain, `AIZL/chain_51` (`target_tier2_s1forced_neg_sam3_merged`, 11
+frames, 5 flagged), turned up two findings. First, a real crash: `apply_second_pass` raised
+`TypeError` against the real `Sam3ImagePredictor`, whose `predict()` has no `mask_input` parameter at
+all, which on a real `--second-pass --backend sam3` run would mark every touched chain `FAILED` after
+a successful propagation and force a full re-propagation on resume. Fixed (commit `802669e`):
+`image_predict` now omits `mask_input` unless it is not `None`, and `apply_second_pass` checks the
+predictor's signature once and falls back to a point-only re-predict on any backend without the
+parameter. Verified against the real predictor on local GPU; SAM2's path is unchanged. Second, an
+unfixed gap: the accept/reject gate only checks that the re-predicted mask contains the frame's own
+node, never whether the specific foreign node that triggered a bleed flag is gone. On the verification
+chain's 5 touched frames, only 2 genuinely resolved their trigger; the other 3 were tagged
+`"corrected"` while `n_foreign` stayed unchanged at the same foreign node id.
+A `"corrected"` count should not be read as a "fixed" count without this caveat, and it remains open
+for a future iteration. One small chain: a first signal on both fronts, not a verdict, though the
+crash itself is not a one-chain fluke, it follows directly from the SAM3 adapter's signature. See
+`.git/sdd/task-5-report.md` for the full before/after tables and the roadmap's item 13 (§5b).
+
+The final whole-plan review (commit `306da30`) caught a third, more basic problem the real-chain
+verification above could not see, since it always ran against a chain whose `state.json` was already
+correct on disk: `_apply_second_pass_and_update_qc` was called before `save_state`, so on a chain's
+first real run its internal `score_chain` call read a missing or stale `state.json`, mis-learned the
+chain's crop space, and flagged every frame with dozens of phantom foreign nodes, which meant no
+frame ever had an eligible neighbour and the whole pass silently did nothing. Fixed by moving the
+call to after `save_state`. The same review also reversed the `"corrected"` clear-flags behavior
+described above: given the accept-gate gap just above, clearing a frame's triage flags on an
+unverified `"corrected"` tag was actively hiding still-broken frames from review, so both
+`"corrected"` and `"guard_fallback"` now force `flag`/`intervene`/`queue` back to `True`, the
+`second_pass` column still records which tag applied. A failure inside the pass is now also isolated
+in a `try/except`, so it cannot fail an already-successful chain.
+
+---
+
+<a id="r-2026-07-29-organelle-blob"></a>
+## 2026-07-29, organelle blob suppression: the intensity/texture filter lands, calibrated against real EM, the floor still does not move
+
+Phase 2b.5's second classical lever, tried after temporal projection landed as a negative result.
+`sam2_utils/membrane.py` gained `detect_organelle_blobs` and `suppress_organelles` (Otsu threshold,
+connected-component labeling, then `regionprops` area/eccentricity filtering, with a dilation margin
+before inpainting), wired into `experiments/dense_membrane_fill.py`'s `grow_all` via
+`--suppress-organelles`/`--blob-max-area`/`--blob-max-eccentricity`/`--blob-dilate-px`. An earlier
+`blob_dog` (Gaussian-scale blob detector) design was rejected before this plan existed, verified
+directly to not tell blob shape from ridge shape (it flagged a synthetic ridge about as strongly as a
+synthetic blob), which is why the shipped mechanism filters on `regionprops` shape statistics instead.
+
+Calibration against a real target-worm EM crop (z=1456, 200x200px, Otsu threshold 122.1, 43.1% of the
+crop dark) found the two shape knobs cannot do what real data needs from them. Of 1017 dark connected
+components, 710 pass the plan's default filter (`max_area=150.0`, `max_eccentricity=0.85`), and 618 of
+those (87%) sit at area <= 3px, near-certain single-pixel Otsu noise rather than organelles; only 28
+(4%) fall in a plausible organelle size range (area 11-144px). Tightening `max_eccentricity` to 0.6
+does not fix this (562 of 585 kept components, still 96%, stay <= 3px) while discarding 90% of the
+plausible-organelle-sized candidates, a net loss, not an improvement. Tightening `max_area` to 60-80
+barely changes the kept count (706-708 vs 710), so area is not the binding constraint either; both
+shape knobs stayed at the plan's default for these reasons. `blob_dilate_px` is what actually
+controls collateral damage, since dilation lands on hundreds of noise specks, not the ~28 real ones:
+the flagged-pixel fraction of the crop runs 5.3% at `dilate_px=0`, 14.6% at `dilate_px=1`, 26.1% at
+`dilate_px=2`. `blob_dilate_px` was lowered from the plan's default of 2 to 1, halving the
+over-suppression footprint to 14.6% of the crop, a mitigation for the noise-speck problem rather than
+a fix for it (the current interface has no minimum-area floor to remove single-pixel specks
+directly).
+
+The calibrated gate (`py -3 experiments/dense_membrane_fill.py --z 1456 --uf-min 0.6
+--suppress-organelles --blob-max-area 150.0 --blob-max-eccentricity 0.85 --blob-dilate-px 1`) reported
+filled=18, foreign=40, bleed_cells=28/117, new_bleed=7, mean_uf=0.381, area +12%, contested=3274,
+against a freshly reproduced same-day baseline at the same z and `uf_min` (no suppression) of
+filled=17, foreign=39, bleed_cells=28/117, new_bleed=7, mean_uf=0.403, area +12%, contested=2749. That
+reproduction mattered: the 0.38 bleed-per-fill figure already on record from the temporal-projection
+entry below turned out, on closer reading, to belong to a different setting (the `uf_min=0` run), not
+this `uf_min=0.6` run, so it was not the correct baseline to compare against. Against the correct,
+apples-to-apples baseline, the rate moves from 7/17=0.41 to 7/18=0.39; against the older 0.38 figure it
+reads flat at 7/18=0.39. Either way, `new_bleed` itself is identically 7 in both conditions; the only
+thing that changed is the denominator, one additional cell crossed the `uf_min>=0.6` grow-eligibility
+gate under the suppressed membrane map, which is not the same as any grow leaking less. Contested
+pixels (mask overlap between neurons) rose 2749 -> 3274, +19%, a cost the bleed-per-fill metric does
+not capture.
+
+**A whole-plan review pointed out that this single `uf_min=0.6` row (n=17/18 filled) is the
+narrowest, most favorable slice available, and that `--sweep` already prints a much larger,
+population-matched comparison across every `uf_min` gate from the same grow pass, for free.**
+Reproduced directly (`py -3 experiments/dense_membrane_fill.py --z 1456 --sweep`, baseline vs
+`--sweep --suppress-organelles --blob-max-area 150.0 --blob-max-eccentricity 0.85
+--blob-dilate-px 1`):
+
+| uf_min | baseline new_bleed/filled | suppressed new_bleed/filled |
+|---|---|---|
+| 0.00 | 34/90 = 0.378 | 35/90 = 0.389 |
+| 0.40 | 14/36 = 0.389 | 15/34 = 0.441 |
+| 0.50 | 11/26 = 0.423 | 11/24 = 0.458 |
+| 0.60 | 7/17 = 0.412 | 7/18 = 0.389 |
+| 0.70 | 3/11 = 0.273 | 4/13 = 0.308 |
+
+At `uf_min=0` the grown population is perfectly matched (filled=90 on both sides, 5x the sample of
+the `uf_min=0.6` row). Most tracked stats are worse under suppression at that row: foreign 139 ->
+142, bleed_cells 55/117 -> 56/117, contested 25741 -> 28107 (+9%), area +86% -> +89%. `mean_uf` is
+the one stat that improves (0.313 -> 0.293), the ordinary underfill/bleed tradeoff: suppression lets
+a few more cells clear the fill gate, which lowers mean underfill while raising bleed and contested
+overlap. Suppression is flat-to-slightly-worse at 4 of the 5 `new_bleed/filled` gates; `uf_min=0.6`
+is the sole exception, and it is also the smallest sample in the table, so it reads as the
+coincidence of one small row rather than the representative case.
+
+**Result: the floor does not move, confirmed across a 5x larger, population-matched sample, not just
+the narrow n=18 row first reported.** This is the plan's second documented negative outcome (temporal
+projection was the first), and the population-matched check strengthens rather than overturns it.
+This closes out the specific `detect_organelle_blobs`/`suppress_organelles` design landed in Task 1,
+not organelle suppression as a general idea: the current detector has no minimum-area floor, so it
+structurally cannot separate single-pixel Otsu noise from genuine tiny organelle fragments, and a
+differently-designed detector (an explicit minimum-area floor, or local rather than global Otsu
+thresholding) remains a distinct, unexplored option. With both classical levers now tried and
+measured negative, items 2c (grow-to-membrane) and 2d (non-overlap arbitration) stay gated, and per
+the roadmap's own decision point, the next step is a learned membrane map (Phase 3), judged on
+boundary sharpness rather than zoomed-out neatness. See the roadmap's item 2b.5 (section 5), item 10,
+and the decision point in section 6.
+
+---
+
+<a id="r-2026-07-29-z2z"></a>
+## 2026-07-29, z-to-z consistency metric: a temporal ruler for the merge metric's per-frame blind spot
+
+The target-worm merge metric (`eval/merge_metric.py`) scores each frame independently, so it has no
+way to see whether a run's masks hold their shape from slice to slice, and it structurally favours
+per-slice methods over video propagation, the method that buys that consistency. Phase 0.a closes
+that gap.
+
+`z_transitions` computes IoU and centroid drift between every pair of a chain's adjacent-z masks, in a
+shared coordinate frame built from each mask's own `_sam`-grid offset (a tier-2 crop window can move
+or resize between frames, so the two local arrays cannot be compared directly). A transition touching
+an empty mask gets `iou=None`, kept separate from the low-consistency signal so a chain that scores
+well only because it dropped frames does not look falsely consistent. `summarize_z_consistency`
+aggregates these into `mean_z2z_iou`, `mean_centroid_drift_px`, `frac_gap1_transitions`
+(consecutive-slice transitions versus ones spanning a missed frame), `frac_low_iou` (the fraction of
+gap-1, scored (non-dropout) transitions scoring below a new `--low-iou-threshold`, default 0.5), and
+`n_dropout_transitions`. Both functions are wired into `score_run` and `format_summary`'s summary
+line, and `score_run` now writes a `_z_consistency.csv` per run tree (one row per transition)
+alongside the existing `_merge_metric.csv`.
+
+A real smoke test against `original_perslice_only_guard_merged` (629 chains, 8052 frames) returned
+`mean_z2z_iou=0.592 mean_centroid_drift_px=5.45 frac_low_iou=0.285 frac_gap1=1.000`, the first number
+for something the project previously only had a visual read on (the presentation deck's
+`perslice-jitter.png` showed the jaggedness informally, without a number attached).
+Retro-scoring specific trees for an actual per-slice-vs-propagation comparison is a follow-on use of
+this tool, not part of this landing; see the roadmap's item 12 (§5, Phase 0.a).
+
+---
+
+<a id="r-2026-07-29-nucleus"></a>
+## 2026-07-29, nucleus-capture detector: GUI label added, NucleoNet spot-checked and verdicted
+
+Phase 2e, the nested-membrane ceiling's nucleus-detection lever, got a design, a spot-check, and a
+docs update in one round. The classical fallback was skipped on purpose, per the design's gate below,
+not left undone.
+
+**Task 1: the `"nucleus"` GUI label.** `sam2_utils/labels.py`'s `ERROR_TYPES` gained `"nucleus"`
+(`("wrong_object", "under", "over", "bleed", "fragmented", "missing", "nucleus", "other")`), so the
+napari review GUI's existing error-type dropdown (`gui.py:1127`, which reads the tuple directly, no
+new UI code needed) can now tag nucleus-capture cases during normal review. That is how the labeled
+ground truth that formal scoring will eventually need starts to accumulate, as a byproduct of
+normal review rather than a dedicated labeling pass.
+
+**Task 2: NucleoNet spot-check, GATE VERDICT "generalizes."** NucleoNet turned out to be real, not the
+unconfirmed name it started as: a BSD-3-Clause-licensed, pretrained EM nucleus instance-segmentation
+model (Panoptic DeepLab architecture, bioRxiv preprint April 2026, `volume-em/empanada`/
+`empanada-napari`). Its headless inference API took real discovery work: the PyPI `empanada-dl`
+package ships the model architectures and the inference engine but no model zoo. NucleoNet's
+checkpoint URL and config (`NucleoNet_base_v2.yaml`) live only in the `empanada-napari` GitHub repo,
+so two small napari-free helper functions were vendored from `empanada_napari/utils.py` into
+`experiments/nucleonet_spotcheck.py` (a BSD-3-Clause attribution comment travels with them), sparing a
+full GUI/Qt install just to reuse two functions.
+
+Run on two target-worm EM frames: z=1456 (2 instances detected) and z=1472 (5 instances detected).
+Both the implementer and the controller read the rendered overlays independently: detections landed
+on round, membrane-bound structures with a mottled interior texture clearly distinct from the
+surrounding organelle-packed cytoplasm, with tight mask boundaries, and at z=1472 several of the
+detections were already anticipatable by eye from the raw EM panel before the overlay was applied. No
+false positives on mitochondria or other organelles in either frame. Per the design's gate, this
+verdict skips the classical dark-blob/thick-loop fallback entirely; `sam2_utils/nucleus.py` and
+`tests/test_nucleus.py` were not built.
+
+The rendered evidence lives at `docs/figures/presentation/nucleonet-spotcheck/`; regenerate the two
+full-frame overlays with `py -3 experiments/nucleonet_spotcheck.py --z 1456` and `--z 1472`. That
+folder also has a `zoom_check.png` close-up crop used for the visual read above; it was made ad hoc
+and its generating code was never committed, so only the two full-frame overlays are reproducible.
+
+One follow-up surfaced during task review and fixed in a separate commit: the inference engine's
+`nms_threshold`/`nms_kernel`/`confidence_thr`/`coarse_boundaries` kwargs have unconfirmed provenance,
+unlike the `NUCLEONET_*` constants, which each carry a source URL and fetch date. Now documented as a
+comment at `experiments/nucleonet_spotcheck.py:124-129` for whoever revisits this detector.
+
+**Task 3, skipped.** The plan explicitly skips the classical fallback when the NucleoNet gate says
+"generalizes," so no `sam2_utils/nucleus.py` detector was built this round.
+
+This is a qualitative, visual-only read; no quantitative precision/recall exists yet, and formal
+scoring is blocked on the labeled set Task 1's GUI change starts collecting. Wiring NucleoNet into
+`multimask_generous` or any other live pipeline lever stays a separate, future spec, matching the
+design's stated scope. See the roadmap's item 2e and
+`docs/superpowers/specs/2026-07-29-nucleus-detector-design.md`.
+
+---
+
+<a id="r-2026-07-29-temporal"></a>
+## 2026-07-29, temporal membrane projection: register/project crops land, a gate confound found and corrected
+
+`sam2_utils/membrane.py` gained `register_crops` and `project_crops` (Task 1), and
+`experiments/dense_membrane_fill.py` gained `--mm-window`/`--mm-combine` to route a small window of
+adjacent z-slices through them before the ridge filter (Task 2), plus a `--sweep-temporal` flag that
+grids `window in {0, 1, 2}` x `combine in {median, mean, max}` and prints the same bleed/underfill
+table as `--sweep`, now with a `filled` population column (Task 3, extended during a final whole-plan
+review). `--mm-window 0`, the default, is verified byte-identical to the pre-existing single-slice
+path. The review also caught a real bug in `register_crops` (it picked `crops[len(crops) // 2]` as the
+alignment reference even when the caller's true center crop was elsewhere, e.g. after a frame load
+failed near the stack edge) and two missing files (`experiments/dense_overlay.py` and
+`experiments/membrane_autofill_demo.py`, both untracked dependencies of `dense_membrane_fill.py`); both
+are fixed and committed separately.
+
+The first gate run (`--z 1456 --uf-min 0.6 --sweep-temporal`, 117 neurons) answered item 2b.5's open
+question, does averaging organelles out across z drop the ~40% bleed-per-fill floor found in the
+2026-07-27 dense-frame sweep, and reported every non-baseline setting worse than window=0 (foreign 39,
+bleed_cells 28/117, mean_uf 0.403, area +12%) on every axis at once: window=1 roughly doubling
+foreign-node bleed (76-82, bleed_cells 39-41/117), window=2 worse again (foreign 110-124, bleed_cells
+42-54/117). The write-up called this a straight regression.
+
+The whole-plan review flagged that conclusion as under-supported: the 0.6 underfill threshold is
+compared against EACH row's own membrane map, so a blurrier temporal map reads as more underfilled even
+where a mask did not really change, and the fixed threshold quietly pulled more cells into the grow
+step as the window widened (`filled`, now printed in the table, rises from 17/117 at window=0 to
+40-49/117 at window=2). That alone could explain most of the apparent regression, independent of
+whether any individual grow got worse.
+
+A second gate run (`--z 1456 --uf-min 0 --sweep-temporal`) grows every underfill-eligible cell
+regardless of window, holding the grown population much closer to constant. `filled` still moves, from
+90/117 at window=0 down to 61-77/117 as the window widens, but in the opposite direction from the
+first run's confound: at uf_min 0 the only thing that can drop a cell out of `filled` is the 5x
+runaway-area cap, so this is the cap reverting more grows as the window widens (27/117 at window=0
+rising to up to 56/117 at window=2), itself evidence the membrane wall is weakening under temporal
+projection, not just a caveat about population control.
+
+Absolute foreign-node counts under this fairer test look mixed: window=1 reads close to flat (foreign
+136-148 vs baseline's 139, bleed_cells 54-55/117 vs 55/117) despite growing fewer cells, window=2 is
+moderately worse (foreign 161-189, bleed_cells up to 61/117). But the clean readout is the bleed-per-fill
+rate `filled` was added to compute, `new_bleed / filled`: baseline 34/90 = 0.38, window=1
+33-34/63-77 = 0.43-0.52, window=2 31-41/61-73 = 0.46-0.67. Every non-baseline setting is worse per fill
+than baseline with no exceptions, unlike the absolute counts. Window=2's regression cannot be explained
+by gate membership (it shows up with fewer cells grown than baseline) and is a real per-fill effect;
+window=1's near-flat absolute count still costs a worse per-fill rate, so the first write-up's "roughly
+doubles" claim does not survive population control, but neither does "no worse."
+
+A shift-clamp diagnostic was also added to `grow_all` (prints once per `grow_all` call when
+window > 0): `register_crops` clamps every estimated shift to +/- 5px before applying it, and the
+diagnostic logs the raw, pre-clamp shift magnitude for every crop pair. At window=1, 32 of 234 crop
+pairs (14%) had a raw shift larger than the clamp, with raw magnitudes up to 173px; at window=2, 139 of
+468 (30%) were clamped, up to 269px. Those magnitudes are far beyond any plausible real slice-to-slice
+jitter at scale 8, so they most likely mean phase correlation locked onto a spurious peak on some crops
+rather than found real drift, and the clamp then truncates and applies that bogus shift rather than
+skipping the crop, actively misaligning it before the combine step. Misregistration via the clamp is
+therefore a demonstrated contributor, not the "plausible but unverified" blur-only guess from the first
+write-up. Blur from combining otherwise-aligned crops may still also play a part, the evidence here does
+not separate the two mechanisms cleanly, but the clamped fraction roughly doubling from window=1 to
+window=2 lines up with where the regression is worst. The frame-loading loops now also print which z's
+actually loaded vs were skipped, so a degraded window shows up in the log instead of silently changing
+what the sweep measured.
+
+Item 2b.5 stays open, and 2c/2d/2e stay gated on it, now pointed at the deferred intensity/texture blob
+filter (2e's nucleus-detection idea, out of scope for this plan) instead of the temporal lever, since no
+setting improves the bleed-per-fill rate even where an absolute count happens to land at or slightly
+below baseline by growing fewer cells, under the fairer,
+population-controlled test. One untested, cheap follow-up worth a look before writing off the lever
+entirely: reject spurious large-shift crops instead of clamping and applying them. See
+[[membrane-temporal-projection-idea]] and the roadmap's item 2b.5 and queue item 10 for the recorded
+outcome.
+
+---
+
+<a id="r-2026-07-29"></a>
+## 2026-07-29, SAM3-vs-SAM2 scorecard consolidated, default backend decided
+
+The Globus download of the Narval trees (both production SAM3 configs, the four-way neg x gen A/B,
+and the matching SAM2 baselines) landed on F:. Each tree already carried a stitched
+`_merge_metric.csv` from the sharded eval, so the comparison table did not need the timed-out
+`retro_sam3` cluster job at all: `eval.merge_metric.summarize()` run directly on the cached CSVs
+produced the same numbers in seconds, entirely locally, no mask I/O.
+
+SAM3 `perslice_only_guard` wins the trusted severe-bleed ruler over SAM2 `perslice_only_guard` on
+both frequency (foreign_frame_rate 0.087 vs 0.109) and severity (a bleeding frame touches 1.17
+foreign skeleton nodes on average for SAM3 vs 5.45 for SAM2). The 2x2 neg x gen A/B refutes the
+roadmap's pre-registered guess that negatives would hurt SAM3: negatives still help on every axis,
+generous still hurts, so the existing `original_perslice_only_guard` preset is already the best SAM3
+cell and needs no retune.
+
+Decision, recorded in [ADR 0017](adr/0017-sam3-scorecard-and-default-backend.md): `--backend sam3`
+stays opt-in rather than becoming every preset's silent default, because SAM3's underfill is still
+notably higher (1.09 vs 0.62, the known tight-mask cost Phase 2c is meant to fix) and the ~2.2-2.5x
+compute cost is a call worth leaving explicit per run rather than folding into the default. Phase 1.a
+is closed. `sam3_fullres` (partial out-of-memory, unmerged) stays open only if full-resolution SAM3
+is wanted later.
+
+---
+
+<a id="r-2026-07-23"></a>
+## 2026-07-23, sharded parallel scoring, the SAM3 config A/B presets, and a documentation sweep
+
+Follow-on plumbing for the SAM3 whole-set round, plus a documentation reconciliation.
+
+**Sharded, parallel scoring.** `eval.merge_metric` used to score a whole tree on one core. It now
+takes `--neurons` (a comma- or space-separated subset) and `--out-csv` (a per-shard destination), so
+`cluster/run_eval_array.sh` splits one merged tree across CPU array tasks, each scoring its own
+neuron(s) into `<tree>/_merge_metric.shard_<i>.csv`. `eval.concat_merge_shards` then stitches those
+shards into the canonical `<tree>/_merge_metric.csv`, identical to what a single-core run writes, and
+prints the whole-tree summary. `cluster/run_py.sh` runs any CPU step (merge, concat, retro-eval) as a
+dependency job so nothing heavy lands on the login node, and `cluster/submit_sam3_round.sh` queues the
+whole SAM3 test round (segmentation, merge, score, concat, retro-eval) in one shot with `afterok`
+dependencies.
+
+**SAM3 config A/B presets.** Two `k_max_neg = 0` presets, `original_perslice_only_guard_kneg0` and
+`original_perslice_guard_kneg0`, complete a 2x2 sweep of `k_max_neg` in `{0, 3}` by
+`multimask_generous` in `{off, on}` run with `--backend sam3`, to test whether a more conservative
+model does better with negatives switched off. The two `k_max_neg = 3` corners are the existing
+per-slice guard presets. `k_max_neg = 0` removes negatives entirely (build_prompts caps them at zero
+and propagation only seeds negatives when `k_max_neg > 0`).
+
+**Documentation sweep.** Reconciled the reference docs against the code: the `batch.py --backend` /
+`--sam3-checkpoint` flags, the `merge_metric --neurons` / `--out-csv` / `--scale` flags, and the new
+`eval.concat_merge_shards` and `eval.retro_eval` entry points are now in
+[reference/cli.md](reference/cli.md); the `backend` / `sam3_checkpoint` config fields, the `kneg0`
+presets, and the `k_max_neg = 0` semantics are in [reference/configuration.md](reference/configuration.md);
+the new cluster and eval scripts are in [reference/code-map.md](reference/code-map.md); and the GUI's
+`--em-scale` backdrop flag is in [how-to/review-flagged-chains.md](how-to/review-flagged-chains.md).
+The submission plans (`run-sam3-on-narval.md`, `queued-sam3-narval-tests.md`) already carried the
+run-time detail and are cross-linked from the reference pages.
+
+<a id="r-2026-07-21-sam3-cluster"></a>
+## 2026-07-21, SAM3 Phase 2: `--backend sam3` switch, cluster wiring, and the Narval runbook
+
+The bake-off below (same day, read that entry first) left one open question: does SAM3's
+2-chain win hold over the whole target-worm set. This round builds the plumbing to answer it,
+without touching SAM2's default behavior anywhere. Spec
+`docs/superpowers/specs/2026-07-21-sam3-cluster-whole-set-eval-design.md`, plan
+`docs/superpowers/plans/2026-07-21-sam3-cluster-whole-set-eval.md`.
+
+**What landed.** `batch.py` gained a `build_predictors(cfg)` helper and two `PipelineConfig`
+fields, `backend: str = "sam2"` and `sam3_checkpoint: Optional[str] = None`, plus `--backend
+{sam2,sam3}` and `--sam3-checkpoint PATH` on the CLI. `sam2` stays the default and is
+byte-identical to before, the routing test asserts it, and a full-suite run confirms no prior
+test changed. `cluster/run_array.sh` forwards `VENV`, `PRESET`, `SAM_BACKEND`, `SAM3_CKPT`, and
+`OUT_ROOT` from the `sbatch --export` line through to `batch.py`, so a SAM3 run needs no file
+edit, only different env vars on the submit line. A local single-chain `--backend sam3
+batch.py` run confirmed the on-disk masks save and score through `eval.merge_metric` exactly
+like SAM2's (the mask-format parity gate the plan called for before any cluster work), after one
+small fix: `Sam3ImagePredictor.reset_predictor` was missing, and `batch.py`'s per-chain path
+calls it between chains.
+
+**The two whole-set runs, matched to the Phase-1 SAM2 baselines for a clean model swap:**
+
+```
+sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_perslice_only_guard,SAM_BACKEND=sam3,SAM3_CKPT=<ckpt>,OUT_ROOT=<scratch>/target_perslice_only_guard_sam3 cluster/run_array.sh
+sbatch --export=ALL,VENV=$HOME/sam3env,PRESET=original_tier2_s1forced_neg,SAM_BACKEND=sam3,SAM3_CKPT=<ckpt>,OUT_ROOT=<scratch>/target_tier2_s1forced_neg_sam3 cluster/run_array.sh
+```
+
+**The runbook.** `docs/how-to/run-sam3-on-narval.md` is the SAM3-specific delta on top of the
+general `run-on-narval.md`, checkpoint upload, a fresh venv (`module load python`, `pip install
+--no-index torch`, `pip install transformers>=5.13`, recorded once it works) with an Apptainer
+container as the documented fallback built from the known-good local stack, smoke one chunk
+(`--array=0-0`) before sizing the full array, then merge/download/score. `OUT_ROOT` is the shard
+root, so each array task writes its own `chunk_<i>` shard exactly like the SAM2 baseline (no
+shared-tree or manifest contention), and the runbook merges with `merge_shards.py --shard-root
+$OUT_ROOT --out ..._merged` then downloads with `stage_download.sh` (which auto-globs
+`*_merged`), the same flow the SAM2 runs use.
+
+**Honest caveats, carried into the runbook.** SAM3 is roughly 3 to 4x slower per cell than SAM2
+(the bake-off's own timing, so the smoke chunk gates the allocation ask), `pred_iou` is NaN for
+SAM3 propagation (inert for the mask-only merge metric, but treat it as disabled for anything
+else that reads it), and SAM3 must write to its own `OUT_ROOT`, never a SAM2 baseline tree: no
+code enforces that beyond the path you choose.
+
+**Not done here.** The actual whole-set numbers. That is the Narval run itself, human-executed
+because Duo-MFA blocks headless login, tracked as the next step below.
+
+---
+
+<a id="r-2026-07-21-sam3"></a>
+## 2026-07-21, SAM3 vs SAM2 bake-off: HF-transformers PVS adapters + 2x2 comparison
+
+A postdoc shared a SAM 3 checkpoint (`F:\sam3\huggingface`, HuggingFace format) whose masks looked
+better than ours. We tested it as a SAM 2 drop-in. Spec
+`docs/superpowers/specs/2026-07-21-sam3-pvs-bakeoff-design.md`, plan
+`docs/superpowers/plans/2026-07-21-sam3-pvs-bakeoff.md`, full API and numbers in
+`docs/explanation/sam3-bakeoff-findings.md`.
+
+**What landed.** Two thin adapters in `sam2_utils/sam3_backend.py` wrap SAM 3's Promptable Visual
+Segmentation tracker (`Sam3TrackerModel`, `Sam3TrackerVideoModel`, via `transformers` 5.13.1, no new
+install) behind the exact `SAM2ImagePredictor` and video-predictor surfaces the pipeline calls, so
+`pipeline.segment_per_slice` and `pipeline.propagate` run SAM 3 unchanged. torch and transformers
+import lazily, so the import-direction test stays green. A driver `experiments/sam3_bakeoff.py` runs
+the 2x2 {SAM2, SAM3} x {propagation, per-slice} on shared chains, building one anchor seed and one
+frame set per chain so only the model varies, and scores every cell with the same `eval.merge_metric`
+and `sam2_utils.membrane` primitives. SAM 2 stays the pipeline default; `batch.py` is untouched.
+
+**API findings (probe `experiments/sam3_probe.py`).** Both trackers fit the 6GB card (image 2.16 GB,
+video 1.37 GB peak in bf16). Reverse propagation is supported (`propagate_in_video_iterator(...,
+reverse=True)`), but SAM 3 does not auto-infer the start frame, so the video adapter records the
+anchor frame and passes it as the default `start_frame_idx`. Two SAM3-vs-SAM2 divergences the adapter
+absorbs: a box add needs `clear_old_inputs=True`, and bf16 mask logits need a `.float()` before
+`.cpu().numpy()`.
+
+**Results (target-worm merge metric, AIAL chain_05 = 17 frames, chain_00 = 113 frames).**
+foreign-node rate orders the cells identically on both chains: sam2_prop worst, then sam2_perslice,
+then sam3_prop, then sam3_perslice best. Long-chain foreign-node rate: sam2_prop 0.796, sam2_perslice
+0.540, sam3_prop 0.372, sam3_perslice 0.221; dropout: sam2_prop 0.673 down to sam3_perslice 0.000.
+Two effects stack: per-slice beats propagation (drift), and SAM 3 beats SAM 2 (bleed). **SAM 3
+per-slice leads** (lowest bleed, zero dropout on both chains). Costs: SAM 3 is 3 to 4x slower per
+cell, and its underfill runs higher than SAM 2 propagation's (the tight-mask cost, Phase 2c
+grow-to-membrane is the lever). Caveat: two chains of one neuron on the GT-free merge metric, a strong
+first signal, not a final verdict. Next step before productionizing (a `--backend sam3` flag) is a
+broader multi-neuron run and ideally the cross-worm GT.
+
+---
+
+<a id="r-2026-07-21"></a>
+## 2026-07-21, per-frame segmentation: two approaches, an AMG tuner, membrane-aware arbitration
+
+A supervisor-requested complementary view to per-chain propagation: segment everything present in
+one EM frame at once, and let the overlaps between cells do the work of resolving spills. Design:
+`docs/superpowers/specs/2026-07-20-perframe-segmentation-design.md`. New driver `run_perframe.py`;
+no change to the existing per-chain batch/GUI path.
+
+- **Why.** So far the pipeline segments one neuron chain at a time and propagates through z. This
+  round builds the opposite view instead: segment every node-bearing cell in a single frame, then
+  use the overlaps between cells to arbitrate spills. It deliberately delivers two roadmap items
+  early, because this experiment gives them a concrete use: Phase-2 item 2d (a principled
+  non-overlap resolve, in place of first-writer-wins) and a first, lightweight look at the R5
+  dense-path hedge (segmenting a whole frame at once with SAM2's own auto-mask generator, rather
+  than one prompted neuron at a time). Both are prototypes scoped to this experiment, not yet wired
+  into the main per-chain composite; see [roadmap.md](explanation/roadmap.md).
+- **Shared foundation.** A per-frame node index (`sam2_utils/perframe.py`'s `nodes_in_frame`,
+  extending `merge_metric.nodes_by_z` to every cell at one z) and a per-frame scoring metric
+  (`eval/perframe_score.py`'s `score_frame`), which reuses the Phase-2 membrane detectors
+  (`spanning_membrane`, `boundary_on_membrane`, `underfill_fraction`) alongside own-node coverage,
+  foreign-node bleed, and a pre-resolution pairwise-overlap scalar. Two overlap resolvers implement
+  2d: `resolve_overlaps_argmax` (membrane-respecting nearest-node rule) and
+  `resolve_overlaps_watershed` (seeded watershed on the membrane map), both pure array functions
+  over masks, node coordinates, and the membrane map.
+- **Approach 1, prompt-based (`--approach prompt`, the default).** Image-mode SAM2 once per node in
+  the frame (positive point plus box, optionally the other cells' nodes as negatives), with a
+  metric-guided multimask selector (`select_by_metric`) added alongside SAM2's own `pred_iou` and the
+  existing `generous` policy. Three swept knobs, 12 combos total: `--negatives on|off`,
+  `--selection pred_iou|generous|metric`, `--resolver argmax|watershed`. `--sweep` loops the whole
+  grid over `--frames` and logs one row per combo.
+- **Approach 2, auto-mask + match + keep-competitors (`--approach amg`).** Runs
+  `SAM2AutomaticMaskGenerator` over the whole frame, matches each node to one of the resulting masks
+  (`match_amg_to_nodes`, the F2 composite, or `--match area`, the smallest containing mask), and
+  keeps the unmatched masks as unlabelled competitors that still take part in overlap resolution
+  before being dropped to background. This is what lets a neighbour push bleed off a cell mask
+  without ever appearing as a named cell itself.
+- **AMG parameter tuner (`--tune`).** Grid-search over `pred_iou_thresh` x `stability_score_thresh`
+  x `points_per_side` (12 combos by default, `--tune-grid` overrides), scored by
+  `eval.perframe_score.objective`, a composite that rewards own-node coverage and
+  boundary-on-membrane while penalising foreign bleed, spanning, and overlap. Every trial's params
+  and per-frame scores land in `<out>/trials.csv`; the winning trial gets a full re-run for its
+  montages, and the logged summary carries an explicit note that the objective can be gamed (a
+  degenerate small-mask trial can score well on paper while under-covering the frame).
+- **Documentation, a first-class requirement of the design.** Every run writes
+  `results/perframe/<run>/{config.json,scores.csv,montages/}` (gitignored, regenerable); the
+  committed [perframe-experiments.md](explanation/perframe-experiments.md) logs one row per run plus
+  a "Comparison protocol" section describing how Approach 1's best sweep knobs, Approach 2 default,
+  and Approach 2 tuned are meant to be judged against each other on the same frame sample.
+- **Built as two plans, six-plus-three tasks, via subagents.** Plan 1 (foundation, F1 to F3, the
+  Approach-1 runner, the sweep) and Plan 2 (the Approach-2 runner, the tuner, this documentation
+  pass). 257 tests pass, ruff clean.
+- **The comparison is a documented protocol, not yet a finished result.** Approach 2's default AMG
+  parameters (`points_per_side=64`, `crop_n_layers=1`) proved too slow to finish even a single
+  target-worm frame in a short local wall-clock budget, and a `--tune` run multiplies that cost by
+  the grid size. The full three-way comparison on a 5-to-10-frame sample is realistically a CCDB
+  job; locally we have a single-frame worked example (frame 1400) showing how to read the numbers
+  against the montages once the full sample lands. See "Comparison protocol" in the experiments log
+  for the concrete caveats this surfaced, including that `--match area` can let one merged blob wear
+  two cells' names.
+- **Fixed: fair own_coverage for Approach 2, then a unified pre/post scoring contract for both.**
+  Two follow-up fixes to the metric above, landed the same day. First, Approach 2's `own_coverage`
+  used to score only the cells an AMG mask actually matched, so an unmatched node was simply absent
+  from the mean instead of counting as a dropout; unmatched cells now get an empty resolved mask and
+  count as uncovered, matching Approach 1. Second, and more fundamentally, Approach 1 was scoring its
+  raw pre-resolution union masks (so `--resolver` never moved a single number) while Approach 2 was
+  already scoring its resolved, post-`--resolver` masks (so its `overlap_fraction` read ~0 by
+  construction); the two approaches now share one contract, `own_coverage`/`total_foreign`/
+  `mean_boundary_on_membrane`/`spanning_rate`/`mean_underfill` are always scored on the RESOLVED
+  masks for both, and `overlap_fraction` is deliberately overridden to a pre-resolution diagnostic
+  (the raw masks' pairwise pixel fight before `--resolver` sorts it out) computed the same way for
+  both approaches. This makes `--resolver` an actual knob for Approach 1 and makes the two
+  approaches' numbers comparable. See [perframe-experiments.md](explanation/perframe-experiments.md)
+  for the updated worked example and the note that its older table rows predate this fix.
+
+---
+
+<a id="r-2026-07-20"></a>
+## 2026-07-20, Phase 1 close-out: blow-up guard + generous-first/negatives-in-crop bundle
+
+Two more roadmap Phase 1 fixes, both gated off by default, plus the three presets that measure them.
+Design: `docs/superpowers/specs/2026-07-17-phase1-blowup-guard-and-genfirst-negcrop-design.md`. No
+default pipeline behavior changed.
+
+- **Why.** The Phase 2 retro-score (previous entry) settled that per-slice re-seeding's real cost is a
+  gross tail, a handful of slices blowing up to the whole worm cross-section, not mild bleed. Separately,
+  the 2026-07-15 experiment found negatives cut bleed in the crop, but the existing tier-2 rerun always
+  inherits the first pass's seeds, so there was no way to run a generous, negative-free first pass (so
+  the crop is not clipped) and then turn negatives on only in the crop.
+- **Per-slice blow-up guard (`pipeline/propagate.py`, `PipelineConfig.blowup_guard`).** A post-pass at
+  the end of `segment_per_slice`, run only when `per_slice_reseed` is on: compute the median area over
+  the chain's non-empty masks, treat any mask over `blowup_area_factor` (default 25.0) times that
+  median as a blow-up, and replace it with the nearest accepted slice's mask by frame-index distance.
+  Guarded frames get `pred_iou` set to 0.0 (the QC confidence signal that queues them for review;
+  `frame_conf` is zeroed too, for consistency) since a substituted neighbour mask is a stand-in, not a
+  real segmentation of that slice.
+  A chain with too few accepted masks or a zero median skips the guard rather than picking a spurious
+  baseline. Off by default and inert on the video-propagate path, so existing runs are byte-identical.
+- **Per-pass tier-2 seed overrides (`pipeline/config.py`, `batch._run_one_chain`).** Three new
+  `PipelineConfig` fields, `tier2_k_max_neg`, `tier2_seed_negatives`, `tier2_multimask_generous`, each
+  `None` by default (inherit the base value, current behaviour unchanged). When set, the tier-2 rerun
+  applies them on top of `chain_crop=True`, so the first `_sam` pass and the tier-2 crop pass can seed
+  differently, generous and negative-free to size the crop, then negatives on and generosity off once
+  inside it.
+- **Three presets (`sam2_utils/presets.py`).** `original_perslice_only_guard` and
+  `original_perslice_guard` add the blow-up guard to the existing `original_perslice_only` /
+  `original_perslice` trees, isolating the guard's effect against their guard-off counterparts.
+  `original_genfirst_negcrop` runs the generous-first, negatives-in-crop bundle as a `tier2_all`
+  two-pass: a generous, negative-free first pass sizes the crop via `chain_crop_from_mask`, then the
+  tier-2 overrides turn negatives on for the crop pass.
+- **Built as three TDD tasks via subagents** (the guard, the seed overrides, the presets), then this
+  documentation pass. Tests and ruff stayed green throughout.
+- **CCDB A/B verdict (2026-07-21): per-slice + guard graduates, the genfirst bundle is dropped.** The
+  three presets ran on Narval and were scored on `eval.merge_metric` (membrane included) over the
+  629-chain subset. The blow-up guard cut per-slice's gross tail (`total_foreign`) by 73%: 17,481 to
+  4,776 for `perslice_only`, 28,769 to 7,702 for `perslice`, with dropout still near 0. `perslice_only
+  + guard` (no generous) beats the `tier2_s1forced_neg` baseline on foreign-frame-rate (0.109 vs 0.321),
+  dropout (0.001 vs 0.130), and mild-bleed (0.016 vs 0.029); its residual tail (4,776) sits near the
+  baseline's 3,570, and its only weak column is underfill (0.616 vs 0.483, the cost of tight masks).
+  Generous still hurts (`perslice_only + guard` beats `perslice + guard`, 0.109 / 4,776 vs 0.182 /
+  7,702). `genfirst_negcrop` ties the baseline (foreign 0.328, dropout 0.114, total_foreign 3,583) at
+  about 2.5x the compute, so it is rejected. Phase-1 exit decision: per-slice re-seeding plus the
+  blow-up guard, without generous, is the leading candidate; the residual underfill points to
+  grow-to-membrane (Phase-2 item 2c) as the next lever.
+
+---
+
+<a id="r-2026-07-17"></a>
+## 2026-07-17, Phase 2 foundation: membrane map + membrane-aware bleed detection
+
+The roadmap Phase 2 foundation (2a + 2b), landed. Design:
+`docs/superpowers/specs/2026-07-17-phase2-membrane-map-bleed-detection-design.md`; decision record:
+[ADR 0016](adr/0016-membrane-map-border-to-border-bleed-detection.md). No default pipeline behavior
+changed, this is a new measurement, not a new lever.
+
+- **Why.** The Phase-0 skeleton merge-metric (ADR 0015) is a severe-merge floor: it only fires once a
+  mask reaches a neighbour's centreline, so it is blind to mild bleed (a mask crosses a real membrane
+  but stops short of the neighbour's node) and to underfill (a mask stops short of its own cell's
+  membrane). Neither the QC flags nor the Phase-0 metric had any opinion on either.
+- **2a, the membrane map (`sam2_utils/membrane.py`).** `membrane_map` reads a grayscale EM patch and
+  returns a per-pixel membrane-ness map in `[0, 1]`, v1 a Sato dark-ridge filter normalised by its own
+  99th percentile. The signature is a swappable interface, a trained model can sit behind it later
+  without touching anything downstream.
+- **2b, the detectors (same module).** Three pure array functions, mask and membrane map in, scalars
+  out: `spanning_membrane` (does a membrane ridge cut the mask border-to-border, the mild-bleed
+  signal), `boundary_on_membrane` (fraction of the mask perimeter sitting on a membrane, a
+  direction-agnostic boundary-quality check), `underfill_fraction` (a bounded outward flood measuring
+  how much room the mask left before its enclosing membrane). The border-to-border criterion in
+  `spanning_membrane` is deliberately not "any membrane pixel inside the mask": a nucleus is a closed
+  interior loop, not a ridge that spans the mask, so a soma is never falsely flagged, with no
+  special-cased nucleus detection anywhere in the code.
+- **Wired into the scorer (`eval/merge_metric.py`).** A new `MembraneSource` loads and caches the raw
+  EM per z through the existing FrameStore seam and crops it to each mask's window, so the membrane
+  pass degrades gracefully (falls back to Phase-0-only) whenever the EM for a frame is unavailable.
+  `score_chain` now carries four columns per frame (`spanning_merge`, `bled_fraction`,
+  `boundary_on_membrane`, `underfill_fraction`), and `score_run`'s summary gains
+  `mild_bleed_rate` (the headline: a spanning membrane crossing with no foreign node, the mild bleed
+  the Phase-0 floor cannot see), `spanning_merge_rate`, `mean_boundary_on_membrane`, and
+  `mean_underfill_fraction`. New CLI flags: `--no-membrane`, `--tau`, `--tol`. Full reference:
+  [cli.md](reference/cli.md), [configuration.md](reference/configuration.md).
+- **Built as five TDD tasks via subagents**, the membrane map, the three detectors, the
+  `MembraneSource` loader, the scorer wiring, then this documentation pass. 232 tests pass, ruff
+  clean.
+- **Deferred on purpose, each to its own spec:** 2c, grow-to-membrane refinement, which would reuse
+  the `underfill_fraction` flood to actually change a mask rather than only measure the gap; and 2d,
+  replacing the composite's first-writer-wins with a membrane-aware non-overlap resolve. Both need
+  this ruler in place first to be gated fairly, which is exactly why this round stopped at measurement.
+- **Follow-on: `--scale` override + a one-frame visual sanity check + the retro-score.** Added a
+  `--scale` flag so trees without a `_run_meta.json` (the merged CCDB shards) can be scored, and saved
+  two example membrane-map figures under `docs/figures/membrane-v1/`. The visual check confirmed the
+  v1 map traces real cell boundaries but also fires on organelles (mitochondria, vesicles), so it is a
+  comparative ruler, not an absolute one, and on a soma the nucleus envelope is a stronger ridge than
+  the faint outer membrane (the nested-membrane ceiling seen from the membrane side).
+- **Retro-score verdict on the four Phase-1 A/B trees** (scale 8; Phase-0 numbers reproduced the
+  2026-07-15 run exactly, confirming the scale). Membrane columns, baseline / generous_only /
+  perslice_only / perslice: mild_bleed 0.029 / 0.028 / 0.020 / 0.019; spanning_rate 0.095 / 0.111 /
+  0.034 / 0.061; underfill 0.483 / 0.469 / 0.615 / 0.475; boundary_on_membrane ~0.90 flat. Reading:
+  (1) **per-slice's damage is gross blow-ups, not mild bleed.** Its typical mask is the cleanest of the
+  four (lowest mild_bleed and spanning_rate); all its cost sits in the gross tail (`total_foreign`
+  17,481, a whole-worm blob is not "spanning" so it lands in Phase-0, not mild_bleed). This overturns
+  the earlier "trades severe for mild bleed" guess: the fix is still the blow-up guard. (2) **per-slice's
+  real tradeoff is underfill** (0.615, highest), the honest cost of tighter masks. (3) **generous shows
+  its intended benefit and its cost, measurably:** underfill down (0.483 to 0.469) while spanning_rate
+  up (0.095 to 0.111), a genuine fill-vs-merge lever rather than a pure loss. (4) `boundary_on_membrane`
+  is not discriminative at v1 (organelle noise). Caveat: read mild_bleed alongside Phase-0, never
+  instead of it; the two partition gross vs subtle merge.
+
+<a id="r-2026-07-15"></a>
+## 2026-07-15, negatives experiment + measurement-first roadmap redesign
+
+A follow-up experiment round and a roadmap restructure. No default pipeline behavior changed.
+
+- **Negatives + full-res second-pass experiment.** Two presets on the two-step baseline:
+  `original_tier2forced_neg` (crop_scale 2 + `seed_negatives`) and `original_tier2_s1forced_neg`
+  (crop_scale 1 + negatives), run on Narval over EXP_NEURONS. tier2forced_neg stopped early (AIBR
+  unfinished); tier2_s1forced_neg completed. Pure-flag result on the 582-chain common set: adding
+  negatives or the full-res second pass is near flag-neutral (flagged chains 94, 99, 103; frame rate
+  0.205, 0.202, 0.192; negatives net -5 flagged chains). Load-bearing caveat: the QC flag rule has no
+  bleed signal, so these counts cannot grade what negatives target. A real verdict needs the
+  merge-metric below.
+- **Third deep-research pass (prior art), adversarially verified.** Confirmed the direction and
+  corrected two beliefs: the connectomics-standard rulers are skeleton/topology metrics (ERL, VOI),
+  which our CATMAID skeletons already support, and the membrane-map + skeleton-expansion filling is the
+  lab's own prior method (Mulcahy/Witvliet), the direct precedent for a per-frame boundary map.
+- **GT erosion confirmed for our copy.** The cross-worm VAST segmentation is unpublished/incomplete and
+  its neighbouring masks are inset from the shared membrane by design, so boundary metrics against it
+  are biased and the different-worm mismatch compounds it. This does not match the published C. elegans
+  filling (which expands to the membrane), so it is a property of our copy, not the method.
+- **Roadmap redesigned (`roadmap.md` §5) into a measurement-first, evidence-gated Phase 0-4 plan.**
+  Phase 0 fixes the ruler with a GT-free target-worm merge-metric (foreign skeleton-node containment on
+  raw masks) and retro-scores the existing runs; Phase 1 is cheap structural fixes (per-slice re-seed,
+  mutex-watershed non-overlap, prompt fixes for the new nested-membrane ceiling); Phase 2 is the
+  per-frame membrane map; Phase 3 is the boundary benchmark plus mask-decoder finetune / FGNet head;
+  Phase 4 is the dense-3D paradigm gate. Added problem #7 to §2 (the point-prompt ceiling on
+  double-bordered somas). §4 stays as the solutions-by-problem reference.
+- **Phase 0 merge-metric built and run (`eval/merge_metric.py`).** A ground-truth-free severe-bleed /
+  dropout scorer: for each RAW per-chain mask it counts foreign skeleton nodes contained (a merge) and
+  own-node dropout, scored against the target worm's own CATMAID skeletons (no cross-worm GT, no
+  boundary dependence). Retro-scored the five runs:
+
+  | run | foreign_frame_rate | dropout_rate | total_foreign |
+  |---|---|---|---|
+  | fullres (neg off) | 0.356 | 0.359 | 3941 |
+  | wholeimg_s4 (neg off) | 0.453 | 0.319 | 5749 |
+  | tier2forced (neg off) | 0.471 | 0.143 | 6685 |
+  | tier2forced_neg | 0.357 | 0.147 | 3725 |
+  | tier2_s1forced_neg | 0.321 | 0.130 | 3570 |
+
+  The verdict the flag tables could not give: cropping cuts dropout about 2.5x (the mask stays on its
+  own cell), neg-off cropping has the highest bleed (a tight crop fills aggressively), negatives then
+  cut that bleed (foreign_frame_rate 0.471 -> 0.357, foreign nodes 6685 -> 3725) at no dropout cost,
+  and full-res crop + negatives (tier2_s1forced_neg) is best on every axis (bleed 0.321, dropout
+  0.130). So negatives do help; the flags were simply blind to bleed. Sanity check: AVAL/ch16 (the
+  known wrong-cell jump) shows 111 foreign-hit frames in fullres vs 13 in tier2_s1forced_neg. Caveats:
+  this is a severe-merge floor (foreign-node containment, radius 3), it does not see mild bleed (that
+  needs the Phase 2 membrane map); and tier2forced_neg covers 582 chains (AIBR unfinished), so its
+  rates compare but its totals do not.
+- **Phase 1 code landed (gated off, awaiting GPU smoke).** Two roadmap Phase 1 fixes, both behind
+  default-off flags so existing behavior is byte-identical: per-slice re-seeding (`per_slice_reseed`,
+  run_chain segments each slice from its own skeleton node in the chain crop with no video
+  propagation, so memory cannot carry the wrong cell across slices) and generous-capped multimask
+  (`multimask_generous`, prefer a larger candidate so a soma includes the nucleus and reaches the
+  outer membrane, capped so a whole-frame blob never wins while a gate-passer exists). New
+  `original_perslice` preset. Built as 8 TDD tasks via subagents; the whole-branch review caught and
+  fixed a frame_conf low-res-logit indexing crash before it could reach a GPU run. 215 tests pass,
+  ruff clean. The real quality A/B (per-slice and generous vs tier2_s1forced_neg on eval.merge_metric,
+  foreign_frame_rate down, dropout not up) is pending the human GPU smoke: downscaled locally, then
+  CCDB. Spec + plans under docs/superpowers/.
+
+<a id="r-2026-07"></a>
+## 2026-07, research passes, resolution experiments, and design specs
+
+A research and experiment round on top of the M4.5 GT/eval work. No default pipeline behavior
+changed; this was measurement, cluster experiments, and design.
+
+- **Two verified deep-research passes**, both adversarially fact-checked and folded into the
+  roadmap (§4, §5). Error detection plus benchmark design moved Stage 4's cheap training-free
+  pieces forward and added the target-worm annotation-benchmark requirement. Segmentation
+  improvement produced the neurite-targeted-finetune hard rule (an organelle-trained EM model
+  degrades neurites) and confirmed the dense/hybrid path is a learned, evidence-gated last
+  resort, not a drop-in.
+- **Resolution experiments on Narval.** Five target-worm variants added as presets and run as
+  Slurm arrays (`cluster/run_exp.sh` + a per-variant merge + `cluster/stage_download.sh`):
+  `original_fullres` (whole image at scale 1, no tier-2), `original_wholeimg_s4` (a scale-4
+  control), `original_tier2forced` (tier-2 on every chain, fallback floor dropped),
+  `original_bigimg` (SAM2 `image_size` raised to 2048), and `original_tier2_s1` (scale-1 tier-2,
+  built). Findings: (1) `bigimg` crashed on every chain with a SAM2-internal `.view()`/stride
+  error at `image_size` other than 1024, off-distribution for the pretrained weights and not our
+  code, so it is retired as configured; (2) the effective resolution of a crop is
+  `min(crop_tif/crop_scale, 1024) / crop_tif`, so the default `crop_scale=2` feeds the median
+  crop (1560 tif) at about 780 input px, under-filling SAM2's 1024 input for 86% of chains, and
+  `original_tier2_s1` fills it for roughly a third more resolution at no cost; (3) whole-image
+  scale 1 is not high resolution, SAM2 downsamples it to 1024, so the large saved files are a
+  high-resolution rendering of a low-resolution segmentation.
+- **Design specs (not yet implemented)** under `docs/superpowers/specs/2026-07-07-*`: a GUI
+  run-picker that opens runs by their `_run_meta.json` metadata (and fixes re-segmentation scale
+  and hires-EM); mask-seeded propagation (seed the video from the anchor mask, gated on anchor
+  quality, with a saved-mask reuse hook); and coarse-to-fine tiled full-res propagation (reuse a
+  cached coarse pass, tile over its foreground, mask-seed each tile, union). A branch-junction
+  multi-seed idea is in discussion, gated on measuring whether the per-neuron union under-covers
+  junctions.
 
 <a id="r-2026-06"></a>
 ## 2026-06, review tooling + post-processing pass
