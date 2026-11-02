@@ -28,8 +28,13 @@ experiments/ab_eval/
 examples/
 
 # data/ contents are not committed (CATMAID-derived + large GT). Track only the
-# groundtruth scaffold README. (`data/*` not `data/` so git descends to find the negation.)
+# groundtruth scaffold README and the full node table (needed by every
+# reviewer, incl. Lucinda's git-cloned-but-data/-less checkout, for gui.py's
+# context-nodes overlay -- see export-a-lucinda-bundle.md; only ~8MB, trivial
+# next to a review bundle). (`data/*` not `data/` so git descends to find the
+# negations.)
 data/*
 !data/groundtruth/
 data/groundtruth/*
 !data/groundtruth/README.md
+!data/aggregate_data_pv.csv
